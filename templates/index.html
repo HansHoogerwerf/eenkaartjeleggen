@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Klaverjassen — Rotterdam rules</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+<!-- ── Language switcher ──────────────────────────────────────────── -->
+<div id="lang-switcher">
+    <button class="lang-btn" data-lang="en" onclick="setLang('en')" title="English">&#127468;&#127463;</button>
+    <button class="lang-btn active" data-lang="nl" onclick="setLang('nl')" title="Nederlands">&#127475;&#127473;</button>
+</div>
+
+<!-- ── Lobby overlay (shown by default) ─────────────────────────────── -->
+<div class="modal-overlay active" id="lobby-overlay">
+    <div class="modal modal-wrapper" style="min-width:360px;">
+        <h2 data-i18n="lobby.heading">Klaverjassen</h2>
+        <p style="text-align:center; color:#aaa; margin-bottom:16px;" data-i18n="lobby.subtitle">Rotterdam rules — 1 to 4 players</p>
+
+        <!-- Name input -->
+        <div id="lobby-name-section" style="text-align:center; margin-bottom:16px;">
+            <label style="color:#ccc; font-size:13px;" data-i18n="lobby.your_name">Your name:</label><br>
+            <input type="text" id="lobby-name" maxlength="16" placeholder="Player" data-i18n-placeholder="lobby.name_placeholder"
+                   style="margin-top:4px; padding:6px 12px; font-size:14px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc; width:180px;">
+        </div>
+
+        <!-- Create / Join -->
+        <div id="lobby-actions" style="text-align:center;">
+            <button class="btn-declare" onclick="createRoom()" style="margin:4px;" data-i18n="lobby.create_game">Create Game</button>
+            <div style="margin:12px 0; color:#666;" data-i18n="lobby.or">— or —</div>
+            <div>
+                <input type="text" id="join-code" maxlength="4" placeholder="CODE" data-i18n-placeholder="lobby.code_placeholder"
+                       style="padding:6px 12px; font-size:16px; width:80px; text-align:center; letter-spacing:3px; text-transform:uppercase; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc;">
+                <button class="btn-declare" onclick="peekRoom()" style="margin-left:6px;" data-i18n="lobby.join">Join</button>
+            </div>
+            <p id="lobby-error" style="color:#e74c3c; margin-top:8px; display:none;"></p>
+        </div>
+
+        <!-- Seat picker (hidden initially) -->
+        <div id="lobby-seat-picker" style="display:none;">
+            <p style="text-align:center; color:#ccc; margin-bottom:10px;" data-i18n="lobby.choose_seat">Choose your seat:</p>
+            <div id="seat-picker-grid"></div>
+            <div style="text-align:center; margin-top:10px;">
+                <button class="btn-pass" onclick="cancelSeatPicker()" data-i18n="lobby.back">Back</button>
+            </div>
+        </div>
+
+        <!-- Waiting room (hidden initially) -->
+        <div id="lobby-waiting" style="display:none;">
+            <div style="text-align:center; margin-bottom:12px;">
+                <span style="color:#aaa;" data-i18n="lobby.room_code">Room code:</span>
+                <span id="lobby-code" style="font-size:24px; font-weight:bold; color:var(--accent); letter-spacing:4px; margin-left:8px;"></span>
+            </div>
+            <div id="lobby-seats">
+                <!-- Filled by JS -->
+            </div>
+            <!-- Team names (host only) -->
+            <div id="lobby-team-names" style="display:none; margin-top:10px; text-align:center;">
+                <p style="color:#aaa; font-size:12px; margin-bottom:6px;" data-i18n="lobby.team_names">Team names:</p>
+                <div style="display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
+                    <div>
+                        <label style="color:var(--green-txt); font-size:11px;">Team 0</label><br>
+                        <input type="text" id="team0-name" maxlength="16" placeholder="Team 0" value="Team 0"
+                               style="width:110px; padding:4px 8px; font-size:13px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:var(--green-txt); text-align:center;">
+                    </div>
+                    <div>
+                        <label style="color:var(--red-txt); font-size:11px;">Team 1</label><br>
+                        <input type="text" id="team1-name" maxlength="16" placeholder="Team 1" value="Team 1"
+                               style="width:110px; padding:4px 8px; font-size:13px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:var(--red-txt); text-align:center;">
+                    </div>
+                </div>
+            </div>
+            <!-- Game mode picker (host only) -->
+            <div id="lobby-mode-picker" style="display:none; margin-top:12px; text-align:center;">
+                <p style="color:#aaa; font-size:12px; margin-bottom:6px;" data-i18n="mode.label">Game mode:</p>
+                <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
+                    <button class="btn-declare mode-btn active" data-mode="score_limit" onclick="selectMode('score_limit')" data-i18n="mode.score_limit">Score Limit</button>
+                    <button class="btn-pass mode-btn" data-mode="boom" onclick="selectMode('boom')" data-i18n="mode.boom">Boom (16 rounds)</button>
+                    <button class="btn-pass mode-btn" data-mode="free_play" onclick="selectMode('free_play')" data-i18n="mode.free_play">Free Play</button>
+                </div>
+                <div id="score-limit-input" style="margin-top:8px;">
+                    <label style="color:#ccc; font-size:12px;" data-i18n="mode.target_score">Target score:</label>
+                    <input type="number" id="mode-score-limit" value="500" min="50" max="5000" step="50"
+                           style="width:70px; padding:4px 8px; font-size:14px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc; text-align:center; margin-left:6px;">
+                </div>
+            </div>
+            <!-- Mode display for non-host -->
+            <div id="lobby-mode-display" style="display:none; margin-top:8px; text-align:center;">
+                <span style="color:#888; font-size:12px;" id="lobby-mode-text"></span>
+            </div>
+            <div style="text-align:center; margin-top:12px;">
+                <button class="btn-declare" id="lobby-start-btn" onclick="startGame()" style="display:none;" data-i18n="lobby.start_game">
+                    Start Game
+                </button>
+                <p id="lobby-wait-msg" style="color:#aaa; font-size:12px; margin-top:6px;" data-i18n="lobby.waiting_host">Waiting for the host to start...</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- ── Score panel ──────────────────────────────────────────────────── -->
+<div id="score-panel">
+    <div class="score-top">
+        <span class="score-team0" id="score-t0">Team 0: 0</span>
+        <span id="trump-label" data-i18n="score.trump_default">Trump: —</span>
+        <div class="score-buttons">
+            <button class="btn btn-hands" onclick="openHands()" data-i18n="btn.hands">Hands</button>
+            <button class="btn btn-hist"  onclick="openHistory()" data-i18n="btn.history">History</button>
+            <button class="btn btn-new" id="new-game-btn" onclick="newGame()" style="display:none;" data-i18n="btn.new_game">New Game</button>
+        </div>
+        <span class="score-team1" id="score-t1">Team 1: 0</span>
+    </div>
+    <div class="score-bottom">
+        <span class="round-team0" id="round-t0" data-i18n="score.round_default0">Round  Team 0: —</span>
+        <span class="round-team1" id="round-t1" data-i18n="score.round_default1">Team 1: —</span>
+    </div>
+</div>
+
+<!-- ── Table ────────────────────────────────────────────────────────── -->
+<div id="table">
+    <div id="north-seat" class="seat">
+        <span class="seat-label" id="label-north">North</span>
+        <div class="card-row" id="north-cards"></div>
+    </div>
+
+    <div id="west-seat" class="seat">
+        <span class="seat-label" id="label-west">West</span>
+        <div class="card-row" id="west-cards"></div>
+    </div>
+
+    <div id="trick-area">
+        <div id="trick-n" class="trick-slot empty"></div>
+        <div id="trick-w" class="trick-slot empty"></div>
+        <div id="trick-e" class="trick-slot empty"></div>
+        <div id="trick-s" class="trick-slot empty"></div>
+    </div>
+
+    <div id="east-seat" class="seat">
+        <span class="seat-label" id="label-east">East</span>
+        <div class="card-row" id="east-cards"></div>
+    </div>
+
+    <div id="trump-card-indicator">
+        <div class="card" id="trump-card"></div>
+    </div>
+
+    <div id="south-seat" class="seat">
+        <span class="seat-label" id="label-south">South</span>
+        <div class="card-row" id="south-cards"></div>
+    </div>
+</div>
+
+<!-- ── Next round banner (non-blocking, bottom of screen) ─────────── -->
+<div id="nextround-banner">
+    <span id="nextround-msg"></span>
+    <button class="btn-declare" id="nextround-btn" onclick="nextRound()" style="display:none;" data-i18n="btn.next_round">Next Round</button>
+    <span id="nextround-wait" style="display:none;" data-i18n="msg.waiting_host_round">Waiting for host to start next round...</span>
+</div>
+
+<!-- ── Bid modal ────────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="bid-overlay">
+    <div class="modal modal-wrapper">
+        <h2 data-i18n="bid.heading">Trump Declaration</h2>
+        <div class="bid-suit" id="bid-suit"></div>
+        <div class="bid-msg" id="bid-msg"></div>
+        <div class="bid-buttons" id="bid-buttons"></div>
+    </div>
+</div>
+
+<!-- ── Game over modal ──────────────────────────────────────────────── -->
+<div class="modal-overlay" id="gameover-overlay">
+    <div class="modal modal-wrapper">
+        <h2 data-i18n="modal.game_over">Game Over</h2>
+        <p id="gameover-msg" style="text-align:center; font-size:16px; margin:12px 0;"></p>
+        <div style="text-align:center;">
+            <button class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); document.getElementById('gameover-overlay').classList.remove('active');" style="display:none;" data-i18n="btn.new_game">
+                New Game
+            </button>
+            <button class="btn-pass" onclick="document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.close">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- ── Paused overlay ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="paused-overlay">
+    <div class="modal modal-wrapper">
+        <h2 data-i18n="modal.paused">Game Paused</h2>
+        <p id="paused-msg" style="text-align:center; font-size:14px; color:#f1c40f;"></p>
+    </div>
+</div>
+
+<!-- ── Hands modal ──────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="hands-overlay">
+    <div class="modal modal-wrapper hands-modal">
+        <button class="close-btn" onclick="document.getElementById('hands-overlay').classList.remove('active')">&times;</button>
+        <h2 data-i18n="modal.hands">Hands — Current Round</h2>
+        <div id="hands-content"></div>
+    </div>
+</div>
+
+<!-- ── History modal ────────────────────────────────────────────────── -->
+<div class="modal-overlay" id="history-overlay">
+    <div class="modal modal-wrapper history-modal">
+        <button class="close-btn" onclick="document.getElementById('history-overlay').classList.remove('active')">&times;</button>
+        <div>
+            <h3 data-i18n="modal.history_rounds">Rounds</h3>
+            <div class="history-list" id="history-list"></div>
+        </div>
+        <div style="flex:1;">
+            <h3 data-i18n="modal.history_details">Details</h3>
+            <div class="history-detail" id="history-detail" data-i18n="history.select_round">Select a round...</div>
+        </div>
+    </div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<script src="/static/i18n.js"></script>
+<script src="/static/game.js"></script>
+</body>
+</html>

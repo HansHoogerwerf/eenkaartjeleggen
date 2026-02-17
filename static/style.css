@@ -1,0 +1,617 @@
+/* ─── Klaverjassen Web — felt-table theme ─────────────────────────────── */
+
+:root {
+    --felt:       #2e7d32;
+    --table-bg:   #1a3a1a;
+    --win-bg:     #0d2d0d;
+    --card-face:  #fffef0;
+    --card-back:  #1a5276;
+    --red-suit:   #cc0000;
+    --black-suit: #111111;
+    --accent:     #f1c40f;
+    --green-txt:  #2ecc71;
+    --red-txt:    #e74c3c;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+    background: var(--table-bg);
+    color: #cccccc;
+    font-family: 'Segoe UI', Helvetica, Arial, sans-serif;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+}
+
+/* ─── Score panel ─────────────────────────────────────────────────────── */
+
+#score-panel {
+    background: var(--win-bg);
+    width: 100%;
+    max-width: 900px;
+    padding: 8px 16px;
+    border-radius: 0 0 8px 8px;
+}
+
+.score-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+}
+
+.score-team0 { color: var(--green-txt); font-weight: bold; font-size: 14px; }
+.score-team1 { color: var(--red-txt);   font-weight: bold; font-size: 14px; }
+#trump-label { color: var(--accent); font-weight: bold; font-size: 15px; display: flex; align-items: center; gap: 6px; }
+.trump-suit {
+    font-size: 28px;
+    line-height: 1;
+    filter: drop-shadow(0 0 4px currentColor);
+}
+.trump-suit.trump-red { color: var(--red-suit); }
+.trump-suit.trump-black { color: var(--card-face); }
+
+.score-buttons { display: flex; gap: 6px; }
+
+.btn {
+    padding: 4px 12px;
+    border: none;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: bold;
+    cursor: pointer;
+    color: white;
+}
+.btn-new    { background: #555; }
+.btn-hist   { background: #1a4a6a; }
+.btn-hands  { background: #4a1a6a; }
+.btn-new:hover   { background: #777; }
+.btn-hist:hover  { background: #2a6a9a; }
+.btn-hands:hover { background: #6a3a8a; }
+
+.score-bottom {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 4px;
+    font-size: 12px;
+}
+.round-team0 { color: #aaddaa; }
+.round-team1 { color: #ddaaaa; }
+
+/* ─── Table layout ────────────────────────────────────────────────────── */
+
+#table {
+    width: 100%;
+    max-width: 900px;
+    display: grid;
+    grid-template-areas:
+        ".      north  ."
+        "west   trick  east"
+        "trump  south  .";
+    grid-template-columns: 1fr 2fr 1fr;
+    grid-template-rows: auto 1fr auto;
+    gap: 4px;
+    padding: 8px;
+    min-height: 420px;
+}
+
+#trump-card-indicator {
+    grid-area: trump;
+    display: none;
+    justify-content: center;
+    align-items: flex-end;
+    padding: 4px;
+}
+#trump-card-indicator.active { display: flex; }
+#trump-card-indicator .card {
+    width: 52px;
+    height: 68px;
+    background: var(--card-face);
+    border: 2px solid #888;
+    box-shadow: 1px 2px 4px rgba(0,0,0,0.3);
+    font-size: 24px;
+}
+#trump-card-indicator .card.red { color: var(--red-suit); }
+#trump-card-indicator .card:not(.red) { color: var(--black-suit); }
+
+.seat { display: flex; flex-direction: column; align-items: center; padding: 4px; }
+.seat-label { color: #aaa; font-size: 12px; margin-bottom: 4px; transition: all 0.3s; }
+.seat-label.declaring {
+    color: var(--accent);
+    font-weight: bold;
+    text-shadow: 0 0 6px var(--accent);
+}
+
+#north-seat { grid-area: north; }
+#west-seat  { grid-area: west; }
+#east-seat  { grid-area: east; }
+#south-seat { grid-area: south; }
+
+/* ─── Trick area ──────────────────────────────────────────────────────── */
+
+#trick-area {
+    grid-area: trick;
+    display: grid;
+    grid-template-areas:
+        ".  n  ."
+        "w  .  e"
+        ".  s  .";
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: 1fr 1fr 1fr;
+    background: var(--felt);
+    border: 4px groove #3a8a3a;
+    border-radius: 8px;
+    padding: 8px;
+    min-height: 200px;
+    place-items: center;
+}
+
+.trick-slot {
+    width: 60px;
+    height: 72px;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 16px;
+    font-weight: bold;
+}
+.trick-slot.empty {
+    background: transparent;
+}
+.trick-slot.filled {
+    background: var(--card-face);
+    border: 2px solid #888;
+    box-shadow: 1px 2px 4px rgba(0,0,0,0.3);
+}
+
+#trick-n { grid-area: n; }
+#trick-w { grid-area: w; }
+#trick-e { grid-area: e; }
+#trick-s { grid-area: s; }
+
+/* ─── Cards ───────────────────────────────────────────────────────────── */
+
+.card-row { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; }
+
+.card {
+    width: 52px;
+    height: 68px;
+    border-radius: 4px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    border: 2px solid #888;
+    box-shadow: 1px 2px 4px rgba(0,0,0,0.3);
+    font-size: 15px;
+    line-height: 1.2;
+    user-select: none;
+}
+
+.card-face {
+    background: var(--card-face);
+    color: var(--black-suit);
+}
+.card-face.red { color: var(--red-suit); }
+
+.card-face.legal {
+    cursor: pointer;
+    border-color: var(--green-txt);
+    box-shadow: 0 0 6px var(--green-txt);
+}
+.card-face.legal:hover {
+    transform: translateY(-4px);
+    box-shadow: 0 0 12px var(--green-txt);
+}
+
+.card-face.disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.card-back {
+    background: var(--card-back);
+    border-color: #0e3a5a;
+}
+
+.card-back-small {
+    width: 28px;
+    height: 36px;
+    background: var(--card-back);
+    border: 1px solid #0e3a5a;
+    border-radius: 3px;
+}
+
+/* ─── Modals (bid, game over, hands, history) ─────────────────────────── */
+
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    justify-content: center;
+    align-items: center;
+}
+.modal-overlay.active { display: flex; }
+
+.modal {
+    background: var(--table-bg);
+    border: 2px solid #555;
+    border-radius: 8px;
+    padding: 20px;
+    max-width: 90vw;
+    max-height: 85vh;
+    overflow-y: auto;
+    min-width: 280px;
+}
+
+.modal h2 { color: var(--accent); margin-bottom: 12px; text-align: center; }
+.modal h3 { color: #3498db; margin: 8px 0 4px; }
+
+.bid-suit {
+    text-align: center;
+    font-size: 36px;
+    font-weight: bold;
+    margin: 8px 0;
+}
+.bid-suit.red { color: var(--red-suit); }
+.bid-suit.black { color: var(--card-face); }
+
+.bid-msg { text-align: center; color: var(--accent); margin-bottom: 12px; }
+
+.bid-buttons { display: flex; gap: 10px; justify-content: center; }
+
+.btn-declare {
+    background: var(--felt);
+    color: white;
+    font-size: 14px;
+    font-weight: bold;
+    padding: 10px 24px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.btn-declare:hover { background: #3a9a3a; }
+
+.btn-pass {
+    background: #555;
+    color: white;
+    font-size: 14px;
+    padding: 10px 24px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.btn-pass:hover { background: #777; }
+
+.mode-btn { font-size: 12px; padding: 6px 14px; }
+.mode-btn.active { background: var(--felt); border: 2px solid var(--green-txt); }
+
+/* ─── Next round banner ──────────────────────────────────────────────── */
+
+#nextround-banner {
+    display: none;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--win-bg);
+    border-top: 2px solid var(--accent);
+    padding: 10px 16px;
+    text-align: center;
+    z-index: 90;
+    gap: 12px;
+    justify-content: center;
+    align-items: center;
+}
+#nextround-banner.active { display: flex; }
+#nextround-msg { color: #ccc; font-size: 14px; font-weight: bold; }
+#nextround-wait { color: var(--accent); font-size: 12px; }
+#nextround-banner .btn-declare { padding: 6px 18px; font-size: 13px; }
+
+/* ─── Lobby ───────────────────────────────────────────────────────────── */
+
+.lobby-seat-row {
+    display: flex;
+    align-items: center;
+    padding: 6px 10px;
+    margin: 3px 0;
+    border-radius: 4px;
+    background: #0d2d0d;
+    font-size: 13px;
+}
+
+.lobby-seat-row .seat-num {
+    color: #888;
+    width: 70px;
+    font-weight: bold;
+}
+
+.lobby-seat-row .seat-player {
+    flex: 1;
+    color: #ccc;
+}
+
+.lobby-seat-row .seat-player.empty {
+    color: #555;
+    font-style: italic;
+}
+
+.lobby-seat-row .seat-team {
+    color: #888;
+    font-size: 11px;
+    margin-left: 8px;
+}
+
+.seat-pick-row.open:hover {
+    background: var(--felt);
+    border-color: var(--green-txt);
+}
+
+.seat-pick-row.taken {
+    opacity: 0.5;
+    cursor: default;
+}
+
+/* ─── Hands viewer ────────────────────────────────────────────────────── */
+
+.hands-modal { min-width: 340px; }
+
+.hand-trick {
+    background: #1a3a2a;
+    border: 2px groove #2a5a3a;
+    border-radius: 6px;
+    padding: 8px;
+    margin-bottom: 8px;
+}
+
+.hand-trick-header {
+    color: var(--green-txt);
+    font-weight: bold;
+    font-size: 13px;
+    margin-bottom: 6px;
+    text-align: center;
+}
+
+.hand-trick-grid {
+    display: grid;
+    grid-template-areas:
+        ".  n  ."
+        "w  .  e"
+        ".  s  .";
+    grid-template-columns: 1fr 1fr 1fr;
+    grid-template-rows: auto auto auto;
+    gap: 4px;
+    place-items: center;
+}
+
+.hand-trick-grid .pos-n { grid-area: n; }
+.hand-trick-grid .pos-w { grid-area: w; }
+.hand-trick-grid .pos-e { grid-area: e; }
+.hand-trick-grid .pos-s { grid-area: s; }
+
+.hand-card {
+    text-align: center;
+    padding: 4px 8px;
+    border-radius: 4px;
+    border: 2px solid #888;
+    background: var(--card-face);
+    min-width: 60px;
+}
+.hand-card .card-name { font-size: 10px; color: #888; }
+.hand-card .card-val  { font-size: 14px; font-weight: bold; }
+.hand-card.red .card-val { color: var(--red-suit); }
+.hand-card.black .card-val { color: var(--black-suit); }
+
+.hand-card.winner {
+    background: #d4edda;
+    border-color: var(--green-txt);
+}
+.hand-card.winner .card-name { color: var(--green-txt); }
+
+/* ─── History viewer ──────────────────────────────────────────────────── */
+
+.history-modal { min-width: 700px; display: flex; gap: 12px; }
+
+.history-list {
+    min-width: 140px;
+    max-height: 400px;
+    overflow-y: auto;
+}
+
+.history-list-item {
+    padding: 4px 8px;
+    cursor: pointer;
+    font-family: monospace;
+    font-size: 12px;
+    border-radius: 3px;
+}
+.history-list-item:hover { background: #2a5a2a; }
+.history-list-item.selected { background: var(--felt); color: white; }
+
+.history-detail {
+    flex: 1;
+    background: #0a0a1a;
+    color: #ccc;
+    padding: 10px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 12px;
+    max-height: 400px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+}
+
+.close-btn {
+    position: absolute;
+    top: 8px;
+    right: 12px;
+    background: none;
+    border: none;
+    color: #aaa;
+    font-size: 20px;
+    cursor: pointer;
+}
+.close-btn:hover { color: white; }
+
+.modal-wrapper { position: relative; }
+
+/* ─── Language switcher ──────────────────────────────────────────────── */
+
+#lang-switcher {
+    position: fixed;
+    top: 8px;
+    right: 12px;
+    z-index: 200;
+    display: flex;
+    gap: 4px;
+}
+
+.lang-btn {
+    background: none;
+    border: 2px solid transparent;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 22px;
+    line-height: 1;
+    padding: 2px 4px;
+    opacity: 0.5;
+    transition: opacity 0.15s, border-color 0.15s;
+}
+
+.lang-btn:hover { opacity: 0.85; }
+.lang-btn.active {
+    opacity: 1;
+    border-color: var(--accent);
+}
+
+/* ─── Responsive — mobile ────────────────────────────────────────────── */
+
+@media (max-width: 600px) {
+    /* Language switcher: smaller, don't overlap score */
+    #lang-switcher {
+        top: 4px;
+        right: 4px;
+        gap: 2px;
+    }
+    .lang-btn {
+        font-size: 18px;
+        padding: 1px 3px;
+    }
+
+    /* Score panel: stack vertically */
+    #score-panel {
+        padding: 6px 8px;
+        padding-right: 60px; /* make room for lang switcher */
+    }
+    .score-top {
+        flex-wrap: wrap;
+        gap: 4px;
+        font-size: 12px;
+    }
+    .score-team0, .score-team1 { font-size: 12px; }
+    #trump-label { font-size: 12px; order: -1; width: 100%; justify-content: center; }
+    .trump-suit { font-size: 22px; }
+    .score-buttons { order: 10; width: 100%; justify-content: center; }
+    .score-bottom { font-size: 10px; flex-wrap: wrap; gap: 2px; }
+
+    /* Table: tighter */
+    #table {
+        gap: 2px;
+        padding: 4px;
+        min-height: 320px;
+    }
+
+    /* Cards: smaller */
+    .card {
+        width: 40px;
+        height: 54px;
+        font-size: 12px;
+        border-width: 1.5px;
+    }
+    .card-row { gap: 2px; }
+    .card-back-small {
+        width: 22px;
+        height: 30px;
+    }
+
+    /* Trick area: smaller cards */
+    #trick-area {
+        padding: 4px;
+        min-height: 150px;
+        border-width: 3px;
+    }
+    .trick-slot {
+        width: 46px;
+        height: 56px;
+        font-size: 13px;
+    }
+
+    /* Modals: full-width on mobile */
+    .modal {
+        max-width: 96vw;
+        min-width: unset !important;
+        width: 96vw;
+        padding: 14px 10px;
+        max-height: 90vh;
+    }
+    .modal h2 { font-size: 16px; margin-bottom: 8px; }
+    .modal h3 { font-size: 14px; }
+
+    /* History modal: stack vertically instead of side-by-side */
+    .history-modal {
+        flex-direction: column;
+        min-width: unset !important;
+        width: 96vw;
+    }
+    .history-list {
+        min-width: unset;
+        max-height: 120px;
+    }
+    .history-detail {
+        max-height: 250px;
+        font-size: 10px;
+    }
+
+    /* Hands modal */
+    .hands-modal {
+        min-width: unset !important;
+        width: 96vw;
+    }
+    .hand-card { min-width: 48px; padding: 3px 5px; }
+    .hand-card .card-val { font-size: 12px; }
+    .hand-card .card-name { font-size: 9px; }
+    .hand-trick { padding: 6px; }
+    .hand-trick-header { font-size: 11px; }
+
+    /* Lobby modal */
+    #lobby-overlay .modal { min-width: unset !important; width: 92vw; }
+
+    /* Bid modal: move to top so cards stay visible */
+    #bid-overlay { align-items: flex-start; padding-top: 8px; }
+    #bid-overlay .modal { margin-top: 0; }
+
+    /* Bid modal: bigger touch targets */
+    .btn-declare, .btn-pass {
+        padding: 12px 20px;
+        font-size: 15px;
+    }
+    .bid-suit { font-size: 28px; }
+
+    /* Seat labels */
+    .seat-label { font-size: 10px; }
+}
+
+/* Medium screens (tablets) */
+@media (max-width: 768px) and (min-width: 601px) {
+    #score-panel { padding-right: 70px; }
+    .history-modal { min-width: unset !important; width: 90vw; }
+    .hands-modal { min-width: unset !important; }
+    .modal { min-width: unset !important; }
+}
