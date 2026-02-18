@@ -652,6 +652,63 @@ function newGame() {
     socket.emit("new_game");
 }
 
+/* ─── Chat ────────────────────────────────────────────────────────────── */
+
+let chatOpen = false;
+let chatUnread = 0;
+
+function escapeHtml(s) {
+    return String(s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+}
+
+function toggleChat() {
+    chatOpen ? closeChat() : openChat();
+}
+
+function openChat() {
+    chatOpen = true;
+    chatUnread = 0;
+    document.getElementById("chat-panel").classList.add("open");
+    document.getElementById("chat-badge").classList.remove("visible");
+    document.getElementById("chat-input").focus();
+    const msgs = document.getElementById("chat-messages");
+    msgs.scrollTop = msgs.scrollHeight;
+}
+
+function closeChat() {
+    chatOpen = false;
+    document.getElementById("chat-panel").classList.remove("open");
+}
+
+function sendChat() {
+    const input = document.getElementById("chat-input");
+    const text = input.value.trim();
+    if (!text) return;
+    socket.emit("chat_message", {text});
+    input.value = "";
+    input.focus();
+}
+
+socket.on("chat_message", data => {
+    const msgs = document.getElementById("chat-messages");
+    const team = SEAT_TEAMS[data.seat];
+    const div = document.createElement("div");
+    div.className = `chat-msg team-${team}`;
+    div.innerHTML = `<span class="chat-sender">${escapeHtml(data.name)}:</span>${escapeHtml(data.text)}`;
+    msgs.appendChild(div);
+    msgs.scrollTop = msgs.scrollHeight;
+
+    if (!chatOpen) {
+        chatUnread++;
+        const badge = document.getElementById("chat-badge");
+        badge.textContent = chatUnread > 99 ? "99+" : String(chatUnread);
+        badge.classList.add("visible");
+    }
+});
+
 /* ─── Initialization ──────────────────────────────────────────────────── */
 
 // Apply saved language on page load

@@ -315,6 +315,26 @@ def handle_next_round(_data=None):
         room.game.signal_next_round()
 
 
+@socketio.on("chat_message")
+def handle_chat_message(data):
+    sid = request.sid
+    code = sid_to_room.get(sid)
+    if not code or code not in rooms:
+        return
+    room = rooms[code]
+    seat = room.seat_for_sid(sid)
+    if seat is None:
+        return
+    text = str(data.get("text", "")).strip()[:200]
+    if not text:
+        return
+    emit("chat_message", {
+        "name": room.seats[seat]["name"],
+        "text": text,
+        "seat": seat,
+    }, room=code)
+
+
 @socketio.on("get_hands")
 def handle_get_hands(_data=None):
     sid = request.sid
@@ -627,4 +647,4 @@ def _on_disconnect_pause(room: Room, seat_idx: int) -> None:
 
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    socketio.run(app, host="0.0.0.0", port=5000, debug=debug)
+    socketio.run(app, host="0.0.0.0", port=5000, debug=debug, use_reloader=False)

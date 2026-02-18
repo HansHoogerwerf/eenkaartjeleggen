@@ -110,6 +110,10 @@
             <button class="btn btn-hands" onclick="openHands()" data-i18n="btn.hands">Hands</button>
             <button class="btn btn-hist"  onclick="openHistory()" data-i18n="btn.history">History</button>
             <button class="btn btn-new" id="new-game-btn" onclick="newGame()" style="display:none;" data-i18n="btn.new_game">New Game</button>
+            <div class="chat-btn-wrapper">
+                <button class="btn btn-chat" onclick="toggleChat()" data-i18n="btn.chat">Chat</button>
+                <span class="chat-badge" id="chat-badge"></span>
+            </div>
         </div>
         <span class="score-team1" id="score-t1">Team 1: 0</span>
     </div>
@@ -158,6 +162,21 @@
     <span id="nextround-msg"></span>
     <button class="btn-declare" id="nextround-btn" onclick="nextRound()" style="display:none;" data-i18n="btn.next_round">Next Round</button>
     <span id="nextround-wait" style="display:none;" data-i18n="msg.waiting_host_round">Waiting for host to start next round...</span>
+</div>
+
+<!-- ── Chat panel ───────────────────────────────────────────────────── -->
+<div id="chat-panel">
+    <div id="chat-header">
+        <span data-i18n="chat.title">Chat</span>
+        <button id="chat-close-btn" onclick="closeChat()">&times;</button>
+    </div>
+    <div id="chat-messages"></div>
+    <div id="chat-input-area">
+        <input type="text" id="chat-input" maxlength="200"
+               placeholder="Type a message..." data-i18n-placeholder="chat.placeholder"
+               onkeydown="if(event.key==='Enter') sendChat()">
+        <button class="btn-declare" onclick="sendChat()" data-i18n="chat.send">Send</button>
+    </div>
 </div>
 
 <!-- ── Bid modal ────────────────────────────────────────────────────── -->

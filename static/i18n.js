@@ -57,6 +57,12 @@ const TRANSLATIONS = {
         "btn.new_game": "New Game",
         "btn.next_round": "Next Round",
         "btn.close": "Close",
+        "btn.chat": "Chat",
+
+        // ── Chat ──
+        "chat.title": "Chat",
+        "chat.placeholder": "Type a message...",
+        "chat.send": "Send",
 
         // ── Game mode ──
         "mode.label": "Game mode:",
@@ -184,6 +190,12 @@ const TRANSLATIONS = {
         "btn.new_game": "Nieuw Spel",
         "btn.next_round": "Volgende Ronde",
         "btn.close": "Sluiten",
+        "btn.chat": "Chat",
+
+        // ── Chat ──
+        "chat.title": "Chat",
+        "chat.placeholder": "Typ een bericht...",
+        "chat.send": "Versturen",
 
         // ── Spelmodus ──
         "mode.label": "Spelmodus:",

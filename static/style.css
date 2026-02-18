@@ -491,6 +491,117 @@ body {
     border-color: var(--accent);
 }
 
+/* ─── Chat panel ─────────────────────────────────────────────────────── */
+
+#chat-panel {
+    position: fixed;
+    top: 0;
+    right: -290px;
+    bottom: 0;
+    width: 270px;
+    background: var(--win-bg);
+    border-left: 2px solid #444;
+    z-index: 150;
+    display: flex;
+    flex-direction: column;
+    transition: right 0.25s ease;
+}
+#chat-panel.open { right: 0; }
+
+#chat-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 14px;
+    border-bottom: 1px solid #444;
+    color: var(--accent);
+    font-weight: bold;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+#chat-close-btn {
+    background: none;
+    border: none;
+    color: #aaa;
+    font-size: 20px;
+    cursor: pointer;
+    line-height: 1;
+    padding: 0 2px;
+}
+#chat-close-btn:hover { color: white; }
+
+#chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.chat-msg {
+    font-size: 12px;
+    line-height: 1.5;
+    word-break: break-word;
+}
+.chat-sender {
+    font-weight: bold;
+    margin-right: 4px;
+}
+.chat-msg.team-0 .chat-sender { color: var(--green-txt); }
+.chat-msg.team-1 .chat-sender { color: var(--red-txt); }
+
+#chat-input-area {
+    display: flex;
+    padding: 10px;
+    gap: 6px;
+    border-top: 1px solid #444;
+    flex-shrink: 0;
+}
+#chat-input {
+    flex: 1;
+    padding: 6px 10px;
+    font-size: 13px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #0a0a1a;
+    color: #ccc;
+    min-width: 0;
+}
+#chat-input-area .btn-declare {
+    padding: 6px 12px;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+/* Chat button and unread badge */
+.chat-btn-wrapper {
+    position: relative;
+    display: inline-block;
+}
+.btn-chat           { background: #4a4a1a; }
+.btn-chat:hover     { background: #6a6a2a; }
+
+.chat-badge {
+    position: absolute;
+    top: -5px;
+    right: -5px;
+    background: #e74c3c;
+    color: white;
+    font-size: 9px;
+    font-weight: bold;
+    min-width: 15px;
+    height: 15px;
+    border-radius: 8px;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    padding: 0 3px;
+    pointer-events: none;
+}
+.chat-badge.visible { display: flex; }
+
 /* ─── Responsive — mobile ────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
