@@ -1,6 +1,6 @@
 services:
   traefik:
-    image: traefik:v3.4
+    image: traefik:latest
     restart: unless-stopped
     command:
       - "--providers.docker=true"
@@ -27,7 +27,7 @@ services:
       - "5000"
     environment:
       - SECRET_KEY=${SECRET_KEY}
-    command: gunicorn --worker-class eventlet -w 1 --bind 0.0.0.0:5000 app:app
+    command: gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:5000 app:app
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.app.rule=Host(`eenkaartjeleggen.nl`)"
