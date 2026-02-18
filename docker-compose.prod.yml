@@ -27,6 +27,7 @@ services:
       - "5000"
     environment:
       - SECRET_KEY=${SECRET_KEY}
+      - CORS_ORIGINS=${CORS_ORIGINS}
     command: gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:5000 app:app
     labels:
       - "traefik.enable=true"

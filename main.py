@@ -419,6 +419,30 @@ class AIPlayer(Player):
                 return rank
         return None
 
+    def _best_lead_from(self, cards: list[Card], trump: str) -> Card:
+        """Pick the best card to lead from a group of same-suit non-trump cards.
+
+        Returns the highest card where all higher cards in that suit are
+        already accounted for (played or in our hand).  If none qualify,
+        returns the lowest-point card to minimise loss when probing.
+
+        This prevents the AI from leading the 10 into an outstanding Ace,
+        which would waste 10 points (the 10 is the second-highest non-trump
+        card in Klaverjassen but worth as many points as the trump Jack).
+        """
+        suit = cards[0].suit
+        for card in sorted(cards, key=lambda c: c.strength(trump), reverse=True):
+            unaccounted_higher = any(
+                f"{rank}{suit}" not in self.played_cards
+                and not any(c2.suit == suit and c2.rank == rank for c2 in self.hand)
+                for rank in NON_TRUMP_ORDER
+                if NON_TRUMP_ORDER.index(rank) > card.strength(trump)
+            )
+            if not unaccounted_higher:
+                return card
+        # No safe card — lead cheapest to probe
+        return min(cards, key=lambda c: c.points(trump))
+
     def _lead(self, legal: list[Card], trump: str) -> Card:
         """Lead strategy.
 
@@ -458,7 +482,7 @@ class AIPlayer(Player):
             best_card: Card | None = None
             best_score: tuple[int, int] = (-1, -1)
             for suit, cards in suit_groups.items():
-                top = max(cards, key=lambda c: c.strength(trump))
+                top = self._best_lead_from(cards, trump)
                 remaining = self._remaining_in_suit(suit)
                 # Prefer: (1) longer suit in hand, (2) higher top card
                 score = (len(cards), top.strength(trump))
