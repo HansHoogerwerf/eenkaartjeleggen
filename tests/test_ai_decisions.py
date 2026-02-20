@@ -83,6 +83,28 @@ class TestAIDecisions(unittest.TestCase):
         card = ai._play_safe_discard(legal, "♠", trick_value=18)
         self.assertEqual(str(card), "7♣")
 
+    def test_score_pressure_positive_when_behind(self):
+        ai = AIPlayer("AI South", team=0, seat_idx=0, rng_seed=1)
+        ai.game_mode = "score_limit"
+        ai.score_limit = 500
+        ai.game_scores = [120, 440]
+        ai.trick_pts = [22, 56]
+        ai.roem_pts = [0, 20]
+        ai.declaring_team = 0
+        ai.trick_num = 5
+        self.assertGreater(ai._score_pressure(), 0.3)
+
+    def test_score_pressure_negative_when_ahead(self):
+        ai = AIPlayer("AI South", team=0, seat_idx=0, rng_seed=1)
+        ai.game_mode = "score_limit"
+        ai.score_limit = 500
+        ai.game_scores = [440, 150]
+        ai.trick_pts = [56, 18]
+        ai.roem_pts = [20, 0]
+        ai.declaring_team = 1
+        ai.trick_num = 5
+        self.assertLess(ai._score_pressure(), -0.2)
+
 
 if __name__ == "__main__":
     unittest.main()

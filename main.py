@@ -297,6 +297,10 @@ class AIPlayer(Player):
         self.trick_num: int = 0          # current trick number (0-7)
         self.game_scores: list[int] = [0, 0]  # cumulative game scores
         self.current_trump: str | None = None
+        self.game_mode: str = "score_limit"
+        self.score_limit: int = WIN_SCORE
+        self.boom_rounds: int = 16
+        self.round_num: int = 0
 
         # Opponent/partner tracking by seat index
         self.opponent_voids: dict[int, set[str]] = {i: set() for i in range(4)}
@@ -356,7 +360,8 @@ class AIPlayer(Player):
         nat_risk = 0.0
         if self.declaring_team not in (-1, self.team):
             nat_risk += 0.15
-        threshold = self.DECLARATION_BASE_THRESHOLD + (roem_total / 100.0) * 0.2 + nat_risk
+        pressure = self._score_pressure()
+        threshold = self.DECLARATION_BASE_THRESHOLD + (roem_total / 100.0) * 0.2 + nat_risk - pressure * 0.35
         return score >= threshold
 
     def _declaration_score(self, trump: str) -> float:
@@ -403,6 +408,47 @@ class AIPlayer(Player):
         roem_total = sum(p for _, p in roem_items)
         score += min(roem_total / 100.0, self.BID_WEIGHTS["roem_scale"])
         return score
+
+    @staticmethod
+    def _clamp(v: float, lo: float, hi: float) -> float:
+        return max(lo, min(hi, v))
+
+    def _score_pressure(self) -> float:
+        """Return urgency in [-1, 1] from current score context.
+
+        Positive values -> more aggressive (behind / nat danger / must catch up).
+        Negative values -> more conservative (ahead / protect lead).
+        """
+        my_round = self.trick_pts[self.team] + self.roem_pts[self.team]
+        opp_round = self.trick_pts[1 - self.team] + self.roem_pts[1 - self.team]
+        my_game = self.game_scores[self.team]
+        opp_game = self.game_scores[1 - self.team]
+
+        pressure = 0.0
+        pressure += self._clamp((opp_round - my_round) / 40.0, -0.6, 0.9)
+
+        if self.declaring_team == self.team and my_round <= opp_round + 10:
+            pressure += 0.55
+        elif self.declaring_team != -1 and self.declaring_team != self.team and my_round >= opp_round + 25:
+            pressure -= 0.15
+
+        pressure += self._clamp((opp_game - my_game) / 220.0, -0.7, 0.7)
+
+        if self.game_mode == "score_limit":
+            target = self.score_limit
+            my_to_win = target - my_game
+            opp_to_win = target - opp_game
+            if opp_to_win <= 80 and my_to_win > opp_to_win:
+                pressure += 0.45
+            if my_to_win <= 80 and my_to_win < opp_to_win:
+                pressure -= 0.20
+        elif self.game_mode == "boom":
+            if self.round_num >= self.boom_rounds - 3:
+                pressure += self._clamp((opp_game - my_game) / 180.0, -0.35, 0.35)
+
+        if self.trick_num >= 6:
+            pressure *= 1.10
+        return self._clamp(pressure, -1.0, 1.0)
 
     def _all_card_strings(self) -> set[str]:
         return {f"{rank}{suit}" for suit in SUITS for rank in RANKS}
@@ -669,6 +715,7 @@ class AIPlayer(Player):
     def _lead(self, legal: list[Card], trump: str) -> Card:
         non_trump = [c for c in legal if c.suit != trump]
         remaining_opp_trumps = self._remaining_in_suit(trump)
+        pressure = self._score_pressure()
         scores: list[tuple[Card, float]] = []
         for c in legal:
             score = float(c.strength(trump))
@@ -680,6 +727,7 @@ class AIPlayer(Player):
                 strongest_opp = self._highest_remaining_trump(trump)
                 if strongest_opp is None or c.strength(trump) > TRUMP_ORDER.index(strongest_opp):
                     score += 1.0
+                score += pressure * 1.0
             else:
                 suit_count = sum(1 for hc in self.hand if hc.suit == c.suit)
                 score += suit_count * 0.6
@@ -691,7 +739,8 @@ class AIPlayer(Player):
                     score += self._partner_signal_strength(c.suit) * 1.2
                 if self._is_opening_signal_card(c, trump):
                     score += 0.5
-            score -= self._point_leak_penalty(c, trump)
+                score += pressure * 0.45
+            score -= self._point_leak_penalty(c, trump) * (1.1 - 0.25 * pressure)
             scores.append((c, score))
         return self._pick_card(scores)
 
@@ -700,6 +749,7 @@ class AIPlayer(Player):
         pool = non_trump if non_trump else legal
         partner_safe = self._partner_win_secure(trick, trump)
         trick_value = self._trick_point_value(trick, trump)
+        pressure = self._score_pressure()
         if not partner_safe:
             # Current winner is teammate but not secure yet: preserve points first.
             return self._play_safe_discard(pool, trump, trick_value=trick_value, trick=trick)
@@ -707,7 +757,8 @@ class AIPlayer(Player):
         for c in pool:
             suit_count = sum(1 for hc in pool if hc.suit == c.suit)
             score = 0.0
-            score += c.points(trump) * (0.35 if trick_value >= 8 else 0.2)
+            schmear_weight = (0.25 if trick_value < 8 else 0.38) + max(0.0, pressure) * 0.18
+            score += c.points(trump) * schmear_weight
             score -= suit_count * 0.4
             if self._is_same_suit_signal_card(c, trump):
                 score += 0.5
@@ -725,6 +776,7 @@ class AIPlayer(Player):
         Prefer discarding from a short non-trump suit (helps create voids)."""
         non_trump = [c for c in legal if c.suit != trump]
         pool = non_trump if non_trump else legal
+        pressure = self._score_pressure()
         scores: list[tuple[Card, float]] = []
         for c in pool:
             suit_count = sum(1 for hc in pool if hc.suit == c.suit)
@@ -732,11 +784,12 @@ class AIPlayer(Player):
             win_prob = 0.5
             if trick is not None:
                 win_prob = self._estimate_team_trick_win_prob(trick, c, trump)
-                score += win_prob * (6.0 + trick_value * 0.25)
+                score += win_prob * (6.0 + trick_value * 0.25 + pressure * 1.3)
             # When we are likely losing this trick, leaking points is very costly.
-            score -= c.points(trump) * (2.2 + trick_value * 0.08)
-            score -= self._point_leak_penalty(c, trump)
-            score -= (1.0 - win_prob) * c.points(trump) * 0.7
+            leak_weight = (2.2 + trick_value * 0.08) - pressure * 0.35
+            score -= c.points(trump) * leak_weight
+            score -= self._point_leak_penalty(c, trump) * (1.1 - 0.20 * pressure)
+            score -= (1.0 - win_prob) * c.points(trump) * (0.8 - 0.15 * pressure)
             if self.trick_num <= 3:
                 score += (3 - min(3, suit_count)) * 0.6
             else:
@@ -768,19 +821,20 @@ class AIPlayer(Player):
 
         trick_value = self._trick_point_value(trick, trump)
         is_last_trick = self.trick_num == 7
+        pressure = self._score_pressure()
         beater_scores: list[tuple[Card, float]] = []
         beater_probs: dict[str, float] = {}
         for c in beaters:
             win_prob = self._estimate_team_trick_win_prob(trick, c, trump)
             survives = self._beater_likely_holds(c, trick, trump)
-            score = win_prob * (6.5 + trick_value * 0.30)
+            score = win_prob * (6.5 + trick_value * 0.30 + pressure * 1.4)
             score += trick_value * 0.20
             if survives:
                 score += 1.6
             else:
                 score -= 1.2
-            score -= c.points(trump) * 0.55
-            score -= self._point_leak_penalty(c, trump)
+            score -= c.points(trump) * (0.60 - 0.12 * pressure)
+            score -= self._point_leak_penalty(c, trump) * (1.05 - 0.20 * pressure)
             if is_last_trick:
                 score += 2.5
             beater_scores.append((c, score))
@@ -788,7 +842,8 @@ class AIPlayer(Player):
 
         best_beater = self._pick_card(beater_scores)
         best_beater_prob = beater_probs.get(str(best_beater), 0.5)
-        worth_fighting = trick_value >= 8 or is_last_trick
+        fight_threshold = max(3.0, 8.0 - pressure * 4.0)
+        worth_fighting = trick_value >= fight_threshold or is_last_trick
 
         if self.declaring_team == self.team:
             my_total = self.trick_pts[self.team] + self.roem_pts[self.team]
@@ -1150,6 +1205,14 @@ class KlaverjasGame:
             first_bidder = (dealer + 1) % 4
             self.log(f"\n{'='*40}", "round")
             self.log(f"Round {round_num}  (dealer: {self.players[dealer].name})", "round")
+
+            for p in self.players:
+                if isinstance(p, AIPlayer):
+                    p.game_scores = list(self.scores)
+                    p.game_mode = self.game_mode
+                    p.score_limit = self.score_limit
+                    p.boom_rounds = self.boom_rounds
+                    p.round_num = round_num
 
             t0, t1, leader, history = self._play_round(first_bidder)
 
