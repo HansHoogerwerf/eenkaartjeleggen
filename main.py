@@ -436,16 +436,35 @@ class AIPlayer(Player):
         # No safe card — lead cheapest to probe
         return min(cards, key=lambda c: c.points(trump))
 
-    def _higher_outstanding_in_suit(self, card: Card, trump: str) -> bool:
-        """True when a stronger same-suit card is still in opponents' hands."""
-        for rank in NON_TRUMP_ORDER:
-            if NON_TRUMP_ORDER.index(rank) <= card.strength(trump):
-                continue
+    def _higher_outstanding_count_in_suit(self, card: Card, trump: str) -> int:
+        """How many stronger same-suit cards are still unaccounted for."""
+        rank_order = TRUMP_ORDER if card.suit == trump else NON_TRUMP_ORDER
+        card_idx = rank_order.index(card.rank)
+        count = 0
+        for rank in rank_order[card_idx + 1:]:
             card_str = f"{rank}{card.suit}"
             in_my_hand = any(c.suit == card.suit and c.rank == rank for c in self.hand)
             if card_str not in self.played_cards and not in_my_hand:
-                return True
-        return False
+                count += 1
+        return count
+
+    def _point_leak_penalty(self, card: Card, trump: str) -> float:
+        """Penalty for exposing point cards under outstanding higher cards.
+
+        This is intentionally generic (not tied to specific ranks):
+        any point card is penalized when stronger same-suit cards are unaccounted
+        for, including trump point cards like 9 under an unseen trump Jack.
+        """
+        pts = card.points(trump)
+        if pts <= 0:
+            return 0.0
+
+        higher_count = self._higher_outstanding_count_in_suit(card, trump)
+        if higher_count == 0:
+            return 0.0
+
+        suit_risk_weight = 0.75 if card.suit == trump else 0.60
+        return pts * suit_risk_weight + (higher_count - 1) * 0.8
 
     def _opponent_indices(self) -> list[int]:
         """Return seat indices of opponents (the two players not on our team)."""
@@ -464,7 +483,6 @@ class AIPlayer(Player):
 
     def _lead(self, legal: list[Card], trump: str) -> Card:
         non_trump = [c for c in legal if c.suit != trump]
-        trump_legal = [c for c in legal if c.suit == trump]
         remaining_opp_trumps = self._remaining_in_suit(trump)
         scores: list[tuple[Card, float]] = []
         for c in legal:
@@ -477,13 +495,9 @@ class AIPlayer(Player):
                 strongest_opp = self._highest_remaining_trump(trump)
                 if strongest_opp is None or c.strength(trump) > TRUMP_ORDER.index(strongest_opp):
                     score += 1.0
-                score -= c.points(trump) * 0.04
             else:
                 suit_count = sum(1 for hc in self.hand if hc.suit == c.suit)
                 score += suit_count * 0.6
-                # Do not leak a 10 into an outstanding ace of the same suit.
-                if c.rank == "10" and self._higher_outstanding_in_suit(c, trump):
-                    score -= 7.0
                 if self._opp_void_in(c.suit) and remaining_opp_trumps > 0:
                     score -= 4.0
                 if self._remaining_in_suit(c.suit) == 0:
@@ -492,6 +506,7 @@ class AIPlayer(Player):
                     score += self._partner_signal_strength(c.suit) * 1.2
                 if self._is_opening_signal_card(c, trump):
                     score += 0.5
+            score -= self._point_leak_penalty(c, trump)
             scores.append((c, score))
         return self._pick_card(scores)
 
@@ -500,28 +515,40 @@ class AIPlayer(Player):
         pool = non_trump if non_trump else legal
         partner_safe = self._partner_win_secure(trick, trump)
         trick_value = self._trick_point_value(trick, trump)
+        if not partner_safe:
+            # Current winner is teammate but not secure yet: preserve points first.
+            return self._play_safe_discard(pool, trump, trick_value=trick_value)
         scores: list[tuple[Card, float]] = []
         for c in pool:
             suit_count = sum(1 for hc in pool if hc.suit == c.suit)
             score = 0.0
-            if partner_safe:
-                score += c.points(trump) * (0.35 if trick_value >= 8 else 0.2)
-                score -= suit_count * 0.4
-            else:
-                score -= c.points(trump) * 0.5
-                if self.trick_num <= 3:
-                    score += (3 - min(3, suit_count)) * 0.8
+            score += c.points(trump) * (0.35 if trick_value >= 8 else 0.2)
+            score -= suit_count * 0.4
             if self._is_same_suit_signal_card(c, trump):
                 score += 0.5
             scores.append((c, score))
         return self._pick_card(scores)
 
-    def _play_safe_discard(self, legal: list[Card], trump: str) -> Card:
+    def _play_safe_discard(self, legal: list[Card], trump: str, trick_value: int = 0) -> Card:
         """Cannot win — pick the card that leaks the fewest points to opponents.
         Prefer discarding from a short non-trump suit (helps create voids)."""
         non_trump = [c for c in legal if c.suit != trump]
         pool = non_trump if non_trump else legal
-        return min(pool, key=lambda c: c.points(trump))
+        scores: list[tuple[Card, float]] = []
+        for c in pool:
+            suit_count = sum(1 for hc in pool if hc.suit == c.suit)
+            score = 0.0
+            # When we are likely losing this trick, leaking points is very costly.
+            score -= c.points(trump) * (2.2 + trick_value * 0.08)
+            score -= self._point_leak_penalty(c, trump)
+            if self.trick_num <= 3:
+                score += (3 - min(3, suit_count)) * 0.6
+            else:
+                score += (2 - min(2, suit_count)) * 0.25
+            if self._is_same_suit_signal_card(c, trump):
+                score += 0.2
+            scores.append((c, score))
+        return self._pick_card(scores)
 
     def _trick_point_value(self, trick: Trick, trump: str) -> int:
         """Total points currently in the trick."""
@@ -536,7 +563,7 @@ class AIPlayer(Player):
             or (c.suit == winning_card.suit and c.strength(trump) > winning_card.strength(trump))
         ]
         if not beaters:
-            return self._play_safe_discard(legal, trump)
+            return self._play_safe_discard(legal, trump, trick_value=self._trick_point_value(trick, trump))
 
         trick_value = self._trick_point_value(trick, trump)
         is_last_trick = self.trick_num == 7
@@ -561,9 +588,9 @@ class AIPlayer(Player):
                 worth_fighting = True
 
         if not worth_fighting and best_beater.points(trump) > 0:
-            return self._play_safe_discard(legal, trump)
+            return self._play_safe_discard(legal, trump, trick_value=trick_value)
         if not self._beater_likely_holds(best_beater, trick, trump) and best_beater.points(trump) > 0 and not is_last_trick:
-            return self._play_safe_discard(legal, trump)
+            return self._play_safe_discard(legal, trump, trick_value=trick_value)
         return best_beater
 
     def _beater_likely_holds(self, card: Card, trick: Trick, trump: str) -> bool:

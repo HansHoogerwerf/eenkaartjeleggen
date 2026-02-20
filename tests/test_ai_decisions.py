@@ -53,6 +53,36 @@ class TestAIDecisions(unittest.TestCase):
         lead = ai._lead(list(ai.hand), "♠")
         self.assertNotEqual(str(lead), "10♦")
 
+    def test_lead_does_not_throw_trump_nine_under_outstanding_jack(self):
+        ai = AIPlayer("AI South", team=0, seat_idx=0, rng_seed=1)
+        ai.start_round()
+        ai.trick_num = 1
+        ai.declaring_team = 0
+        ai.TIE_BREAK_DELTA = 0.0
+        ai.hand = [Card("♠", "9"), Card("♠", "7"), Card("♦", "8"), Card("♣", "8")]
+        ai.played_cards = set()  # trump J is still unseen
+        lead = ai._lead(list(ai.hand), "♠")
+        self.assertNotEqual(str(lead), "9♠")
+
+    def test_dont_schmear_when_partner_not_secure(self):
+        ai = AIPlayer("AI South", team=0, seat_idx=0, rng_seed=1)
+        ai.start_round()
+        ai.trick_num = 2
+        ai.current_trump = "♠"
+        # Partner is currently winning, but trick is not secure yet (2 players left).
+        trick = [(AIPlayer("Partner", team=0, seat_idx=2), Card("♦", "A"))]
+        legal = [Card("♦", "10"), Card("♣", "7"), Card("♥", "8")]
+        card = ai._discard_for_partner(legal, trick, "♠")
+        self.assertNotEqual(str(card), "10♦")
+
+    def test_safe_discard_avoids_high_points_when_losing(self):
+        ai = AIPlayer("AI South", team=0, seat_idx=0, rng_seed=1)
+        ai.start_round()
+        ai.trick_num = 4
+        legal = [Card("♦", "10"), Card("♣", "7"), Card("♥", "8")]
+        card = ai._play_safe_discard(legal, "♠", trick_value=18)
+        self.assertEqual(str(card), "7♣")
+
 
 if __name__ == "__main__":
     unittest.main()
