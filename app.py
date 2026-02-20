@@ -24,7 +24,7 @@ from main import (
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "klaverjas-secret")
 _cors_origins = os.environ.get("CORS_ORIGINS", "*")
-socketio = SocketIO(app, async_mode="gevent", ping_timeout=12, ping_interval=3,
+socketio = SocketIO(app, async_mode="gevent", ping_timeout=30, ping_interval=10,
                     cors_allowed_origins=_cors_origins)
 
 PLAYER_NAMES_DEFAULT = {0: "South", 1: "West", 2: "North", 3: "East"}
