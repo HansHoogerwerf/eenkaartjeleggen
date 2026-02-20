@@ -1,132 +1,43 @@
 """
-Klaverjassen — Flask + Socket.IO web server (multiplayer lobby).
-
-Supports 1–4 human players per game room.  One player creates a room
-(gets a 4-character join code), others join with that code, and
-remaining empty seats are filled by AI.
+Klaverjassen web server (Flask + Socket.IO).
 """
 
 from gevent import monkey
+
 monkey.patch_all()
 
 import os
-import random
-import string
-import threading
+
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
-from main import (
-    KlaverjasGame, HumanPlayer, AIPlayer, GameInterrupt,
-    SUIT_NAMES, RED_SUITS, SEAT_DEFAULTS, SEAT_TEAMS,
-)
+from main import HumanPlayer
+from server.game_flow import leave_current_room, reconnect_player, start_room_game
+from server.room_state import Room, generate_code, rooms, sid_to_room
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "klaverjas-secret")
 _cors_origins = os.environ.get("CORS_ORIGINS", "*")
-socketio = SocketIO(app, async_mode="gevent", ping_timeout=30, ping_interval=10,
-                    cors_allowed_origins=_cors_origins)
+socketio = SocketIO(
+    app,
+    async_mode="gevent",
+    ping_timeout=30,
+    ping_interval=10,
+    cors_allowed_origins=_cors_origins,
+)
 
-PLAYER_NAMES_DEFAULT = {0: "South", 1: "West", 2: "North", 3: "East"}
-
-
-# ─── Room ─────────────────────────────────────────────────────────────────────
-
-class Room:
-    """One game room with up to 4 human players."""
-
-    def __init__(self, code: str, creator_sid: str, creator_name: str):
-        self.code = code
-        self.creator_sid = creator_sid
-
-        # seat_idx → {sid, name, connected}
-        self.seats: dict[int, dict] = {}
-        self.seats[0] = {"sid": creator_sid, "name": creator_name, "connected": True}
-
-        self.game: KlaverjasGame | None = None
-        self.game_thread: threading.Thread | None = None
-        self.started = False
-        self.game_mode: str = "score_limit"
-        self.score_limit: int = 500
-        self.team_names: list[str] = ["Team 0", "Team 1"]
-
-        # Per-room game state for Hands / History viewers
-        self.cur_round_tricks: list[dict] = []
-        self.cur_trick_cards: dict[int, dict] = {}
-        self.round_history: list[dict] = []
-        self.cur_roem = [0, 0]
-        self.cur_tricks = [0, 0]
-        self.cur_trump: str | None = None
-        self.cur_declaring_player: str | None = None
-        self.cur_declaring_player_idx: int | None = None
-        self.cur_declaring_team: int | None = None
-
-    def next_free_seat(self) -> int | None:
-        for i in range(4):
-            if i not in self.seats:
-                return i
-        return None
-
-    def seat_for_sid(self, sid: str) -> int | None:
-        for seat, info in self.seats.items():
-            if info["sid"] == sid:
-                return seat
-        return None
-
-    def player_names(self) -> dict[int, str]:
-        """Return {seat_idx: display_name} for all 4 seats."""
-        names = {}
-        for i in range(4):
-            if i in self.seats:
-                names[i] = self.seats[i]["name"]
-            else:
-                names[i] = f"AI {SEAT_DEFAULTS[i]}"
-        return names
-
-    def lobby_state(self) -> dict:
-        """State for the lobby waiting room."""
-        return {
-            "code": self.code,
-            "seats": {
-                str(i): {
-                    "name": self.seats[i]["name"] if i in self.seats else None,
-                    "team": SEAT_TEAMS[i],
-                    "is_human": i in self.seats,
-                }
-                for i in range(4)
-            },
-            "started": self.started,
-        }
-
-
-# sid → room code (for fast lookup on disconnect)
-sid_to_room: dict[str, str] = {}
-rooms: dict[str, Room] = {}
-
-
-def generate_code() -> str:
-    while True:
-        code = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
-        if code not in rooms:
-            return code
-
-
-# ─── Routes ───────────────────────────────────────────────────────────────────
 
 @app.route("/")
 def index():
     return render_template("index.html")
 
 
-# ─── Lobby events ─────────────────────────────────────────────────────────────
-
 @socketio.on("create_room")
 def handle_create_room(data):
     sid = request.sid
     name = (data.get("name") or "Player").strip()[:16] or "Player"
 
-    # Leave any existing room
-    _leave_current_room(sid)
+    leave_current_room(socketio, leave_room, sid)
 
     code = generate_code()
     room = Room(code, sid, name)
@@ -148,21 +59,17 @@ def handle_join_room(data):
         return
 
     room = rooms[code]
-
     if room.started:
-        # Check if this is a reconnect
         reconnect_seat = None
         for seat, info in room.seats.items():
             if not info["connected"] and info["name"] == name:
                 reconnect_seat = seat
                 break
-
         if reconnect_seat is not None:
-            _reconnect_player(room, reconnect_seat, sid)
+            reconnect_player(socketio, emit, join_room, room, reconnect_seat, sid)
             return
-        else:
-            emit("join_error", {"key": "error.game_in_progress"})
-            return
+        emit("join_error", {"key": "error.game_in_progress"})
+        return
 
     requested_seat = data.get("seat")
     if requested_seat is not None:
@@ -180,21 +87,17 @@ def handle_join_room(data):
             emit("join_error", {"key": "error.room_full"})
             return
 
-    # Leave any existing room
-    _leave_current_room(sid)
+    leave_current_room(socketio, leave_room, sid)
 
     room.seats[seat] = {"sid": sid, "name": name, "connected": True}
     sid_to_room[sid] = code
-
     join_room(code)
     emit("room_joined", {"code": code, "seat": seat, "lobby": room.lobby_state()})
-    # Notify others
     socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
 @socketio.on("peek_room")
 def handle_peek_room(data):
-    """Return lobby state for a room code so the client can show seat picker."""
     code = (data.get("code") or "").strip().upper()
     if code not in rooms:
         emit("join_error", {"key": "error.room_not_found"})
@@ -212,12 +115,10 @@ def handle_start_game(data=None):
     code = sid_to_room.get(sid)
     if not code or code not in rooms:
         return
-
     room = rooms[code]
-    if room.creator_sid != sid:
-        emit("error", {"key": "error.only_creator"})
-        return
-    if room.started:
+    if room.creator_sid != sid or room.started:
+        if room.creator_sid != sid:
+            emit("error", {"key": "error.only_creator"})
         return
 
     if data:
@@ -231,15 +132,13 @@ def handle_start_game(data=None):
         if isinstance(names, list) and len(names) == 2:
             room.team_names = [str(n).strip()[:16] or f"Team {i}" for i, n in enumerate(names)]
 
-    _start_room_game(room)
+    start_room_game(socketio, room)
 
 
 @socketio.on("leave_room")
 def handle_leave_room(_data=None):
-    _leave_current_room(request.sid)
+    leave_current_room(socketio, leave_room, request.sid)
 
-
-# ─── Game input events ────────────────────────────────────────────────────────
 
 @socketio.on("play_card")
 def handle_play_card(data):
@@ -250,11 +149,9 @@ def handle_play_card(data):
     room = rooms[code]
     if not room.game:
         return
-
     seat = room.seat_for_sid(sid)
     if seat is None:
         return
-
     player = room.game.players[seat]
     if isinstance(player, HumanPlayer):
         player.supply_card(data["card"])
@@ -269,11 +166,9 @@ def handle_bid_response(data):
     room = rooms[code]
     if not room.game:
         return
-
     seat = room.seat_for_sid(sid)
     if seat is None:
         return
-
     player = room.game.players[seat]
     if isinstance(player, HumanPlayer):
         player.supply_bid(data["declare"])
@@ -289,9 +184,8 @@ def handle_new_game(_data=None):
     if room.creator_sid != sid:
         return
 
-    # Interrupt existing game
     if room.game:
-        room.game.signal_next_round()  # unblock if waiting between rounds
+        room.game.signal_next_round()
         for p in room.game.players:
             if isinstance(p, HumanPlayer):
                 p.interrupt()
@@ -304,8 +198,7 @@ def handle_new_game(_data=None):
     room.cur_trick_cards.clear()
     room.cur_roem[:] = [0, 0]
     room.cur_tricks[:] = [0, 0]
-
-    _start_room_game(room)
+    start_room_game(socketio, room)
 
 
 @socketio.on("next_round")
@@ -354,17 +247,13 @@ def handle_leave_game():
     seat = room.seat_for_sid(sid)
     name = room.seats.get(seat, {}).get("name", "?") if seat is not None else "?"
 
-    # Interrupt running game thread
     if room.game:
         room.game.signal_next_round()
         for p in room.game.players:
             if isinstance(p, HumanPlayer):
                 p.interrupt()
 
-    # Notify everyone before destroying room
     socketio.emit("game_left", {"name": name}, room=code)
-
-    # Clean up room and all sid mappings
     for info in room.seats.values():
         sid_to_room.pop(info.get("sid"), None)
     rooms.pop(code, None)
@@ -377,10 +266,7 @@ def handle_get_hands(_data=None):
     if not code or code not in rooms:
         return
     room = rooms[code]
-    emit("hands_data", {
-        "tricks": room.cur_round_tricks,
-        "players": room.player_names(),
-    })
+    emit("hands_data", {"tricks": room.cur_round_tricks, "players": room.player_names()})
 
 
 @socketio.on("get_history")
@@ -393,11 +279,9 @@ def handle_get_history(_data=None):
     emit("history_data", {"rounds": room.round_history})
 
 
-# ─── Connection lifecycle ─────────────────────────────────────────────────────
-
 @socketio.on("connect")
 def handle_connect():
-    pass  # Player will create or join a room explicitly
+    pass
 
 
 @socketio.on("disconnect")
@@ -415,7 +299,6 @@ def handle_disconnect():
         return
 
     if room.started:
-        # Mark disconnected — game will pause when it's this player's turn
         room.seats[seat]["connected"] = False
         player = room.game.players[seat] if room.game else None
         if isinstance(player, HumanPlayer):
@@ -424,278 +307,21 @@ def handle_disconnect():
             "seat": seat,
             "name": room.seats[seat]["name"],
         }, room=code)
-    else:
-        # Not started — remove from lobby
-        del room.seats[seat]
-        sid_to_room.pop(sid, None)
-        leave_room(code)
-
-        if not room.seats:
-            # Room is empty — clean up
-            del rooms[code]
-        else:
-            # If creator left, reassign
-            if room.creator_sid == sid:
-                first_seat = min(room.seats.keys())
-                room.creator_sid = room.seats[first_seat]["sid"]
-            socketio.emit("lobby_update", room.lobby_state(), room=code)
-
-
-# ─── Internal helpers ─────────────────────────────────────────────────────────
-
-def _leave_current_room(sid: str) -> None:
-    """Remove a player from whatever room they're in."""
-    code = sid_to_room.pop(sid, None)
-    if not code or code not in rooms:
         return
-    room = rooms[code]
-    seat = room.seat_for_sid(sid)
-    if seat is not None and not room.started:
-        del room.seats[seat]
-    leave_room(code)
 
+    del room.seats[seat]
+    sid_to_room.pop(sid, None)
+    leave_room(code)
     if not room.seats:
-        rooms.pop(code, None)
+        del rooms[code]
     else:
-        if room.creator_sid == sid and not room.started:
+        if room.creator_sid == sid:
             first_seat = min(room.seats.keys())
             room.creator_sid = room.seats[first_seat]["sid"]
         socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
-def _reconnect_player(room: Room, seat: int, new_sid: str) -> None:
-    """Handle a player reconnecting to a running game."""
-    old_sid = room.seats[seat]["sid"]
-    room.seats[seat]["sid"] = new_sid
-    room.seats[seat]["connected"] = True
-    sid_to_room[new_sid] = room.code
-
-    # Restore creator status if this was the host
-    if room.creator_sid == old_sid:
-        room.creator_sid = new_sid
-
-    join_room(room.code)
-
-    # Send current game state to the reconnected player FIRST
-    # (set_reconnected() re-fires request_move/bid and must arrive after the hand)
-    state = {
-        "seat": seat,
-        "code": room.code,
-        "scores": list(room.game.scores) if room.game else [0, 0],
-        "player_names": room.player_names(),
-        "cur_tricks": list(room.cur_tricks),
-        "cur_roem": list(room.cur_roem),
-        "is_creator": room.creator_sid == new_sid,
-        "team_names": room.team_names,
-        "trump": room.cur_trump,
-        "declaring_player": room.cur_declaring_player,
-        "declaring_player_idx": room.cur_declaring_player_idx,
-        "declaring_team": room.cur_declaring_team,
-        "trick_cards": dict(room.cur_trick_cards),
-    }
-    # Send their current hand
-    if room.game:
-        p = room.game.players[seat]
-        state["hand"] = [c.to_dict() for c in p.hand]
-        state["card_counts"] = {
-            str(i): len(room.game.players[i].hand) for i in range(4) if i != seat
-        }
-
-    emit("reconnected", state)
-
-    # Now re-fire any pending move/bid request so the client receives it after the hand
-    player = room.game.players[seat] if room.game else None
-    if isinstance(player, HumanPlayer):
-        player.set_reconnected()
-
-    socketio.emit("player_reconnected", {
-        "seat": seat,
-        "name": room.seats[seat]["name"],
-    }, room=room.code)
-
-
-def _start_room_game(room: Room) -> None:
-    """Start the game for a room, filling empty seats with AI."""
-    room.started = True
-    room.round_history.clear()
-    room.cur_round_tricks.clear()
-    room.cur_trick_cards.clear()
-    room.cur_roem[:] = [0, 0]
-    room.cur_tricks[:] = [0, 0]
-
-    human_seats = {seat: info["name"] for seat, info in room.seats.items()}
-
-    room.game = KlaverjasGame(
-        human_seats=human_seats,
-        log_fn=lambda msg, tag="": _room_log(room, msg, tag),
-        state_fn=lambda event, data: _room_state(room, event, data),
-        game_mode=room.game_mode,
-        score_limit=room.score_limit,
-    )
-
-    # Wire up callbacks for each human player
-    for seat in human_seats:
-        player = room.game.players[seat]
-        if isinstance(player, HumanPlayer):
-            player._on_move_request = lambda seat_idx, legal, r=room: _on_move_request(r, seat_idx, legal)
-            player._on_bid_request = lambda seat_idx, suit, forced, r=room: _on_bid_request(r, seat_idx, suit, forced)
-            player._on_disconnect_pause = lambda seat_idx, r=room: _on_disconnect_pause(r, seat_idx)
-            player.reset_interrupt()
-
-    # Notify all players the game is starting
-    for seat, info in room.seats.items():
-        socketio.emit("game_starting", {
-            "seat": seat,
-            "player_names": room.player_names(),
-            "team_names": room.team_names,
-        }, to=info["sid"])
-
-    def run():
-        try:
-            room.game.play()
-        except GameInterrupt:
-            pass
-
-    room.game_thread = threading.Thread(target=run, daemon=True)
-    room.game_thread.start()
-
-
-# ─── Game event relay (per-room) ──────────────────────────────────────────────
-
-def _room_log(room: Room, msg: str, tag: str = "") -> None:
-    socketio.emit("log", {"msg": msg, "tag": tag}, room=room.code)
-
-
-def _room_state(room: Room, event: str, data: dict) -> None:
-    """Relay game events to all players in the room."""
-    send_data = dict(data)
-
-    if event == "deal_done":
-        room.cur_roem[:] = [0, 0]
-        room.cur_tricks[:] = [0, 0]
-        room.cur_round_tricks.clear()
-        room.cur_trick_cards.clear()
-        room.cur_trump = None
-        room.cur_declaring_player = None
-        room.cur_declaring_player_idx = None
-        room.cur_declaring_team = None
-
-        # Send each human their own hand privately
-        if room.game:
-            for seat, info in room.seats.items():
-                player = room.game.players[seat]
-                card_counts = {
-                    str(i): len(room.game.players[i].hand)
-                    for i in range(4) if i != seat
-                }
-                socketio.emit("deal_done", {
-                    "hand": [c.to_dict() for c in player.hand],
-                    "card_counts": card_counts,
-                    "my_seat": seat,
-                }, to=info["sid"])
-        return  # already sent per-player
-
-    elif event == "trump_set":
-        room.cur_trump = data.get("trump")
-        room.cur_declaring_player = data.get("declaring_player")
-        room.cur_declaring_player_idx = data.get("declaring_player_idx")
-        room.cur_declaring_team = data.get("declaring_team")
-        # Resend hands to each human
-        if room.game:
-            for seat, info in room.seats.items():
-                player = room.game.players[seat]
-                socketio.emit("trump_set", {
-                    **send_data,
-                    "hand": [c.to_dict() for c in player.hand],
-                }, to=info["sid"])
-        return
-
-    elif event == "trick_played":
-        card = data["card"]
-        pidx = data["player_idx"]
-        room.cur_trick_cards[pidx] = card.to_dict()
-        send_data["card"] = card.to_dict()
-
-        if room.game:
-            # Send card counts and updated hands per-player
-            for seat, info in room.seats.items():
-                player = room.game.players[seat]
-                card_counts = {
-                    str(i): len(room.game.players[i].hand)
-                    for i in range(4) if i != seat
-                }
-                socketio.emit("trick_played", {
-                    **send_data,
-                    "hand": [c.to_dict() for c in player.hand],
-                    "card_counts": card_counts,
-                }, to=info["sid"])
-        return
-
-    elif event == "trick_won":
-        winner_idx = data["winner_idx"]
-        pts = data["pts"]
-        room.cur_round_tricks.append({
-            "cards": dict(room.cur_trick_cards),
-            "winner_idx": winner_idx,
-            "winner_name": room.player_names().get(winner_idx, "?"),
-            "pts": pts,
-        })
-        room.cur_trick_cards.clear()
-        room.cur_tricks[:] = list(data["trick_pts"])
-        room.cur_roem[:] = list(data["roem_pts"])
-        send_data["cur_tricks"] = list(room.cur_tricks)
-        send_data["cur_roem"] = list(room.cur_roem)
-
-    elif event == "roem":
-        room.cur_roem[:] = list(data["roem_pts"])
-        send_data["items"] = [(desc, pts) for desc, pts in data["items"]]
-        send_data["cur_roem"] = list(room.cur_roem)
-
-    elif event == "round_done":
-        room.cur_roem[:] = [0, 0]
-        room.cur_tricks[:] = [0, 0]
-        if "history" in data:
-            room.round_history.append(data["history"])
-        send_data.pop("history", None)
-        send_data["cur_tricks"] = [0, 0]
-        send_data["cur_roem"] = [0, 0]
-
-    # Broadcast shared events to the whole room
-    socketio.emit(event, send_data, room=room.code)
-
-
-def _on_move_request(room: Room, seat_idx: int, legal_cards) -> None:
-    """Game thread asks a human for a card."""
-    info = room.seats.get(seat_idx)
-    if info and info["connected"]:
-        socketio.emit("request_move", {
-            "legal": [str(c) for c in legal_cards],
-        }, to=info["sid"])
-
-
-def _on_bid_request(room: Room, seat_idx: int, suit: str, forced: bool) -> None:
-    """Game thread asks a human to bid."""
-    info = room.seats.get(seat_idx)
-    if info and info["connected"]:
-        socketio.emit("request_bid", {
-            "suit": suit,
-            "suit_name": SUIT_NAMES[suit],
-            "forced": forced,
-        }, to=info["sid"])
-
-
-def _on_disconnect_pause(room: Room, seat_idx: int) -> None:
-    """Notify all players that the game is paused waiting for a disconnected player."""
-    name = room.seats.get(seat_idx, {}).get("name", "?")
-    socketio.emit("game_paused", {
-        "seat": seat_idx,
-        "name": name,
-        "key": "error.waiting_reconnect",
-    }, room=room.code)
-
-
-# ─── Entry point ──────────────────────────────────────────────────────────────
-
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
     socketio.run(app, host="0.0.0.0", port=5000, debug=debug, use_reloader=False)
+

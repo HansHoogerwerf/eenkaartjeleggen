@@ -29,121 +29,29 @@ import threading
 import time
 from abc import ABC, abstractmethod
 
-# ─── Constants ────────────────────────────────────────────────────────────────
-
-SUITS = ["♣", "♦", "♥", "♠"]
-SUIT_NAMES = {"♣": "Clubs", "♦": "Diamonds", "♥": "Hearts", "♠": "Spades"}
-RANKS = ["7", "8", "9", "10", "J", "Q", "K", "A"]
-
-NON_TRUMP_PTS = {"A": 11, "10": 10, "K": 4, "Q": 3, "J": 2, "9": 0, "8": 0, "7": 0}
-TRUMP_PTS     = {"J": 20, "9": 14, "A": 11, "10": 10, "K": 4, "Q": 3, "8": 0, "7": 0}
-
-NON_TRUMP_ORDER      = ["7", "8", "9", "J", "Q", "K", "10", "A"]
-TRUMP_ORDER          = ["7", "8", "Q", "K", "10", "A", "9", "J"]
-TRUMP_STRONGEST_FIRST = list(reversed(TRUMP_ORDER))   # ["J","9","A","10","K","Q","8","7"]
-SEQUENCE_ORDER       = ["7", "8", "9", "10", "J", "Q", "K", "A"]
-
-WIN_SCORE = 500
-RED_SUITS = {"♦", "♥"}
-TRICK_CARD_TOTAL = 162   # fixed: 152 card pts + 10 last-trick bonus
-
-AI_PLAY_DELAY     = 0.7   # delay between AI moves to make them easier to follow (can be set to 0 for fast autoplay)
-AI_BID_DELAY      = 2.0   # deliberate pause so players can read bid badges
-TRICK_CLEAR_DELAY = 1.4
+from klaverjas.constants import (
+    AI_BID_DELAY,
+    AI_PLAY_DELAY,
+    NON_TRUMP_ORDER,
+    RED_SUITS,
+    RANKS,
+    SEAT_DEFAULTS,
+    SEAT_TEAMS,
+    SUIT_NAMES,
+    SUITS,
+    TRICK_CARD_TOTAL,
+    TRICK_CLEAR_DELAY,
+    TRUMP_ORDER,
+    TRUMP_STRONGEST_FIRST,
+    WIN_SCORE,
+)
+from klaverjas.core import Card, Deck, Trick, find_roem, trick_winner_index
 
 
 # ─── Exceptions ───────────────────────────────────────────────────────────────
 
 class GameInterrupt(Exception):
     """Raised in the game thread when a restart or window-close is requested."""
-
-
-# ─── Card ─────────────────────────────────────────────────────────────────────
-
-class Card:
-    def __init__(self, suit: str, rank: str):
-        self.suit = suit
-        self.rank = rank
-
-    def points(self, trump: str) -> int:
-        return TRUMP_PTS[self.rank] if self.suit == trump else NON_TRUMP_PTS[self.rank]
-
-    def strength(self, trump: str) -> int:
-        if self.suit == trump:
-            return TRUMP_ORDER.index(self.rank)
-        return NON_TRUMP_ORDER.index(self.rank)
-
-    def to_dict(self) -> dict:
-        return {"suit": self.suit, "rank": self.rank}
-
-    def __str__(self) -> str:
-        return f"{self.rank}{self.suit}"
-
-    def __repr__(self) -> str:
-        return str(self)
-
-
-# ─── Deck ─────────────────────────────────────────────────────────────────────
-
-class Deck:
-    def __init__(self):
-        self.cards = [Card(s, r) for s in SUITS for r in RANKS]
-        random.shuffle(self.cards)
-
-    def deal(self, n_players: int, per_player: int) -> list[list[Card]]:
-        hands: list[list[Card]] = [[] for _ in range(n_players)]
-        for i in range(n_players * per_player):
-            hands[i % n_players].append(self.cards[i])
-        return hands
-
-
-# ─── Trick helpers ────────────────────────────────────────────────────────────
-
-Trick = list[tuple["Player", Card]]
-
-
-def trick_winner_index(trick: Trick, trump: str) -> int:
-    best = 0
-    best_card = trick[0][1]
-    for i, (_, card) in enumerate(trick[1:], 1):
-        if card.suit == trump and best_card.suit != trump:
-            best, best_card = i, card
-        elif card.suit == best_card.suit:
-            if card.strength(trump) > best_card.strength(trump):
-                best, best_card = i, card
-    return best
-
-
-# ─── Roem (honours) ──────────────────────────────────────────────────────────
-
-def find_roem(hand: list[Card], trump: str) -> list[tuple[str, int]]:
-    roem: list[tuple[str, int]] = []
-
-    trump_ranks = {c.rank for c in hand if c.suit == trump}
-    if "K" in trump_ranks and "Q" in trump_ranks:
-        roem.append(("Stuk (K+Q trump)", 20))
-
-    for suit in SUITS:
-        indices = sorted(SEQUENCE_ORDER.index(c.rank) for c in hand if c.suit == suit)
-        if len(indices) < 3:
-            continue
-        run_start = 0
-        for i in range(1, len(indices) + 1):
-            end_of_run = i == len(indices) or indices[i] != indices[i - 1] + 1
-            if end_of_run:
-                run_len = i - run_start
-                if run_len >= 3:
-                    lo = SEQUENCE_ORDER[indices[run_start]]
-                    hi = SEQUENCE_ORDER[indices[i - 1]]
-                    pts = 100 if run_len >= 5 else (50 if run_len == 4 else 20)
-                    roem.append((f"Sequence {run_len} ({lo}–{hi}{suit})", pts))
-                run_start = i
-
-    for rank in RANKS:
-        if sum(1 for c in hand if c.rank == rank) == 4:
-            roem.append(("Four Jacks", 200) if rank == "J" else (f"Four {rank}s", 100))
-
-    return roem
 
 
 # ─── Player (base) ────────────────────────────────────────────────────────────
@@ -787,9 +695,6 @@ class AIPlayer(Player):
 
 
 # ─── Game ─────────────────────────────────────────────────────────────────────
-
-SEAT_DEFAULTS = {0: "South", 1: "West", 2: "North", 3: "East"}
-SEAT_TEAMS = {0: 0, 1: 1, 2: 0, 3: 1}
 
 
 class KlaverjasGame:
