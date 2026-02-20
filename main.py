@@ -47,7 +47,7 @@ WIN_SCORE = 500
 RED_SUITS = {"♦", "♥"}
 TRICK_CARD_TOTAL = 162   # fixed: 152 card pts + 10 last-trick bonus
 
-AI_PLAY_DELAY     = 1.5   # delay between AI moves to make them easier to follow (can be set to 0 for fast autoplay)
+AI_PLAY_DELAY     = 0.7   # delay between AI moves to make them easier to follow (can be set to 0 for fast autoplay)
 AI_BID_DELAY      = 2.0   # deliberate pause so players can read bid badges
 TRICK_CLEAR_DELAY = 1.4
 
@@ -158,6 +158,9 @@ class Player(ABC):
     def observe_card(self, card: Card) -> None:
         """Record a card that has been played this round (called for every card played)."""
         self.played_cards.add(str(card))
+
+    def observe_trick_play(self, player_idx: int, card: Card, lead_suit: str | None) -> None:
+        """Called after each card in a trick — subclasses can override for tracking."""
 
     def start_round(self) -> None:
         """Reset per-round state."""
@@ -356,12 +359,24 @@ class AIPlayer(Player):
         self.trick_pts: list[int] = [0, 0]
         self.roem_pts: list[int] = [0, 0]
         self.declaring_team: int = -1
+        self.trick_num: int = 0          # current trick number (0-7)
+        self.game_scores: list[int] = [0, 0]  # cumulative game scores
+
+        # Opponent void tracking: opponent_voids[player_idx] = set of suits they can't follow
+        self.opponent_voids: dict[int, set[str]] = {i: set() for i in range(4)}
 
     def start_round(self) -> None:
         super().start_round()
         self.trick_pts = [0, 0]
         self.roem_pts = [0, 0]
         self.declaring_team = -1
+        self.trick_num = 0
+        self.opponent_voids = {i: set() for i in range(4)}
+
+    def observe_trick_play(self, player_idx: int, card: Card, lead_suit: str | None) -> None:
+        """Track when opponents fail to follow suit → they're void in that suit."""
+        if lead_suit is not None and card.suit != lead_suit and player_idx != -1:
+            self.opponent_voids.setdefault(player_idx, set()).add(lead_suit)
 
     def choose_card(self, trick: Trick, trump: str) -> Card:
         legal = self.legal_moves(trick, trump)
@@ -378,42 +393,79 @@ class AIPlayer(Player):
         threshold = self.DECLARATION_THRESHOLD + roem_risk * 0.025
         return score >= threshold
 
-    def _card_win_prob(self, card: Card, trump: str) -> float:
-        """Estimated probability this card wins a trick when declared as trump.
-
-        For trump cards: 1.0 if all stronger trumps are already in my hand (sure trick),
-        dropping sharply for each uncontrolled card above it.
-        For non-trump: fixed empirical estimates reflecting trumping risk.
-        """
-        if card.suit == trump:
-            pos = TRUMP_STRONGEST_FIRST.index(card.rank)
-            higher_not_held = sum(
-                1 for i in range(pos)
-                if not any(
-                    c.suit == trump and c.rank == TRUMP_STRONGEST_FIRST[i]
-                    for c in self.hand
-                )
-            )
-            if higher_not_held == 0:
-                return 1.0   # sure trick — I hold every stronger trump
-            if higher_not_held == 1:
-                return 0.12  # one opponent has the single card above me
-            return 0.04      # multiple higher trumps unaccounted for
-        else:
-            # Non-trump: can always be trumped; A is still valuable
-            _PROB = {"A": 0.50, "K": 0.28, "Q": 0.11, "J": 0.05,
-                     "10": 0.03, "9": 0.02, "8": 0.01, "7": 0.01}
-            return _PROB[card.rank]
-
     def _hand_declaration_score(self, trump: str) -> float:
-        """Declaration score in [0, 1].
+        """Evaluate hand strength for declaring the given trump suit.
 
-        1.0 means holding all 8 trump cards — certain to win every trick.
-        0.0 means no card has any realistic chance of winning.
-        Uses per-card win-probability estimates summed and normalised to 8 tricks.
+        Returns a score in [0, 1] based on:
+        - Trump length and quality (J, 9, A are the power cards)
+        - Long non-trump suits with top cards (runnable after pulling trumps)
+        - Short suits (can trump early)
+        - Roem potential (bonus for declaring with strong roem)
         """
-        expected_wins = sum(self._card_win_prob(c, trump) for c in self.hand)
-        return min(expected_wins / 8.0, 1.0)
+        trumps = [c for c in self.hand if c.suit == trump]
+        non_trumps = [c for c in self.hand if c.suit != trump]
+        n_trumps = len(trumps)
+        trump_ranks = {c.rank for c in trumps}
+
+        # ── Trump quality (0–4 points) ──────────────────────────────────────
+        trump_score = 0.0
+        # The three power trumps: J (20pts), 9 (14pts), A (11pts)
+        if "J" in trump_ranks:
+            trump_score += 1.5   # trump Jack is the strongest card in the game
+        if "9" in trump_ranks:
+            trump_score += 1.0   # trump 9 is second strongest
+        if "A" in trump_ranks:
+            trump_score += 0.7
+        if "10" in trump_ranks:
+            trump_score += 0.3
+        # Trump length bonus: each trump beyond 2 adds control
+        if n_trumps >= 3:
+            trump_score += (n_trumps - 2) * 0.5  # +0.5 per extra trump
+
+        # ── Non-trump winners (0–3 points) ──────────────────────────────────
+        # Group non-trumps by suit
+        nt_score = 0.0
+        suit_groups: dict[str, list[Card]] = {}
+        for c in non_trumps:
+            suit_groups.setdefault(c.suit, []).append(c)
+
+        for suit, cards in suit_groups.items():
+            ranks = {c.rank for c in cards}
+            suit_len = len(cards)
+            # Aces in long suits are near-certain winners (opponents can't trump
+            # if they must follow suit, and long suit = more follow-suit rounds)
+            if "A" in ranks:
+                ace_prob = 0.45 + suit_len * 0.08  # 3 cards → 0.69, 4 → 0.77
+                nt_score += min(ace_prob, 0.95)
+            if "10" in ranks:
+                ten_prob = 0.15 + suit_len * 0.06
+                # 10 is only safe if we also hold Ace (or Ace is played)
+                if "A" in ranks:
+                    ten_prob += 0.25
+                nt_score += min(ten_prob, 0.70)
+            if "K" in ranks:
+                k_prob = 0.10 + suit_len * 0.04
+                nt_score += min(k_prob, 0.40)
+
+        # ── Void / short suit bonus (0–0.8 points) ─────────────────────────
+        void_score = 0.0
+        for suit in SUITS:
+            if suit == trump:
+                continue
+            count = sum(1 for c in self.hand if c.suit == suit)
+            if count == 0:
+                void_score += 0.4  # void = can trump immediately
+            elif count == 1:
+                void_score += 0.15  # singleton = void after 1 trick
+
+        # ── Roem bonus (0–0.5 points) ───────────────────────────────────────
+        roem_items = find_roem(self.hand, trump)
+        roem_total = sum(p for _, p in roem_items)
+        roem_score = min(roem_total / 100.0, 0.5)  # cap at 0.5
+
+        total = trump_score + nt_score + void_score + roem_score
+        # Normalize: ~8 points would be a near-perfect hand
+        return min(total / 7.0, 1.0)
 
     def _remaining_in_suit(self, suit: str) -> int:
         """Cards of this suit still in other players' hands (not mine, not yet played)."""
@@ -427,7 +479,7 @@ class AIPlayer(Player):
             return self._lead(legal, trump)
         wi = trick_winner_index(trick, trump)
         if trick[wi][0].team == self.team:
-            return self._discard_for_partner(legal, trump)
+            return self._discard_for_partner(legal, trick, trump)
         return self._try_win(legal, trick, trump)
 
     def _highest_remaining_trump(self, trump: str) -> str | None:
@@ -466,8 +518,35 @@ class AIPlayer(Player):
         # No safe card — lead cheapest to probe
         return min(cards, key=lambda c: c.points(trump))
 
+    def _opponent_indices(self) -> list[int]:
+        """Return seat indices of opponents (the two players not on our team)."""
+        my_team = self.team
+        return [i for i in range(4) if SEAT_TEAMS[i] != my_team]
+
+    def _partner_index(self) -> int:
+        """Return seat index of our partner."""
+        my_team = self.team
+        return [i for i in range(4) if SEAT_TEAMS[i] == my_team and i != self._my_seat_idx()][0]
+
+    def _my_seat_idx(self) -> int:
+        """Find our own seat index by matching team and checking which AI we are."""
+        # AI players are named "AI North", "AI West", etc.
+        seat_map = {"South": 0, "West": 1, "North": 2, "East": 3}
+        for label, idx in seat_map.items():
+            if label in self.name and SEAT_TEAMS[idx] == self.team:
+                return idx
+        # Fallback: return first seat matching our team
+        return 0 if self.team == 0 else 1
+
+    def _opp_void_in(self, suit: str) -> bool:
+        """Return True if ANY opponent is known to be void in this suit."""
+        for opp in self._opponent_indices():
+            if suit in self.opponent_voids.get(opp, set()):
+                return True
+        return False
+
     def _lead(self, legal: list[Card], trump: str) -> Card:
-        """Lead strategy.
+        """Lead strategy with void awareness.
 
         Declaring team: aggressively pull opponents' trumps early so that
         non-trump winners (A, 10) are safe later.
@@ -476,7 +555,10 @@ class AIPlayer(Player):
              lead our cheapest trump to force opponents to spend theirs.
           3. Once opponents are likely void of trumps, switch to non-trump winners.
 
-        Non-declaring team: prefer long suits for control.
+        Non-declaring team: try to lead suits where we can win or partner can trump.
+
+        Void awareness: avoid leading suits where opponents are void (they'll trump
+        our non-trump cards). Prefer suits where opponents must follow.
         """
         non_trump = [c for c in legal if c.suit != trump]
         trump_legal = [c for c in legal if c.suit == trump]
@@ -488,30 +570,51 @@ class AIPlayer(Player):
             strongest_opp = self._highest_remaining_trump(trump)
 
             if strongest_opp is None or top_trump.strength(trump) > TRUMP_ORDER.index(strongest_opp):
-                # We hold the highest remaining trump — lead it (sure win)
                 return top_trump
             else:
-                # We don't hold the top trump; lead our cheapest trump to
-                # force opponents to spend theirs
                 cheapest_trump = min(trump_legal, key=lambda c: c.points(trump))
                 return cheapest_trump
 
-        # ── Non-trump lead (or declaring team after trumps are pulled) ───────
+        # ── Non-declaring team: lead through partner ─────────────────────────
+        # If partner is void in a suit but opponents aren't → lead that suit
+        # so partner can trump while opponents must follow suit
+        if self.declaring_team != self.team and non_trump and remaining_opp_trumps > 0:
+            partner = self._partner_index()
+            for suit in SUITS:
+                if suit == trump:
+                    continue
+                partner_void = suit in self.opponent_voids.get(partner, set())
+                opp_void = self._opp_void_in(suit)
+                cards_in_suit = [c for c in non_trump if c.suit == suit]
+                if partner_void and not opp_void and cards_in_suit:
+                    # Partner will trump, opponents must follow — great!
+                    return min(cards_in_suit, key=lambda c: c.points(trump))
+
+        # ── Non-trump lead (both teams, after trump-pulling phase) ───────────
         if non_trump:
             suit_groups: dict[str, list[Card]] = {}
             for c in non_trump:
                 suit_groups.setdefault(c.suit, []).append(c)
 
             best_card: Card | None = None
-            best_score: tuple[int, int] = (-1, -1)
+            best_score: tuple[float, int] = (-99.0, -1)
             for suit, cards in suit_groups.items():
                 top = self._best_lead_from(cards, trump)
                 remaining = self._remaining_in_suit(suit)
-                # Prefer: (1) longer suit in hand, (2) higher top card
-                score = (len(cards), top.strength(trump))
-                # Extra bonus when opponents are void — guaranteed win
+
+                # Base score: suit length + card strength
+                score_len = float(len(cards))
+                score_str = top.strength(trump)
+
+                # Penalty: if an opponent is void in this suit, they'll trump us
+                if self._opp_void_in(suit) and remaining_opp_trumps > 0:
+                    score_len -= 5.0  # heavy penalty — card will be trumped
+
+                # Bonus: no remaining cards in this suit → guaranteed win
                 if remaining == 0:
-                    score = (len(cards) + 10, top.strength(trump))
+                    score_len += 10.0
+
+                score = (score_len, score_str)
                 if score > best_score:
                     best_score = score
                     best_card = top
@@ -521,17 +624,64 @@ class AIPlayer(Player):
         # Only trump left — lead highest
         return max(legal, key=lambda c: c.strength(trump))
 
-    def _discard_for_partner(self, legal: list[Card], trump: str) -> Card:
-        """Partner is winning — dump from our shortest non-trump suit (void development)
-        to set up future trump plays, playing the lowest-value card of that suit."""
+    def _discard_for_partner(self, legal: list[Card], trick: Trick, trump: str) -> Card:
+        """Partner is winning — decide between schmearing (feeding points) and void development.
+
+        Schmear (play high-value card) when:
+        - Partner's win is secure (last to play, or partner has top trump/card)
+        - The trick already has decent points (worth feeding more)
+
+        Develop voids when:
+        - Early in the round (more tricks to benefit from void)
+        - We have a singleton in a non-trump suit we want to void
+        """
         non_trump = [c for c in legal if c.suit != trump]
+        pool = non_trump if non_trump else legal
+
+        # Check if partner's win is "safe" — are remaining opponents likely to beat it?
+        partner_safe = len(trick) == 3  # we're last to play → partner wins for sure
+        if not partner_safe and len(trick) == 2:
+            # Only 1 opponent left after us — check if partner has top card
+            wi = trick_winner_index(trick, trump)
+            winning_card = trick[wi][1]
+            if winning_card.suit == trump:
+                # Partner holds a trump — check if any stronger trump is unaccounted for
+                strongest_opp = self._highest_remaining_trump(trump)
+                if strongest_opp is None or winning_card.strength(trump) > TRUMP_ORDER.index(strongest_opp):
+                    partner_safe = True
+
+        if partner_safe:
+            # Schmear: feed our highest-value card from the suit we have most of
+            # (keeping length in that suit for future control, but giving up
+            # expendable point cards like 10s from short suits)
+            #
+            # Priority: play highest-point card from shortest suit (expendable points)
+            if non_trump:
+                suit_counts: dict[str, int] = {}
+                for c in non_trump:
+                    suit_counts[c.suit] = suit_counts.get(c.suit, 0) + 1
+                # Among cards with points, prefer those from short suits (expendable)
+                point_cards = [c for c in non_trump if c.points(trump) > 0]
+                if point_cards:
+                    # Pick the highest-value card from the shortest suit
+                    best = max(point_cards, key=lambda c: (c.points(trump), -suit_counts[c.suit]))
+                    return best
+            # No point cards to schmear — fall through to void development
+            return max(pool, key=lambda c: c.points(trump))
+
+        # Partner's win is not guaranteed — develop voids instead (play cheap from short suit)
         if non_trump:
-            suit_counts: dict[str, int] = {}
+            suit_counts = {}
             for c in non_trump:
                 suit_counts[c.suit] = suit_counts.get(c.suit, 0) + 1
-            shortest_suit = min(suit_counts, key=lambda s: suit_counts[s])
-            candidates = [c for c in non_trump if c.suit == shortest_suit]
-            return min(candidates, key=lambda c: c.points(trump))
+            # Early in round: prefer voiding a suit; late: schmear moderately
+            if self.trick_num <= 3:
+                shortest_suit = min(suit_counts, key=lambda s: suit_counts[s])
+                candidates = [c for c in non_trump if c.suit == shortest_suit]
+                return min(candidates, key=lambda c: c.points(trump))
+            else:
+                # Late game: still prefer cheap cards but don't overthink
+                return min(non_trump, key=lambda c: c.points(trump))
         return min(legal, key=lambda c: c.points(trump))
 
     def _play_safe_discard(self, legal: list[Card], trump: str) -> Card:
@@ -541,12 +691,18 @@ class AIPlayer(Player):
         pool = non_trump if non_trump else legal
         return min(pool, key=lambda c: c.points(trump))
 
-    def _try_win(self, legal: list[Card], trick: Trick, trump: str) -> Card:
-        """Opponent is winning — try to beat with minimum trump; else safe discard.
+    def _trick_point_value(self, trick: Trick, trump: str) -> int:
+        """Total points currently in the trick."""
+        return sum(c.points(trump) for _, c in trick)
 
-        Avoids wasting high-value cards when remaining opponents are likely to
-        outplay the beater anyway (e.g. when unaccounted-for higher trumps or
-        higher cards in the led suit are still out there).
+    def _try_win(self, legal: list[Card], trick: Trick, trump: str) -> Card:
+        """Opponent is winning — try to beat with minimum cost; else safe discard.
+
+        Decision factors:
+        - Trick value: more willing to spend resources on high-value tricks
+        - Last trick: +10 bonus makes it always worth fighting for
+        - Remaining opponents: if we're last, any beater is a sure win
+        - Nat risk: if we're the declaring team and close to going nat, fight harder
         """
         wi = trick_winner_index(trick, trump)
         winning_card = trick[wi][1]
@@ -558,17 +714,36 @@ class AIPlayer(Player):
         if not beaters:
             return self._play_safe_discard(legal, trump)
 
+        trick_value = self._trick_point_value(trick, trump)
+        is_last_trick = self.trick_num == 7  # 10-point bonus
+
         # If we're the last player in the trick, our beater wins for sure
         if len(trick) == 3:
+            # Last trick or high-value trick: use cheapest beater always
             return min(beaters, key=lambda c: c.points(trump))
 
         cheapest_beater = min(beaters, key=lambda c: c.points(trump))
 
-        # Check if remaining opponents (players yet to act) could beat our beater
+        # High-value trick threshold: be more aggressive for valuable tricks
+        # Base: only fight if trick is worth 10+ pts; last trick: always fight
+        worth_fighting = trick_value >= 10 or is_last_trick
+
+        # Nat danger: declaring team must win tricks to avoid nat
+        if self.declaring_team == self.team:
+            my_total = self.trick_pts[self.team] + self.roem_pts[self.team]
+            opp_total = self.trick_pts[1 - self.team] + self.roem_pts[1 - self.team]
+            if my_total <= opp_total + 20:
+                # Close to going nat — fight harder for every trick
+                worth_fighting = True
+
+        if not worth_fighting and cheapest_beater.points(trump) > 0:
+            # Low-value trick and our beater costs points — don't bother
+            if not self._beater_likely_holds(cheapest_beater, trick, trump):
+                return self._play_safe_discard(legal, trump)
+
+        # Check if remaining opponents can beat us
         if not self._beater_likely_holds(cheapest_beater, trick, trump):
-            # Our cheapest beater is likely to be outplayed — don't waste it
-            # unless it's a zero-value card (nothing to lose)
-            if cheapest_beater.points(trump) > 0:
+            if cheapest_beater.points(trump) > 0 and not is_last_trick:
                 return self._play_safe_discard(legal, trump)
 
         return cheapest_beater
@@ -576,8 +751,9 @@ class AIPlayer(Player):
     def _beater_likely_holds(self, card: Card, trick: Trick, trump: str) -> bool:
         """Estimate whether *card* will survive the remaining opponents in this trick.
 
-        Returns True if we think the card is reasonably safe, False if opponents
-        likely have something stronger.
+        Uses void tracking: if we know an opponent is void in the lead suit,
+        they'll trump — making non-trump beaters unsafe.
+        Returns True if we think the card is reasonably safe.
         """
         players_left = 4 - len(trick) - 1  # opponents still to play after us
         if players_left <= 0:
@@ -585,44 +761,45 @@ class AIPlayer(Player):
 
         lead_suit = trick[0][1].suit
 
+        # Identify which specific opponents are still to play
+        played_indices = set()
+        for p, _ in trick:
+            for i in range(4):
+                if SEAT_TEAMS[i] == p.team and (p.name.endswith(SEAT_DEFAULTS[i]) or p.name == SEAT_DEFAULTS[i]):
+                    played_indices.add(i)
+                    break
+
         if card.suit == trump:
-            # Count unaccounted-for trumps that are stronger than ours
             stronger_trump_ranks = [
                 r for r in TRUMP_STRONGEST_FIRST
                 if TRUMP_ORDER.index(r) > card.strength(trump)
             ]
             threats = 0
             for rank in stronger_trump_ranks:
-                card_str_candidates = [f"{rank}{trump}"]
-                already_seen = any(cs in self.played_cards for cs in card_str_candidates)
+                card_str = f"{rank}{trump}"
+                already_seen = card_str in self.played_cards
                 in_my_hand = any(c.suit == trump and c.rank == rank for c in self.hand)
                 if not already_seen and not in_my_hand:
                     threats += 1
-            # If no stronger trumps unaccounted for, we're safe
             if threats == 0:
                 return True
-            # With 1 opponent left and 1 threat: ~37% chance they have it (rough)
-            # With 2 opponents left and 1 threat: ~62% chance one has it
-            # Be conservative: if any threat exists with 2+ opponents, likely loses
             return threats == 1 and players_left == 1
         else:
-            # Non-trump beater: vulnerable to trumping AND to higher cards in suit
-            # Check if opponents might still have trumps
+            # Non-trump beater: check if remaining opponents are void in lead suit
             remaining_trumps = self._remaining_in_suit(trump)
             if remaining_trumps > 0:
-                # Opponents may trump our non-trump card — risky
-                # Check if opponents can even follow the led suit;
-                # if the led suit is exhausted they're more likely to trump
+                # Check if any remaining opponent is known void in lead suit
+                for opp in self._opponent_indices():
+                    if opp not in played_indices:
+                        if lead_suit in self.opponent_voids.get(opp, set()):
+                            return False  # this opponent WILL trump us
+
                 remaining_lead = self._remaining_in_suit(lead_suit)
                 if remaining_lead == 0:
-                    # All remaining lead-suit cards accounted for, opponents
-                    # will discard or trump — high chance of being trumped
                     return False
-                # Some lead suit still out plus trumps out — moderate risk
                 if players_left >= 2:
                     return False
 
-            # Check for higher cards in the led suit that are unaccounted for
             stronger_ranks = [
                 r for r in NON_TRUMP_ORDER
                 if NON_TRUMP_ORDER.index(r) > card.strength(trump)
@@ -826,6 +1003,8 @@ class KlaverjasGame:
                 if isinstance(p, AIPlayer):
                     p.trick_pts = list(trick_pts)
                     p.roem_pts = list(roem_pts)
+                    p.trick_num = trick_num
+                    p.game_scores = list(self.scores)
 
             self.log(f"Trick {trick_num + 1}")
             winner_idx, pts, trick_cards, cards_played = self._play_trick(leader, trump)
@@ -919,8 +1098,10 @@ class KlaverjasGame:
             trick_cards.append((player.name, str(card)))
             cards_played.append(card)
 
+            lead_suit = trick[0][1].suit if trick else None
             for p in self.players:
                 p.observe_card(card)
+                p.observe_trick_play(idx, card, lead_suit)
 
             self.notify("trick_played", {"player_idx": idx, "card": card})
             if not isinstance(player, HumanPlayer):
