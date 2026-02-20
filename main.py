@@ -28,6 +28,8 @@ import random
 import threading
 import time
 from abc import ABC, abstractmethod
+from itertools import combinations
+from types import SimpleNamespace
 
 from klaverjas.constants import (
     AI_BID_DELAY,
@@ -260,6 +262,7 @@ class AIPlayer(Player):
     DECLARATION_BASE_THRESHOLD = 2.75
     TIE_BREAK_DELTA = 0.35
     SIGNAL_MAX_CONFIDENCE = 1.0
+    TRICK_WIN_SIM_SAMPLES = 20
 
     BID_WEIGHTS = {
         "trump_j": 1.85,
@@ -298,6 +301,8 @@ class AIPlayer(Player):
         # Opponent/partner tracking by seat index
         self.opponent_voids: dict[int, set[str]] = {i: set() for i in range(4)}
         self.partner_signals: dict[str, dict] = {}
+        self.possible_cards_by_seat: dict[int, set[str]] = {}
+        self._observed_trick_cards: list[tuple[int, Card]] = []
 
     def start_round(self) -> None:
         super().start_round()
@@ -308,14 +313,34 @@ class AIPlayer(Player):
         self.current_trump = None
         self.opponent_voids = {i: set() for i in range(4)}
         self.partner_signals = {}
+        self.possible_cards_by_seat = {}
+        self._observed_trick_cards = []
+
+    def receive_hand(self, cards: list[Card]) -> None:
+        super().receive_hand(cards)
+        self._init_possible_cards()
+
+    def observe_card(self, card: Card) -> None:
+        super().observe_card(card)
+        cs = str(card)
+        for seat in range(4):
+            self.possible_cards_by_seat.setdefault(seat, set()).discard(cs)
+        self.possible_cards_by_seat.setdefault(self.seat_idx, set()).discard(cs)
 
     def observe_trick_play(self, player_idx: int, card: Card, lead_suit: str | None) -> None:
         """Track voids and decode basic partner signals."""
+        if len(self._observed_trick_cards) >= 4:
+            self._observed_trick_cards.clear()
+        prior_cards = list(self._observed_trick_cards)
+
+        self._apply_inference_from_play(player_idx, card, lead_suit, prior_cards)
+
         if lead_suit is not None and card.suit != lead_suit and player_idx != -1:
             self.opponent_voids.setdefault(player_idx, set()).add(lead_suit)
         if player_idx == self._partner_index():
             self._decode_partner_signal(card, lead_suit)
         self._decay_signals()
+        self._observed_trick_cards.append((player_idx, card))
 
     def choose_card(self, trick: Trick, trump: str) -> Card:
         legal = self.legal_moves(trick, trump)
@@ -379,6 +404,73 @@ class AIPlayer(Player):
         score += min(roem_total / 100.0, self.BID_WEIGHTS["roem_scale"])
         return score
 
+    def _all_card_strings(self) -> set[str]:
+        return {f"{rank}{suit}" for suit in SUITS for rank in RANKS}
+
+    def _card_from_str(self, card_str: str) -> Card:
+        return Card(card_str[-1], card_str[:-1])
+
+    def _init_possible_cards(self) -> None:
+        all_cards = self._all_card_strings()
+        my_cards = {str(c) for c in self.hand}
+        unknown = all_cards - my_cards - self.played_cards
+        self.possible_cards_by_seat = {}
+        for seat in range(4):
+            if seat == self.seat_idx:
+                self.possible_cards_by_seat[seat] = set(my_cards)
+            else:
+                self.possible_cards_by_seat[seat] = set(unknown)
+
+    def _remove_suit_from_possible(self, seat: int, suit: str) -> None:
+        poss = self.possible_cards_by_seat.setdefault(seat, set())
+        to_remove = {cs for cs in poss if cs.endswith(suit)}
+        poss.difference_update(to_remove)
+
+    def _remove_trump_stronger_than(self, seat: int, trump: str, strength_idx: int) -> None:
+        poss = self.possible_cards_by_seat.setdefault(seat, set())
+        to_remove = {
+            f"{rank}{trump}"
+            for rank in TRUMP_ORDER
+            if TRUMP_ORDER.index(rank) > strength_idx
+        }
+        poss.difference_update(to_remove)
+
+    def _apply_inference_from_play(
+        self,
+        player_idx: int,
+        card: Card,
+        lead_suit: str | None,
+        prior_cards: list[tuple[int, Card]],
+    ) -> None:
+        if player_idx < 0 or player_idx > 3:
+            return
+        trump = self.current_trump
+        if lead_suit is None or trump is None:
+            return
+
+        # Failed to follow suit: remove lead suit from that seat's possibilities.
+        if card.suit != lead_suit:
+            self._remove_suit_from_possible(player_idx, lead_suit)
+
+            if card.suit != trump:
+                # Rotterdam: if they could not follow and did not trump, they had no trump.
+                self._remove_suit_from_possible(player_idx, trump)
+            else:
+                # They trumped. If they did not overtrump while required, stronger trumps are impossible.
+                prior_trumps = [c for _, c in prior_cards if c.suit == trump]
+                if prior_trumps:
+                    highest = max(prior_trumps, key=lambda c: c.strength(trump))
+                    if card.strength(trump) <= highest.strength(trump):
+                        self._remove_trump_stronger_than(player_idx, trump, highest.strength(trump))
+
+        # Lead suit was trump and they followed trump but did not overtrump.
+        if lead_suit == trump and card.suit == trump:
+            prior_trumps = [c for _, c in prior_cards if c.suit == trump]
+            if prior_trumps:
+                highest = max(prior_trumps, key=lambda c: c.strength(trump))
+                if card.strength(trump) <= highest.strength(trump):
+                    self._remove_trump_stronger_than(player_idx, trump, highest.strength(trump))
+
     def _remaining_in_suit(self, suit: str) -> int:
         """Cards of this suit still in other players' hands (not mine, not yet played)."""
         total = 8  # 8 cards per suit in a 32-card deck
@@ -388,6 +480,10 @@ class AIPlayer(Player):
 
     def _strategy(self, legal: list[Card], trick: Trick, trump: str) -> Card:
         self.current_trump = trump
+        if len(self.hand) <= 3:
+            solved = self._endgame_exact_choice(legal, trick, trump)
+            if solved is not None:
+                return solved
         if not trick:
             return self._lead(legal, trump)
         wi = trick_winner_index(trick, trump)
@@ -466,6 +562,95 @@ class AIPlayer(Player):
         suit_risk_weight = 0.75 if card.suit == trump else 0.60
         return pts * suit_risk_weight + (higher_count - 1) * 0.8
 
+    @staticmethod
+    def _legal_moves_for_cards(hand_cards: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:
+        if not trick_cards:
+            return list(hand_cards)
+
+        lead_suit = trick_cards[0][1].suit
+        same_suit = [c for c in hand_cards if c.suit == lead_suit]
+
+        if same_suit:
+            if lead_suit == trump:
+                trick_trumps = [c for _, c in trick_cards if c.suit == trump]
+                highest = max(trick_trumps, key=lambda c: c.strength(trump))
+                over = [c for c in same_suit if c.strength(trump) > highest.strength(trump)]
+                return over if over else same_suit
+            return same_suit
+
+        trumps = [c for c in hand_cards if c.suit == trump]
+        if trumps:
+            trick_trumps = [c for _, c in trick_cards if c.suit == trump]
+            if trick_trumps:
+                highest = max(trick_trumps, key=lambda c: c.strength(trump))
+                over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
+                return over if over else trumps
+            return trumps
+
+        return list(hand_cards)
+
+    def _possible_cards_for_seat(self, seat: int, used_cards: set[str]) -> list[Card]:
+        if seat == self.seat_idx:
+            own_cards = [c for c in self.hand if str(c) not in used_cards]
+            return own_cards
+
+        poss = self.possible_cards_by_seat.get(seat, set())
+        cards = [self._card_from_str(cs) for cs in poss if cs not in used_cards]
+        if cards:
+            return cards
+
+        # Fallback if inference became too restrictive/inconsistent.
+        unseen = self._all_card_strings() - self.played_cards - {str(c) for c in self.hand} - used_cards
+        return [self._card_from_str(cs) for cs in unseen]
+
+    def _estimate_team_trick_win_prob(self, trick: Trick, my_card: Card, trump: str) -> float:
+        trick_state: list[tuple[int, Card]] = [(p.seat_idx, c) for p, c in trick]
+        trick_state.append((self.seat_idx, my_card))
+
+        players_left = 4 - len(trick_state)
+        if players_left <= 0:
+            sim_trick = [
+                (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
+                for seat, card in trick_state
+            ]
+            wi = trick_winner_index(sim_trick, trump)
+            winner_seat = trick_state[wi][0]
+            return 1.0 if SEAT_TEAMS[winner_seat] == self.team else 0.0
+
+        remaining_order = [(self.seat_idx + step) % 4 for step in range(1, players_left + 1)]
+        sims = self.TRICK_WIN_SIM_SAMPLES if players_left >= 2 else max(8, self.TRICK_WIN_SIM_SAMPLES // 2)
+        wins = 0
+        finished = 0
+
+        for _ in range(sims):
+            used = {str(c) for _, c in trick_state}
+            sim_cards = list(trick_state)
+            valid = True
+            for seat in remaining_order:
+                pool = self._possible_cards_for_seat(seat, used)
+                legal = self._legal_moves_for_cards(pool, sim_cards, trump)
+                if not legal:
+                    valid = False
+                    break
+                choice = self.rng.choice(legal)
+                sim_cards.append((seat, choice))
+                used.add(str(choice))
+            if not valid:
+                continue
+            sim_trick = [
+                (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
+                for seat, card in sim_cards
+            ]
+            wi = trick_winner_index(sim_trick, trump)
+            winner_seat = sim_cards[wi][0]
+            if SEAT_TEAMS[winner_seat] == self.team:
+                wins += 1
+            finished += 1
+
+        if finished == 0:
+            return 0.5
+        return wins / finished
+
     def _opponent_indices(self) -> list[int]:
         """Return seat indices of opponents (the two players not on our team)."""
         return [i for i in range(4) if SEAT_TEAMS[i] != self.team]
@@ -517,7 +702,7 @@ class AIPlayer(Player):
         trick_value = self._trick_point_value(trick, trump)
         if not partner_safe:
             # Current winner is teammate but not secure yet: preserve points first.
-            return self._play_safe_discard(pool, trump, trick_value=trick_value)
+            return self._play_safe_discard(pool, trump, trick_value=trick_value, trick=trick)
         scores: list[tuple[Card, float]] = []
         for c in pool:
             suit_count = sum(1 for hc in pool if hc.suit == c.suit)
@@ -529,7 +714,13 @@ class AIPlayer(Player):
             scores.append((c, score))
         return self._pick_card(scores)
 
-    def _play_safe_discard(self, legal: list[Card], trump: str, trick_value: int = 0) -> Card:
+    def _play_safe_discard(
+        self,
+        legal: list[Card],
+        trump: str,
+        trick_value: int = 0,
+        trick: Trick | None = None,
+    ) -> Card:
         """Cannot win — pick the card that leaks the fewest points to opponents.
         Prefer discarding from a short non-trump suit (helps create voids)."""
         non_trump = [c for c in legal if c.suit != trump]
@@ -538,9 +729,14 @@ class AIPlayer(Player):
         for c in pool:
             suit_count = sum(1 for hc in pool if hc.suit == c.suit)
             score = 0.0
+            win_prob = 0.5
+            if trick is not None:
+                win_prob = self._estimate_team_trick_win_prob(trick, c, trump)
+                score += win_prob * (6.0 + trick_value * 0.25)
             # When we are likely losing this trick, leaking points is very costly.
             score -= c.points(trump) * (2.2 + trick_value * 0.08)
             score -= self._point_leak_penalty(c, trump)
+            score -= (1.0 - win_prob) * c.points(trump) * 0.7
             if self.trick_num <= 3:
                 score += (3 - min(3, suit_count)) * 0.6
             else:
@@ -563,22 +759,35 @@ class AIPlayer(Player):
             or (c.suit == winning_card.suit and c.strength(trump) > winning_card.strength(trump))
         ]
         if not beaters:
-            return self._play_safe_discard(legal, trump, trick_value=self._trick_point_value(trick, trump))
+            return self._play_safe_discard(
+                legal,
+                trump,
+                trick_value=self._trick_point_value(trick, trump),
+                trick=trick,
+            )
 
         trick_value = self._trick_point_value(trick, trump)
         is_last_trick = self.trick_num == 7
         beater_scores: list[tuple[Card, float]] = []
+        beater_probs: dict[str, float] = {}
         for c in beaters:
+            win_prob = self._estimate_team_trick_win_prob(trick, c, trump)
             survives = self._beater_likely_holds(c, trick, trump)
-            score = trick_value * 0.35
+            score = win_prob * (6.5 + trick_value * 0.30)
+            score += trick_value * 0.20
             if survives:
-                score += 2.0
-            score -= c.points(trump) * 0.45
+                score += 1.6
+            else:
+                score -= 1.2
+            score -= c.points(trump) * 0.55
+            score -= self._point_leak_penalty(c, trump)
             if is_last_trick:
                 score += 2.5
             beater_scores.append((c, score))
+            beater_probs[str(c)] = win_prob
 
         best_beater = self._pick_card(beater_scores)
+        best_beater_prob = beater_probs.get(str(best_beater), 0.5)
         worth_fighting = trick_value >= 8 or is_last_trick
 
         if self.declaring_team == self.team:
@@ -588,9 +797,11 @@ class AIPlayer(Player):
                 worth_fighting = True
 
         if not worth_fighting and best_beater.points(trump) > 0:
-            return self._play_safe_discard(legal, trump, trick_value=trick_value)
+            return self._play_safe_discard(legal, trump, trick_value=trick_value, trick=trick)
+        if best_beater_prob < 0.45 and best_beater.points(trump) > 0 and not is_last_trick:
+            return self._play_safe_discard(legal, trump, trick_value=trick_value, trick=trick)
         if not self._beater_likely_holds(best_beater, trick, trump) and best_beater.points(trump) > 0 and not is_last_trick:
-            return self._play_safe_discard(legal, trump, trick_value=trick_value)
+            return self._play_safe_discard(legal, trump, trick_value=trick_value, trick=trick)
         return best_beater
 
     def _beater_likely_holds(self, card: Card, trick: Trick, trump: str) -> bool:
@@ -719,6 +930,153 @@ class AIPlayer(Player):
         if not signal:
             return 0.0
         return float(signal.get("confidence", 0.0))
+
+    def _cards_left_by_seat(self, trick: Trick) -> dict[int, int]:
+        base = 8 - self.trick_num
+        already_played = {p.seat_idx for p, _ in trick}
+        return {
+            seat: base - (1 if seat in already_played else 0)
+            for seat in range(4)
+        }
+
+    def _determinize_endgame_hands(self, trick: Trick) -> dict[int, list[Card]] | None:
+        counts = self._cards_left_by_seat(trick)
+        hands: dict[int, list[Card]] = {self.seat_idx: list(self.hand)}
+
+        available = self._all_card_strings() - self.played_cards - {str(c) for c in self.hand}
+        targets = [seat for seat in range(4) if seat != self.seat_idx]
+
+        options_by_seat: dict[int, set[str]] = {}
+        for seat in targets:
+            opts = set(self.possible_cards_by_seat.get(seat, set())) & set(available)
+            if not opts:
+                opts = set(available)
+            options_by_seat[seat] = opts
+
+        order = sorted(targets, key=lambda s: len(options_by_seat[s]))
+        assigned: dict[int, set[str]] = {}
+
+        def backtrack(i: int, avail: set[str]) -> bool:
+            if i == len(order):
+                return True
+            seat = order[i]
+            need = counts[seat]
+            opts = sorted(options_by_seat[seat] & avail)
+            if len(opts) < need:
+                return False
+            for combo in combinations(opts, need):
+                combo_set = set(combo)
+                assigned[seat] = combo_set
+                if backtrack(i + 1, avail - combo_set):
+                    return True
+            assigned.pop(seat, None)
+            return False
+
+        if not backtrack(0, set(available)):
+            return None
+
+        for seat in targets:
+            cards = [self._card_from_str(cs) for cs in assigned.get(seat, set())]
+            if len(cards) != counts[seat]:
+                return None
+            hands[seat] = cards
+        return hands
+
+    def _endgame_state_key(
+        self,
+        hands: dict[int, list[Card]],
+        trick_cards: list[tuple[int, Card]],
+        next_seat: int,
+    ) -> tuple:
+        hand_key = tuple(
+            tuple(sorted(str(c) for c in hands[seat]))
+            for seat in range(4)
+        )
+        trick_key = tuple((seat, str(card)) for seat, card in trick_cards)
+        return hand_key, trick_key, next_seat
+
+    def _endgame_minimax(
+        self,
+        hands: dict[int, list[Card]],
+        trick_cards: list[tuple[int, Card]],
+        next_seat: int,
+        trump: str,
+        memo: dict,
+    ) -> float:
+        if len(trick_cards) == 4:
+            sim_trick = [
+                (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
+                for seat, card in trick_cards
+            ]
+            wi = trick_winner_index(sim_trick, trump)
+            winner_seat = trick_cards[wi][0]
+            trick_pts = sum(card.points(trump) for _, card in trick_cards)
+            last_bonus = 10 if sum(len(h) for h in hands.values()) == 0 else 0
+            gain = trick_pts + last_bonus
+            delta = gain if SEAT_TEAMS[winner_seat] == self.team else -gain
+            return delta + self._endgame_minimax(hands, [], winner_seat, trump, memo)
+
+        if all(len(h) == 0 for h in hands.values()):
+            return 0.0
+
+        key = self._endgame_state_key(hands, trick_cards, next_seat)
+        if key in memo:
+            return memo[key]
+
+        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump)
+        if not legal:
+            memo[key] = 0.0
+            return 0.0
+
+        is_max = SEAT_TEAMS[next_seat] == self.team
+        best = float("-inf") if is_max else float("inf")
+
+        for card in legal:
+            new_hands = {seat: list(cards) for seat, cards in hands.items()}
+            # Remove by card identity where possible; fall back to string match.
+            if card in new_hands[next_seat]:
+                new_hands[next_seat].remove(card)
+            else:
+                cs = str(card)
+                for i, c in enumerate(new_hands[next_seat]):
+                    if str(c) == cs:
+                        del new_hands[next_seat][i]
+                        break
+
+            new_trick = trick_cards + [(next_seat, card)]
+            nxt = (next_seat + 1) % 4
+            val = self._endgame_minimax(new_hands, new_trick, nxt, trump, memo)
+            if is_max:
+                best = max(best, val)
+            else:
+                best = min(best, val)
+
+        memo[key] = best
+        return best
+
+    def _endgame_exact_choice(self, legal: list[Card], trick: Trick, trump: str) -> Card | None:
+        hands = self._determinize_endgame_hands(trick)
+        if not hands:
+            return None
+
+        scores: list[tuple[Card, float]] = []
+        for card in legal:
+            test_hands = {seat: list(cards) for seat, cards in hands.items()}
+            cs = str(card)
+            removed = False
+            for i, c in enumerate(test_hands[self.seat_idx]):
+                if str(c) == cs:
+                    del test_hands[self.seat_idx][i]
+                    removed = True
+                    break
+            if not removed:
+                continue
+            trick_cards = [(p.seat_idx, c) for p, c in trick] + [(self.seat_idx, card)]
+            score = self._endgame_minimax(test_hands, trick_cards, (self.seat_idx + 1) % 4, trump, memo={})
+            scores.append((card, score))
+        if not scores:
+            return None
+        return self._pick_card(scores)
 
 
 # ─── Game ─────────────────────────────────────────────────────────────────────
