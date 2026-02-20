@@ -47,7 +47,8 @@ WIN_SCORE = 500
 RED_SUITS = {"♦", "♥"}
 TRICK_CARD_TOTAL = 162   # fixed: 152 card pts + 10 last-trick bonus
 
-AI_PLAY_DELAY     = 0.7
+AI_PLAY_DELAY     = 1.5   # delay between AI moves to make them easier to follow (can be set to 0 for fast autoplay)
+AI_BID_DELAY      = 2.0   # deliberate pause so players can read bid badges
 TRICK_CLEAR_DELAY = 1.4
 
 
@@ -767,13 +768,13 @@ class KlaverjasGame:
                     )
                     self.notify("bid", {"player_idx": bidder_idx, "trump": suit})
                     if not isinstance(player, HumanPlayer):
-                        time.sleep(AI_PLAY_DELAY)
+                        time.sleep(AI_BID_DELAY)
                     return bidder_idx, suit
                 else:
                     self.log(f"  {player.name} passes")
                     self.notify("bid", {"player_idx": bidder_idx, "trump": None})
                     if not isinstance(player, HumanPlayer):
-                        time.sleep(AI_PLAY_DELAY)
+                        time.sleep(AI_BID_DELAY)
 
         # All 8 players passed both rounds — force first bidder on round-2 suit
         forced_suit = suits[1]
@@ -803,7 +804,8 @@ class KlaverjasGame:
 
         self.notify("trump_set", {"trump": trump, "declaring_team": declaring_team,
                                     "declaring_player": declaring_name,
-                                    "declaring_player_idx": declaring_player_idx})
+                                    "declaring_player_idx": declaring_player_idx,
+                                    "leader_idx": first_leader})
         self.log(
             f"Trump: {trump}  ({SUIT_NAMES[trump]})  –  {declaring_name}'s team declares",
             "trump",
@@ -868,7 +870,7 @@ class KlaverjasGame:
             )
 
             time.sleep(TRICK_CLEAR_DELAY)
-            self.notify("trick_cleared", {})
+            self.notify("trick_cleared", {"next_leader": winner_idx})
             leader = winner_idx
 
         opposing_team = 1 - declaring_team

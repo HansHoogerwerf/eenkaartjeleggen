@@ -90,6 +90,8 @@ const TRANSLATIONS = {
         "bid.optional": "Declare this suit as trump?",
         "bid.declare": "Declare",
         "bid.pass": "Pass",
+        "bid.badge_declared": "Declares!",
+        "bid.badge_passed": "Pass",
 
         // ── Game Over modal ──
         "modal.game_over": "Game Over",
@@ -233,6 +235,8 @@ const TRANSLATIONS = {
         "bid.optional": "Op deze kleur als troef gaan?",
         "bid.declare": "Gaan",
         "bid.pass": "Passen",
+        "bid.badge_declared": "Ga!",
+        "bid.badge_passed": "Pas",
 
         // ── Spel Afgelopen modal ──
         "modal.game_over": "Spel Afgelopen",

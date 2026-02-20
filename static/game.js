@@ -32,6 +32,7 @@ let teamNames = ["Team 0", "Team 1"];
 let currentTrump = null;        // track trump for strength-aware default sort
 let userHandOrder = [];         // card strings in user's preferred order (drag-to-reorder)
 let dragSrcIndex = null;        // index of card being dragged
+let trickPlayCount = 0;         // cards played so far in the current trick (0–4)
 
 /* ─── Session persistence (auto-reconnect on page reload) ─────────────────
    Stores {code, name} in localStorage so the player is automatically
@@ -228,9 +229,34 @@ function renderOtherCards(cardCounts) {
 
 function showCardInTrick(playerIdx, card) {
     const slot = document.getElementById(trickSlotId(playerIdx));
-    slot.className = "trick-slot filled";
+    const animClass = ["anim-s", "anim-w", "anim-n", "anim-e"][visualPos(playerIdx)];
+    slot.className = `trick-slot filled ${animClass}`;
     slot.style.color = isRed(card.suit) ? "var(--red-suit)" : "var(--black-suit)";
     slot.innerHTML = `<span>${card.rank}</span><span>${card.suit}</span>`;
+    slot.addEventListener("animationend", () => slot.classList.remove(animClass), {once: true});
+}
+
+function showTurnArrow(absSeat) {
+    const arrow = document.getElementById("trick-arrow");
+    if (!arrow) return;
+    const dirClass = ["dir-s", "dir-w", "dir-n", "dir-e"][visualPos(absSeat)];
+    arrow.className = `visible ${dirClass}`;
+}
+
+function hideTurnArrow() {
+    const arrow = document.getElementById("trick-arrow");
+    if (arrow) arrow.className = "";
+}
+
+function showBidBadge(absSeat, declared) {
+    const labelEl = document.getElementById(labelId(absSeat));
+    // Remove any existing badge first
+    labelEl.querySelectorAll(".bid-badge").forEach(b => b.remove());
+    const badge = document.createElement("span");
+    badge.className = `bid-badge ${declared ? "bid-declared" : "bid-passed"}`;
+    badge.textContent = declared ? t("bid.badge_declared") : t("bid.badge_passed");
+    labelEl.appendChild(badge);
+    setTimeout(() => badge.remove(), 2600);
 }
 
 function clearTrickArea() {
@@ -497,6 +523,8 @@ socket.on("deal_done", data => {
     // Reset hand state for the new round
     currentTrump = null;
     userHandOrder = [];
+    hideTurnArrow();
+    trickPlayCount = 0;
     renderMyHand(data.hand, []);
     if (data.card_counts) renderOtherCards(data.card_counts);
     updateRoundScores([0, 0], [0, 0]);
@@ -508,7 +536,9 @@ socket.on("trump_offered", data => {
         `<span style="color:${color}">${t("score.offered", {suit: data.suit, name: tSuit(data.suit), round: data.round_num})}</span>`;
 });
 
-socket.on("bid", () => {});
+socket.on("bid", data => {
+    showBidBadge(data.player_idx, data.trump !== null);
+});
 
 socket.on("trump_set", data => {
     document.getElementById("trump-label").innerHTML =
@@ -532,9 +562,21 @@ socket.on("trump_set", data => {
     currentTrump = data.trump;
     userHandOrder = [];           // re-sort with trump-aware ordering
     if (data.hand) renderMyHand(data.hand, []);
+
+    // Show arrow pointing to the first trick leader
+    if (data.leader_idx !== undefined) {
+        trickPlayCount = 0;
+        showTurnArrow(data.leader_idx);
+    }
 });
 
 socket.on("trick_played", data => {
+    trickPlayCount++;
+    if (trickPlayCount < 4) {
+        showTurnArrow((data.player_idx + 1) % 4);
+    } else {
+        hideTurnArrow(); // all 4 played, waiting for trick_cleared
+    }
     showCardInTrick(data.player_idx, data.card);
     if (data.player_idx === mySeat) currentLegal = [];
     if (data.hand) renderMyHand(data.hand, currentLegal);
@@ -546,9 +588,11 @@ socket.on("trick_won", data => {
         updateRoundScores(data.cur_tricks, data.cur_roem);
 });
 
-socket.on("trick_cleared", () => {
+socket.on("trick_cleared", data => {
     clearTrickArea();
     currentLegal = [];
+    trickPlayCount = 0;
+    if (data && data.next_leader !== undefined) showTurnArrow(data.next_leader);
 });
 
 let lastRoundResult = null;
@@ -701,6 +745,7 @@ socket.on("reconnected", data => {
             showCardInTrick(parseInt(pidxStr), c);
         }
     }
+
 });
 
 /* ─── Hands viewer ────────────────────────────────────────────────────── */

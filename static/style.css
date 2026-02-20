@@ -138,6 +138,25 @@ body {
     text-shadow: 0 0 6px var(--accent);
 }
 
+/* Bid result badges */
+.bid-badge {
+    display: inline-block;
+    font-size: 13px;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 4px;
+    margin-left: 6px;
+    vertical-align: middle;
+    animation: bidBadgeFade 2.5s ease forwards;
+}
+.bid-badge.bid-declared { background: var(--felt); color: #fff; border: 1px solid var(--green-txt); }
+.bid-badge.bid-passed   { background: #333; color: #aaa; border: 1px solid #555; }
+@keyframes bidBadgeFade {
+    0%   { opacity: 1; }
+    60%  { opacity: 1; }
+    100% { opacity: 0; }
+}
+
 #north-seat { grid-area: north; }
 #west-seat  { grid-area: west; }
 #east-seat  { grid-area: east; }
@@ -148,6 +167,7 @@ body {
 #trick-area {
     grid-area: trick;
     display: grid;
+    position: relative;
     grid-template-areas:
         ".  n  ."
         "w  .  e"
@@ -186,6 +206,44 @@ body {
 #trick-w { grid-area: w; }
 #trick-e { grid-area: e; }
 #trick-s { grid-area: s; }
+
+/* Turn arrow — centered over the felt, pointing toward the active player */
+#trick-center {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    z-index: 1;
+}
+#trick-arrow {
+    font-size: 32px;
+    color: var(--accent);
+    display: none;
+    filter: drop-shadow(0 0 6px var(--accent));
+    transition: transform 0.2s ease;
+}
+#trick-arrow.visible { display: block; animation: arrowPulse 1.2s ease-in-out infinite; }
+#trick-arrow.dir-n { transform: rotate(0deg); }
+#trick-arrow.dir-w { transform: rotate(270deg); }
+#trick-arrow.dir-s { transform: rotate(180deg); }
+#trick-arrow.dir-e { transform: rotate(90deg); }
+@keyframes arrowPulse {
+    0%, 100% { opacity: 1; }
+    50%      { opacity: 0.35; }
+}
+
+/* Card play animations */
+@keyframes cardFromSouth { from { transform: translateY(52px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes cardFromNorth { from { transform: translateY(-52px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes cardFromWest  { from { transform: translateX(-52px); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes cardFromEast  { from { transform: translateX(52px); opacity: 0; } to { transform: none; opacity: 1; } }
+
+.trick-slot.anim-s { animation: cardFromSouth 0.28s ease; }
+.trick-slot.anim-n { animation: cardFromNorth 0.28s ease; }
+.trick-slot.anim-w { animation: cardFromWest  0.28s ease; }
+.trick-slot.anim-e { animation: cardFromEast  0.28s ease; }
 
 /* ─── Cards ───────────────────────────────────────────────────────────── */
 
