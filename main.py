@@ -528,6 +528,17 @@ class AIPlayer(Player):
         # No safe card — lead cheapest to probe
         return min(cards, key=lambda c: c.points(trump))
 
+    def _higher_outstanding_in_suit(self, card: Card, trump: str) -> bool:
+        """True when a stronger same-suit card is still in opponents' hands."""
+        for rank in NON_TRUMP_ORDER:
+            if NON_TRUMP_ORDER.index(rank) <= card.strength(trump):
+                continue
+            card_str = f"{rank}{card.suit}"
+            in_my_hand = any(c.suit == card.suit and c.rank == rank for c in self.hand)
+            if card_str not in self.played_cards and not in_my_hand:
+                return True
+        return False
+
     def _opponent_indices(self) -> list[int]:
         """Return seat indices of opponents (the two players not on our team)."""
         return [i for i in range(4) if SEAT_TEAMS[i] != self.team]
@@ -562,6 +573,9 @@ class AIPlayer(Player):
             else:
                 suit_count = sum(1 for hc in self.hand if hc.suit == c.suit)
                 score += suit_count * 0.6
+                # Do not leak a 10 into an outstanding ace of the same suit.
+                if c.rank == "10" and self._higher_outstanding_in_suit(c, trump):
+                    score -= 7.0
                 if self._opp_void_in(c.suit) and remaining_opp_trumps > 0:
                     score -= 4.0
                 if self._remaining_in_suit(c.suit) == 0:

@@ -43,6 +43,16 @@ class TestAIDecisions(unittest.TestCase):
         card = ai._discard_for_partner(legal, trick, "♠")
         self.assertEqual(str(card), "10♦")
 
+    def test_lead_does_not_throw_ten_into_outstanding_ace(self):
+        ai = AIPlayer("AI South", team=0, seat_idx=0, rng_seed=1)
+        ai.start_round()
+        ai.trick_num = 2
+        ai.declaring_team = 1  # not declaring; no forced trump pull bias
+        ai.hand = [Card("♦", "10"), Card("♦", "7"), Card("♣", "8"), Card("♥", "8")]
+        ai.played_cards = set()  # Ace of diamonds is still unseen
+        lead = ai._lead(list(ai.hand), "♠")
+        self.assertNotEqual(str(lead), "10♦")
+
 
 if __name__ == "__main__":
     unittest.main()
