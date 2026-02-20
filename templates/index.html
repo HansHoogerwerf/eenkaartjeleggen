@@ -98,6 +98,19 @@
             <div id="lobby-mode-display" style="display:none; margin-top:8px; text-align:center;">
                 <span style="color:#888; font-size:12px;" id="lobby-mode-text"></span>
             </div>
+            <!-- AI strength picker (host only) -->
+            <div id="lobby-ai-picker" style="display:none; margin-top:10px; text-align:center;">
+                <p style="color:#aaa; font-size:12px; margin-bottom:6px;" data-i18n="ai.label">AI strength:</p>
+                <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
+                    <button class="btn-pass ai-btn" data-strength="beginner" onclick="selectAiStrength('beginner')" data-i18n="ai.beginner">Beginner</button>
+                    <button class="btn-pass ai-btn" data-strength="advanced" onclick="selectAiStrength('advanced')" data-i18n="ai.advanced">Advanced</button>
+                    <button class="btn-declare ai-btn active" data-strength="expert" onclick="selectAiStrength('expert')" data-i18n="ai.expert">Expert</button>
+                </div>
+            </div>
+            <!-- AI strength display for non-host -->
+            <div id="lobby-ai-display" style="display:none; margin-top:8px; text-align:center;">
+                <span style="color:#888; font-size:12px;" id="lobby-ai-text"></span>
+            </div>
             <div style="text-align:center; margin-top:12px;">
                 <button class="btn-declare" id="lobby-start-btn" onclick="startGame()" style="display:none;" data-i18n="lobby.start_game">
                     Start Game

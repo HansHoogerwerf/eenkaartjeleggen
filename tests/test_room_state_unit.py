@@ -19,7 +19,10 @@ class TestRoomStateUnit(unittest.TestCase):
         self.assertEqual(room.seat_for_sid("sid-1"), 0)
         self.assertEqual(room.next_free_seat(), 1)
         self.assertEqual(room.player_names()[0], "Alice")
-        self.assertTrue(room.lobby_state()["seats"]["0"]["is_human"])
+        lobby = room.lobby_state()
+        self.assertTrue(lobby["seats"]["0"]["is_human"])
+        self.assertEqual(room.ai_strength, "expert")
+        self.assertEqual(lobby["ai_strength"], "expert")
 
     def test_generate_code_skips_existing(self):
         rooms["AAAA"] = Room("AAAA", "sid-x", "X")
@@ -30,4 +33,3 @@ class TestRoomStateUnit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

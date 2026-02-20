@@ -84,6 +84,7 @@ def start_room_game(socketio, room: Room) -> None:
         state_fn=lambda event, data: room_state(socketio, room, event, data),
         game_mode=room.game_mode,
         score_limit=room.score_limit,
+        ai_strength=room.ai_strength,
     )
 
     for seat in human_seats:
@@ -227,4 +228,3 @@ def on_disconnect_pause(socketio, room: Room, seat_idx: int) -> None:
         "name": name,
         "key": "error.waiting_reconnect",
     }, room=room.code)
-

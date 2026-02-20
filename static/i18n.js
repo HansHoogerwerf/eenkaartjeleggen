@@ -79,6 +79,10 @@ const TRANSLATIONS = {
         "mode.boom": "Boom (16 rounds)",
         "mode.free_play": "Free Play",
         "mode.target_score": "Target score:",
+        "ai.label": "AI strength:",
+        "ai.beginner": "Beginner",
+        "ai.advanced": "Advanced",
+        "ai.expert": "Expert",
 
         // ── Next Round modal ──
         "modal.round_finished": "Round Finished",
@@ -224,6 +228,10 @@ const TRANSLATIONS = {
         "mode.boom": "Boom (16 rondes)",
         "mode.free_play": "Vrij Spelen",
         "mode.target_score": "Doelscore:",
+        "ai.label": "AI niveau:",
+        "ai.beginner": "Beginner",
+        "ai.advanced": "Gevorderd",
+        "ai.expert": "Expert",
 
         // ── Volgende Ronde modal ──
         "modal.round_finished": "Ronde Afgelopen",

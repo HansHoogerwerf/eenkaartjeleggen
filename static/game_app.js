@@ -67,6 +67,7 @@ function cancelAutoReconnect() {
 }
 
 let selectedMode = "score_limit";
+let selectedAiStrength = "expert";
 
 function selectMode(mode) {
     selectedMode = mode;
@@ -81,8 +82,19 @@ function selectMode(mode) {
         mode === "score_limit" ? "block" : "none";
 }
 
+function selectAiStrength(level) {
+    selectedAiStrength = level;
+    document.querySelectorAll(".ai-btn").forEach(btn => {
+        if (btn.dataset.strength === level) {
+            btn.className = "btn-declare ai-btn active";
+        } else {
+            btn.className = "btn-pass ai-btn";
+        }
+    });
+}
+
 function startGame() {
-    const data = { mode: selectedMode };
+    const data = { mode: selectedMode, ai_strength: selectedAiStrength };
     if (selectedMode === "score_limit") {
         const el = document.getElementById("mode-score-limit");
         data.score_limit = el ? (parseInt(el.value) || 500) : 500;
@@ -113,6 +125,12 @@ function showWaitingRoom(lobby) {
 }
 
 function updateLobbySeats(lobby) {
+    if (lobby && typeof lobby.ai_strength === "string") {
+        if (["beginner", "advanced", "expert"].includes(lobby.ai_strength)) {
+            selectedAiStrength = lobby.ai_strength;
+        }
+    }
+
     const container = document.getElementById("lobby-seats");
     container.innerHTML = "";
     for (let i = 0; i < 4; i++) {
@@ -149,6 +167,23 @@ function updateLobbySeats(lobby) {
         } else {
             modeDisplay.style.display = "none";
         }
+    }
+
+    const aiPicker = document.getElementById("lobby-ai-picker");
+    const aiDisplay = document.getElementById("lobby-ai-display");
+    if (aiPicker) {
+        aiPicker.style.display = isCreator ? "block" : "none";
+    }
+    if (aiDisplay) {
+        if (!isCreator) {
+            aiDisplay.style.display = "block";
+            document.getElementById("lobby-ai-text").textContent = t("ai." + selectedAiStrength);
+        } else {
+            aiDisplay.style.display = "none";
+        }
+    }
+    if (isCreator) {
+        selectAiStrength(selectedAiStrength);
     }
 }
 

@@ -125,6 +125,9 @@ def handle_start_game(data=None):
         mode = data.get("mode", "score_limit")
         if mode in ("score_limit", "boom", "free_play"):
             room.game_mode = mode
+        strength = data.get("ai_strength", "expert")
+        if strength in ("beginner", "advanced", "expert"):
+            room.ai_strength = strength
         limit = data.get("score_limit")
         if isinstance(limit, int) and 50 <= limit <= 5000:
             room.score_limit = limit
@@ -324,4 +327,3 @@ def handle_disconnect():
 if __name__ == "__main__":
     debug = os.environ.get("FLASK_DEBUG", "0") == "1"
     socketio.run(app, host="0.0.0.0", port=5000, debug=debug, use_reloader=False)
-

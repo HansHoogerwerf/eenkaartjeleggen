@@ -277,6 +277,35 @@ class AIPlayer(Player):
         "singleton": 0.17,
         "roem_scale": 0.75,
     }
+    AI_STRENGTH_PROFILES = {
+        "beginner": {
+            "use_inference": False,
+            "use_trick_prob": False,
+            "use_endgame_solver": False,
+            "tie_break_delta": 0.95,
+            "random_mistake_rate": 0.10,
+            "declaration_bias": 0.65,
+            "trick_win_sim_samples": 4,
+        },
+        "advanced": {
+            "use_inference": True,
+            "use_trick_prob": True,
+            "use_endgame_solver": False,
+            "tie_break_delta": 0.55,
+            "random_mistake_rate": 0.03,
+            "declaration_bias": 0.25,
+            "trick_win_sim_samples": 12,
+        },
+        "expert": {
+            "use_inference": True,
+            "use_trick_prob": True,
+            "use_endgame_solver": True,
+            "tie_break_delta": 0.35,
+            "random_mistake_rate": 0.0,
+            "declaration_bias": 0.0,
+            "trick_win_sim_samples": 20,
+        },
+    }
 
     def __init__(
         self,
@@ -285,10 +314,20 @@ class AIPlayer(Player):
         seat_idx: int,
         rng_seed: int | None = None,
         signal_profile: str = "core",
+        ai_strength: str = "expert",
     ):
         super().__init__(name, team, seat_idx)
         self.signal_profile = signal_profile
         self.rng = random.Random(rng_seed)
+        self.ai_strength = ai_strength if ai_strength in self.AI_STRENGTH_PROFILES else "expert"
+        profile = self.AI_STRENGTH_PROFILES[self.ai_strength]
+        self.use_inference = bool(profile["use_inference"])
+        self.use_trick_prob = bool(profile["use_trick_prob"])
+        self.use_endgame_solver = bool(profile["use_endgame_solver"])
+        self.random_mistake_rate = float(profile["random_mistake_rate"])
+        self.declaration_bias = float(profile["declaration_bias"])
+        self.TIE_BREAK_DELTA = float(profile["tie_break_delta"])
+        self.TRICK_WIN_SIM_SAMPLES = int(profile["trick_win_sim_samples"])
 
         # Updated by KlaverjasGame before each trick so AI can adapt its strategy
         self.trick_pts: list[int] = [0, 0]
@@ -337,7 +376,8 @@ class AIPlayer(Player):
             self._observed_trick_cards.clear()
         prior_cards = list(self._observed_trick_cards)
 
-        self._apply_inference_from_play(player_idx, card, lead_suit, prior_cards)
+        if self.use_inference:
+            self._apply_inference_from_play(player_idx, card, lead_suit, prior_cards)
 
         if lead_suit is not None and card.suit != lead_suit and player_idx != -1:
             self.opponent_voids.setdefault(player_idx, set()).add(lead_suit)
@@ -361,7 +401,13 @@ class AIPlayer(Player):
         if self.declaring_team not in (-1, self.team):
             nat_risk += 0.15
         pressure = self._score_pressure()
-        threshold = self.DECLARATION_BASE_THRESHOLD + (roem_total / 100.0) * 0.2 + nat_risk - pressure * 0.35
+        threshold = (
+            self.DECLARATION_BASE_THRESHOLD
+            + (roem_total / 100.0) * 0.2
+            + nat_risk
+            + self.declaration_bias
+            - pressure * 0.35
+        )
         return score >= threshold
 
     def _declaration_score(self, trump: str) -> float:
@@ -526,7 +572,7 @@ class AIPlayer(Player):
 
     def _strategy(self, legal: list[Card], trick: Trick, trump: str) -> Card:
         self.current_trump = trump
-        if len(self.hand) <= 3:
+        if self.use_endgame_solver and len(self.hand) <= 3:
             solved = self._endgame_exact_choice(legal, trick, trump)
             if solved is not None:
                 return solved
@@ -538,6 +584,8 @@ class AIPlayer(Player):
         return self._try_win(legal, trick, trump)
 
     def _pick_card(self, scores: list[tuple[Card, float]]) -> Card:
+        if self.random_mistake_rate > 0.0 and len(scores) > 1 and self.rng.random() < self.random_mistake_rate:
+            return self.rng.choice([card for card, _ in scores])
         best = max(score for _, score in scores)
         near_best = [card for card, score in scores if best - score <= self.TIE_BREAK_DELTA]
         return self.rng.choice(near_best)
@@ -650,6 +698,9 @@ class AIPlayer(Player):
         return [self._card_from_str(cs) for cs in unseen]
 
     def _estimate_team_trick_win_prob(self, trick: Trick, my_card: Card, trump: str) -> float:
+        if not self.use_trick_prob:
+            return self._heuristic_team_trick_win_prob(trick, my_card, trump)
+
         trick_state: list[tuple[int, Card]] = [(p.seat_idx, c) for p, c in trick]
         trick_state.append((self.seat_idx, my_card))
 
@@ -696,6 +747,30 @@ class AIPlayer(Player):
         if finished == 0:
             return 0.5
         return wins / finished
+
+    def _heuristic_team_trick_win_prob(self, trick: Trick, my_card: Card, trump: str) -> float:
+        trick_state = [(p.seat_idx, c) for p, c in trick] + [(self.seat_idx, my_card)]
+        sim_trick = [
+            (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
+            for seat, card in trick_state
+        ]
+        wi = trick_winner_index(sim_trick, trump)
+        winner_seat = trick_state[wi][0]
+        winner_team = SEAT_TEAMS[winner_seat]
+        players_left = 4 - len(trick_state)
+
+        if players_left <= 0:
+            return 1.0 if winner_team == self.team else 0.0
+
+        winning_card = trick_state[wi][1]
+        base = 0.75 if winner_team == self.team else 0.25
+        if winning_card.suit != trump and self._remaining_in_suit(trump) > 0:
+            base -= 0.20 if winner_team == self.team else -0.15
+        if my_card.suit == trump:
+            base += 0.08
+        if players_left >= 2:
+            base -= 0.15 if winner_team == self.team else -0.08
+        return self._clamp(base, 0.05, 0.95)
 
     def _opponent_indices(self) -> list[int]:
         """Return seat indices of opponents (the two players not on our team)."""
@@ -1152,6 +1227,7 @@ class KlaverjasGame:
         score_limit: int = 500,
         ai_seed_base: int | None = None,
         ai_signal_profile: str = "core",
+        ai_strength: str = "expert",
     ):
         """
         Args:
@@ -1173,7 +1249,16 @@ class KlaverjasGame:
             else:
                 name = f"AI {SEAT_DEFAULTS[seat]}"
                 rng_seed = None if ai_seed_base is None else ai_seed_base + seat
-                self.players.append(AIPlayer(name, team, seat_idx=seat, rng_seed=rng_seed, signal_profile=ai_signal_profile))
+                self.players.append(
+                    AIPlayer(
+                        name,
+                        team,
+                        seat_idx=seat,
+                        rng_seed=rng_seed,
+                        signal_profile=ai_signal_profile,
+                        ai_strength=ai_strength,
+                    )
+                )
 
         self.scores = [0, 0]
         self.log = log_fn or (lambda msg, tag="": print(msg))

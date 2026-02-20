@@ -9,6 +9,8 @@ class TestFrontendSplit(unittest.TestCase):
         self.assertIn('/static/game_render.js', html)
         self.assertIn('/static/game_app.js', html)
         self.assertNotIn('/static/game.js"></script>', html)
+        self.assertIn('id="lobby-ai-picker"', html)
+        self.assertIn('id="lobby-ai-display"', html)
 
     def test_split_files_exist(self):
         self.assertTrue(Path("static/game_state.js").exists())
@@ -18,4 +20,3 @@ class TestFrontendSplit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

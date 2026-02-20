@@ -21,6 +21,7 @@ class Room:
         self.started = False
         self.game_mode: str = "score_limit"
         self.score_limit: int = 500
+        self.ai_strength: str = "expert"
         self.team_names: list[str] = ["Team 0", "Team 1"]
 
         self.cur_round_tricks: list[dict] = []
@@ -66,6 +67,7 @@ class Room:
                 for i in range(4)
             },
             "started": self.started,
+            "ai_strength": self.ai_strength,
         }
 
 
@@ -79,4 +81,3 @@ def generate_code() -> str:
         code = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
         if code not in rooms:
             return code
-

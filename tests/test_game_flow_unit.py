@@ -97,6 +97,7 @@ class TestGameFlowUnit(unittest.TestCase):
         socketio = FakeSocketIO()
         room = Room("ABCD", "sid-1", "Alice")
         room.seats[1] = {"sid": "sid-2", "name": "Bob", "connected": True}
+        room.ai_strength = "beginner"
 
         fake_players = [HumanPlayer("Alice", 0, 0), HumanPlayer("Bob", 1, 1), HumanPlayer("N", 0, 2), HumanPlayer("E", 1, 3)]
         fake_game = SimpleNamespace(players=fake_players, play=lambda: None)
@@ -113,6 +114,8 @@ class TestGameFlowUnit(unittest.TestCase):
         with patch.object(game_flow, "KlaverjasGame", return_value=fake_game):
             with patch.object(game_flow.threading, "Thread", FakeThread):
                 game_flow.start_room_game(socketio, room)
+            _, kwargs = game_flow.KlaverjasGame.call_args
+            self.assertEqual(kwargs["ai_strength"], "beginner")
 
         self.assertTrue(room.started)
         self.assertIsNotNone(room.game_thread)
@@ -121,4 +124,3 @@ class TestGameFlowUnit(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

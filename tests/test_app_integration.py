@@ -99,12 +99,18 @@ class TestAppIntegration(unittest.TestCase):
             self.assertTrue(any(e["name"] == "error" for e in rec))
             self.assertEqual(start_game.call_count, 0)
 
-            self.c1.emit("start_game", {"mode": "boom", "score_limit": 700, "team_names": ["A", "B"]})
+            self.c1.emit("start_game", {
+                "mode": "boom",
+                "score_limit": 700,
+                "team_names": ["A", "B"],
+                "ai_strength": "advanced",
+            })
             self.assertEqual(start_game.call_count, 1)
             room = rooms[code]
             self.assertEqual(room.game_mode, "boom")
             self.assertEqual(room.score_limit, 700)
             self.assertEqual(room.team_names, ["A", "B"])
+            self.assertEqual(room.ai_strength, "advanced")
 
     def test_leave_room_removes_unstarted_player(self):
         code = self._create_room()
@@ -118,4 +124,3 @@ class TestAppIntegration(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
