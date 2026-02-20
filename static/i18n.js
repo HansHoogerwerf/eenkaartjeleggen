@@ -20,6 +20,8 @@ const TRANSLATIONS = {
         "lobby.start_game": "Start Game",
         "lobby.team_names": "Team names:",
         "lobby.waiting_host": "Waiting for the host to start...",
+        "lobby.reconnecting": "Reconnecting to game…",
+        "lobby.reconnect_cancel": "Cancel",
 
         // ── Seat names ──
         "seat.south": "South",
@@ -58,6 +60,13 @@ const TRANSLATIONS = {
         "btn.next_round": "Next Round",
         "btn.close": "Close",
         "btn.chat": "Chat",
+        "btn.leave_game": "Leave",
+
+        // ── Leave confirm ──
+        "modal.leave_confirm": "Leave game?",
+        "modal.leave_msg": "This will end the game for all players.",
+        "btn.leave_confirm": "Yes, leave",
+        "msg.game_left": "{name} left — the game has ended.",
 
         // ── Chat ──
         "chat.title": "Chat",
@@ -132,6 +141,7 @@ const TRANSLATIONS = {
         "error.only_creator": "Only the room creator can start the game.",
         "error.enter_code": "Enter a 4-character room code.",
         "error.waiting_reconnect": "Waiting for {name} to reconnect...",
+        "error.reconnecting": "Lost connection — reconnecting…",
     },
 
     nl: {
@@ -153,6 +163,8 @@ const TRANSLATIONS = {
         "lobby.start_game": "Spel Starten",
         "lobby.team_names": "Teamnamen:",
         "lobby.waiting_host": "Wachten tot de host het spel start...",
+        "lobby.reconnecting": "Verbinding herstellen…",
+        "lobby.reconnect_cancel": "Annuleren",
 
         // ── Stoelnamen ──
         "seat.south": "Zuid",
@@ -191,6 +203,13 @@ const TRANSLATIONS = {
         "btn.next_round": "Volgende Ronde",
         "btn.close": "Sluiten",
         "btn.chat": "Chat",
+        "btn.leave_game": "Verlaten",
+
+        // ── Verlaten bevestigen ──
+        "modal.leave_confirm": "Spel verlaten?",
+        "modal.leave_msg": "Dit beëindigt het spel voor alle spelers.",
+        "btn.leave_confirm": "Ja, verlaten",
+        "msg.game_left": "{name} is vertrokken — het spel is beëindigd.",
 
         // ── Chat ──
         "chat.title": "Chat",
@@ -265,6 +284,7 @@ const TRANSLATIONS = {
         "error.only_creator": "Alleen de maker van de kamer kan het spel starten.",
         "error.enter_code": "Voer een 4-karakter kamercode in.",
         "error.waiting_reconnect": "Wachten tot {name} opnieuw verbindt...",
+        "error.reconnecting": "Verbinding verloren — opnieuw verbinden…",
     },
 };
 

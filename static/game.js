@@ -12,6 +12,11 @@ const RED_SUITS = new Set(["♦", "♥"]);
 const SEAT_TEAMS = {0: 0, 1: 1, 2: 0, 3: 1};
 const HAND_POS_CLASS = {0: "pos-s", 1: "pos-w", 2: "pos-n", 3: "pos-e"};
 
+// Card sorting
+const SUIT_ORDER = ["♣", "♥", "♠", "♦"];
+const RANK_STRENGTH      = {"7":0,"8":1,"9":2,"J":3,"Q":4,"K":5,"10":6,"A":7};
+const RANK_STRENGTH_TRUMP = {"7":0,"8":1,"Q":2,"K":3,"10":4,"A":5,"9":6,"J":7};
+
 // Maps absolute seat → DOM element ids, rotated so mySeat is always at the bottom
 const SEAT_CARD_IDS = ["south-cards", "west-cards", "north-cards", "east-cards"];
 const SEAT_LABEL_IDS = ["label-south", "label-west", "label-north", "label-east"];
@@ -24,6 +29,51 @@ let isCreator = false;
 let playerNames = {};
 let currentLegal = [];
 let teamNames = ["Team 0", "Team 1"];
+let currentTrump = null;        // track trump for strength-aware default sort
+let userHandOrder = [];         // card strings in user's preferred order (drag-to-reorder)
+let dragSrcIndex = null;        // index of card being dragged
+
+/* ─── Session persistence (auto-reconnect on page reload) ─────────────────
+   Stores {code, name} in localStorage so the player is automatically
+   put back into their seat if they reload or briefly lose connection.
+   Cleared when the game ends normally.
+*/
+const SESSION_KEY = "klaverjas_session";
+function saveSession(code, name) {
+    try { localStorage.setItem(SESSION_KEY, JSON.stringify({code, name})); } catch(e) {}
+}
+function loadSession() {
+    try { const s = localStorage.getItem(SESSION_KEY); return s ? JSON.parse(s) : null; } catch(e) { return null; }
+}
+function clearSession() {
+    try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
+
+/* On every socket connection (initial load AND mid-game reconnects):
+   - If the lobby is visible and we have a session → show reconnecting UI
+   - If the game is already showing (mid-game socket reconnect) → silently rejoin
+     and hide the paused overlay once the server confirms with "reconnected".
+*/
+socket.on("connect", () => {
+    const session = loadSession();
+    if (!session) return;
+    const lobbyVisible = document.getElementById("lobby-overlay").classList.contains("active");
+    if (lobbyVisible) {
+        showAutoReconnecting();
+    }
+    socket.emit("join_room", {code: session.code, name: session.name});
+});
+
+/* Show the paused overlay immediately when our own socket drops, so the
+   player sees feedback at once rather than waiting for the server ping
+   timeout to fire (which can take 10–40 s). */
+socket.on("disconnect", () => {
+    const lobbyVisible = document.getElementById("lobby-overlay").classList.contains("active");
+    if (!lobbyVisible) {
+        document.getElementById("paused-msg").textContent = t("error.reconnecting");
+        document.getElementById("paused-overlay").classList.add("active");
+    }
+});
 
 /* ─── Seat rotation ───────────────────────────────────────────────────
    Maps an absolute seat index to a visual position (0=bottom, 1=left, 2=top, 3=right)
@@ -72,10 +122,37 @@ function updateSeatLabels() {
     }
 }
 
+/* Compare two card objects for default (non-user) sort:
+   group by SUIT_ORDER, then strongest first within each suit. */
+function defaultCardCompare(a, b) {
+    const si = SUIT_ORDER.indexOf(a.suit), sj = SUIT_ORDER.indexOf(b.suit);
+    if (si !== sj) return si - sj;
+    const table = s => s === currentTrump ? RANK_STRENGTH_TRUMP : RANK_STRENGTH;
+    return (table(b.suit)[b.rank] ?? 0) - (table(a.suit)[a.rank] ?? 0); // strongest first
+}
+
 function renderMyHand(cards, legal) {
     const el = document.getElementById(cardContainerId(mySeat));
     const legalSet = new Set(legal || []);
-    el.innerHTML = cards.map(c => {
+
+    // Sync userHandOrder: drop cards no longer in hand
+    const cardSet = new Set(cards.map(cardStr));
+    userHandOrder = userHandOrder.filter(cs => cardSet.has(cs));
+
+    // Any cards not yet in userHandOrder (fresh deal) → default-sort them and append
+    const tracked = new Set(userHandOrder);
+    const newCards = cards.filter(c => !tracked.has(cardStr(c)));
+    if (newCards.length > 0) {
+        newCards.sort(defaultCardCompare);
+        userHandOrder.push(...newCards.map(cardStr));
+    }
+
+    // Render in userHandOrder sequence
+    const orderMap = new Map(userHandOrder.map((cs, i) => [cs, i]));
+    const sorted = [...cards].sort((a, b) =>
+        (orderMap.get(cardStr(a)) ?? 999) - (orderMap.get(cardStr(b)) ?? 999));
+
+    el.innerHTML = sorted.map(c => {
         const cs = cardStr(c);
         const cls = legalSet.has(cs) ? "legal" : "disabled";
         return makeCardFaceHTML(c, cls);
@@ -88,6 +165,54 @@ function renderMyHand(cards, legal) {
                 d.classList.remove("legal");
                 d.classList.add("disabled");
             });
+        });
+    });
+
+    initDragAndDrop(el);
+}
+
+/* Allow the player to drag cards within their hand to reorder them. */
+function initDragAndDrop(el) {
+    el.querySelectorAll(".card-face").forEach((card, idx) => {
+        card.setAttribute("draggable", "true");
+
+        card.addEventListener("dragstart", e => {
+            dragSrcIndex = idx;
+            e.dataTransfer.effectAllowed = "move";
+            // Defer class addition so ghost image captures the normal card appearance
+            requestAnimationFrame(() => card.classList.add("dragging"));
+        });
+
+        card.addEventListener("dragend", () => {
+            card.classList.remove("dragging");
+            el.querySelectorAll(".card-face").forEach(c => c.classList.remove("drag-over"));
+            dragSrcIndex = null;
+        });
+
+        card.addEventListener("dragover", e => {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "move";
+            el.querySelectorAll(".card-face").forEach(c => c.classList.remove("drag-over"));
+            if (idx !== dragSrcIndex) card.classList.add("drag-over");
+        });
+
+        card.addEventListener("drop", e => {
+            e.preventDefault();
+            if (dragSrcIndex === null || dragSrcIndex === idx) return;
+
+            // Reorder userHandOrder
+            const newOrder = [...userHandOrder];
+            const [moved] = newOrder.splice(dragSrcIndex, 1);
+            newOrder.splice(idx, 0, moved);
+            userHandOrder = newOrder;
+            dragSrcIndex = null;
+
+            // Re-render with preserved legal state
+            const allCards = [...el.querySelectorAll(".card-face")].map(div => {
+                const cs = div.dataset.card;
+                return {rank: cs.slice(0, -1), suit: cs.slice(-1)};
+            });
+            renderMyHand(allCards, [...currentLegal]);
         });
     });
 }
@@ -163,6 +288,7 @@ function joinRoom(seat) {
 }
 
 function showSeatPicker(lobby) {
+    document.getElementById("lobby-reconnecting").style.display = "none";
     document.getElementById("lobby-actions").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "none";
     document.getElementById("lobby-seat-picker").style.display = "block";
@@ -192,6 +318,19 @@ function cancelSeatPicker() {
     document.getElementById("lobby-seat-picker").style.display = "none";
     document.getElementById("lobby-actions").style.display = "block";
     document.getElementById("lobby-name-section").style.display = "block";
+}
+
+function showAutoReconnecting() {
+    document.getElementById("lobby-reconnecting").style.display = "block";
+    document.getElementById("lobby-name-section").style.display = "none";
+    document.getElementById("lobby-actions").style.display = "none";
+}
+
+function cancelAutoReconnect() {
+    clearSession();
+    document.getElementById("lobby-reconnecting").style.display = "none";
+    document.getElementById("lobby-name-section").style.display = "block";
+    document.getElementById("lobby-actions").style.display = "block";
 }
 
 let selectedMode = "score_limit";
@@ -232,6 +371,7 @@ function showLobbyError(msg) {
 }
 
 function showWaitingRoom(lobby) {
+    document.getElementById("lobby-reconnecting").style.display = "none";
     document.getElementById("lobby-actions").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
@@ -285,6 +425,10 @@ socket.on("room_created", data => {
     roomCode = data.code;
     mySeat = data.seat;
     isCreator = true;
+    const name = document.getElementById("lobby-name").value.trim()
+        || (loadSession() || {}).name
+        || t("lobby.name_placeholder");
+    saveSession(data.code, name);
     showWaitingRoom(data.lobby);
 });
 
@@ -292,6 +436,10 @@ socket.on("room_joined", data => {
     roomCode = data.code;
     mySeat = data.seat;
     isCreator = false;
+    const name = document.getElementById("lobby-name").value.trim()
+        || (loadSession() || {}).name
+        || t("lobby.name_placeholder");
+    saveSession(data.code, name);
     showWaitingRoom(data.lobby);
 });
 
@@ -300,7 +448,17 @@ socket.on("room_peeked", data => {
 });
 
 socket.on("join_error", data => {
-    // Server sends translation key
+    if (document.getElementById("lobby-reconnecting").style.display !== "none") {
+        // Auto-reconnect failed — pre-fill form so user can try manually
+        const session = loadSession();
+        if (session) {
+            const nameEl = document.getElementById("lobby-name");
+            const codeEl = document.getElementById("join-code");
+            if (nameEl && !nameEl.value) nameEl.value = session.name;
+            if (codeEl && !codeEl.value) codeEl.value = session.code;
+        }
+        cancelAutoReconnect(); // also clears session
+    }
     const msg = data.key ? t(data.key) : (data.msg || "Error");
     showLobbyError(msg);
 });
@@ -321,9 +479,10 @@ socket.on("game_starting", data => {
     updateSeatLabels();
     updateScores([0, 0]);
 
-    // Show New Game button only for creator
+    // Show New Game button only for creator; Leave button for everyone
     document.getElementById("new-game-btn").style.display = isCreator ? "inline-block" : "none";
     document.getElementById("gameover-newgame-btn").style.display = isCreator ? "inline-block" : "none";
+    document.getElementById("leave-game-btn").style.display = "inline-block";
 });
 
 /* ─── Game socket events ──────────────────────────────────────────────── */
@@ -335,6 +494,9 @@ socket.on("deal_done", data => {
     if (trumpInd) trumpInd.classList.remove("active");
     clearTrickArea();
     if (data.my_seat !== undefined) mySeat = data.my_seat;
+    // Reset hand state for the new round
+    currentTrump = null;
+    userHandOrder = [];
     renderMyHand(data.hand, []);
     if (data.card_counts) renderOtherCards(data.card_counts);
     updateRoundScores([0, 0], [0, 0]);
@@ -367,11 +529,14 @@ socket.on("trump_set", data => {
         indicator.classList.add("active");
     }
 
+    currentTrump = data.trump;
+    userHandOrder = [];           // re-sort with trump-aware ordering
     if (data.hand) renderMyHand(data.hand, []);
 });
 
 socket.on("trick_played", data => {
     showCardInTrick(data.player_idx, data.card);
+    if (data.player_idx === mySeat) currentLegal = [];
     if (data.hand) renderMyHand(data.hand, currentLegal);
     if (data.card_counts) renderOtherCards(data.card_counts);
 });
@@ -412,6 +577,7 @@ socket.on("waiting_for_host", () => {
 });
 
 socket.on("game_over", data => {
+    clearSession();
     const s = data.scores;
     document.getElementById("gameover-msg").textContent =
         t("modal.game_over_msg", {winner: teamNames[data.winner], team0: teamNames[0], team1: teamNames[1], s0: s[0], s1: s[1]});
@@ -477,7 +643,8 @@ socket.on("request_bid", data => {
 /* ─── Disconnect / Reconnect ──────────────────────────────────────────── */
 
 socket.on("player_disconnected", data => {
-    appendLog(t("log.disconnected", {name: data.name}), "nat");
+    document.getElementById("paused-msg").textContent = t("error.waiting_reconnect", {name: data.name});
+    document.getElementById("paused-overlay").classList.add("active");
 });
 
 socket.on("game_paused", data => {
@@ -501,12 +668,39 @@ socket.on("reconnected", data => {
 
     document.getElementById("lobby-overlay").classList.remove("active");
     document.getElementById("paused-overlay").classList.remove("active");
+    document.getElementById("leave-game-btn").style.display = "inline-block";
+    document.getElementById("new-game-btn").style.display = isCreator ? "inline-block" : "none";
+    document.getElementById("gameover-newgame-btn").style.display = isCreator ? "inline-block" : "none";
     updateSeatLabels();
     updateScores(data.scores);
     updateRoundScores(data.cur_tricks, data.cur_roem);
 
     if (data.hand) renderMyHand(data.hand, []);
     if (data.card_counts) renderOtherCards(data.card_counts);
+
+    // Restore trump indicator
+    if (data.trump) {
+        document.getElementById("trump-label").innerHTML =
+            t("score.trump", {suit: data.trump, team: data.declaring_team, player: data.declaring_player});
+        clearDeclaringHighlight();
+        if (data.declaring_player_idx !== null && data.declaring_player_idx !== undefined) {
+            document.getElementById(labelId(data.declaring_player_idx)).classList.add("declaring");
+        }
+        const indicator = document.getElementById("trump-card-indicator");
+        const card = document.getElementById("trump-card");
+        if (indicator && card) {
+            card.className = isRed(data.trump) ? "card red" : "card";
+            card.innerHTML = `<span>${data.trump}</span><span>${data.trump}</span>`;
+            indicator.classList.add("active");
+        }
+    }
+
+    // Restore any cards already played in the current trick
+    if (data.trick_cards) {
+        for (const [pidxStr, c] of Object.entries(data.trick_cards)) {
+            showCardInTrick(parseInt(pidxStr), c);
+        }
+    }
 });
 
 /* ─── Hands viewer ────────────────────────────────────────────────────── */
@@ -651,6 +845,35 @@ function newGame() {
     updateRoundScores([0, 0], [0, 0]);
     socket.emit("new_game");
 }
+
+/* ─── Leave game ──────────────────────────────────────────────────────── */
+
+function leaveGame() {
+    document.getElementById("leave-overlay").classList.add("active");
+}
+
+function confirmLeave() {
+    document.getElementById("leave-overlay").classList.remove("active");
+    clearSession();
+    socket.emit("leave_game");
+}
+
+socket.on("game_left", data => {
+    // Return everyone to the lobby
+    clearSession();
+    document.getElementById("leave-game-btn").style.display = "none";
+    document.getElementById("new-game-btn").style.display = "none";
+    document.getElementById("nextround-banner").classList.remove("active");
+    document.getElementById("gameover-overlay").classList.remove("active");
+    document.getElementById("paused-overlay").classList.remove("active");
+    document.getElementById("lobby-waiting").style.display = "none";
+    document.getElementById("lobby-name-section").style.display = "block";
+    document.getElementById("lobby-actions").style.display = "block";
+    document.getElementById("lobby-overlay").classList.add("active");
+    showLobbyError(t("msg.game_left", {name: data.name}));
+    roomCode = null;
+    isCreator = false;
+});
 
 /* ─── Chat ────────────────────────────────────────────────────────────── */
 

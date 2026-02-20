@@ -24,7 +24,7 @@ from main import (
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "klaverjas-secret")
 _cors_origins = os.environ.get("CORS_ORIGINS", "*")
-socketio = SocketIO(app, async_mode="gevent", ping_timeout=120, ping_interval=25,
+socketio = SocketIO(app, async_mode="gevent", ping_timeout=5, ping_interval=1,
                     cors_allowed_origins=_cors_origins)
 
 PLAYER_NAMES_DEFAULT = {0: "South", 1: "West", 2: "North", 3: "East"}
@@ -56,6 +56,10 @@ class Room:
         self.round_history: list[dict] = []
         self.cur_roem = [0, 0]
         self.cur_tricks = [0, 0]
+        self.cur_trump: str | None = None
+        self.cur_declaring_player: str | None = None
+        self.cur_declaring_player_idx: int | None = None
+        self.cur_declaring_team: int | None = None
 
     def next_free_seat(self) -> int | None:
         for i in range(4):
@@ -337,6 +341,35 @@ def handle_chat_message(data):
     }, room=code)
 
 
+@socketio.on("leave_game")
+def handle_leave_game():
+    sid = request.sid
+    code = sid_to_room.get(sid)
+    if not code or code not in rooms:
+        return
+    room = rooms[code]
+    if not room.started:
+        return
+
+    seat = room.seat_for_sid(sid)
+    name = room.seats.get(seat, {}).get("name", "?") if seat is not None else "?"
+
+    # Interrupt running game thread
+    if room.game:
+        room.game.signal_next_round()
+        for p in room.game.players:
+            if isinstance(p, HumanPlayer):
+                p.interrupt()
+
+    # Notify everyone before destroying room
+    socketio.emit("game_left", {"name": name}, room=code)
+
+    # Clean up room and all sid mappings
+    for info in room.seats.values():
+        sid_to_room.pop(info.get("sid"), None)
+    rooms.pop(code, None)
+
+
 @socketio.on("get_hands")
 def handle_get_hands(_data=None):
     sid = request.sid
@@ -443,11 +476,8 @@ def _reconnect_player(room: Room, seat: int, new_sid: str) -> None:
 
     join_room(room.code)
 
-    player = room.game.players[seat] if room.game else None
-    if isinstance(player, HumanPlayer):
-        player.set_reconnected()
-
-    # Send current game state to the reconnected player
+    # Send current game state to the reconnected player FIRST
+    # (set_reconnected() re-fires request_move/bid and must arrive after the hand)
     state = {
         "seat": seat,
         "code": room.code,
@@ -457,6 +487,11 @@ def _reconnect_player(room: Room, seat: int, new_sid: str) -> None:
         "cur_roem": list(room.cur_roem),
         "is_creator": room.creator_sid == new_sid,
         "team_names": room.team_names,
+        "trump": room.cur_trump,
+        "declaring_player": room.cur_declaring_player,
+        "declaring_player_idx": room.cur_declaring_player_idx,
+        "declaring_team": room.cur_declaring_team,
+        "trick_cards": dict(room.cur_trick_cards),
     }
     # Send their current hand
     if room.game:
@@ -467,6 +502,12 @@ def _reconnect_player(room: Room, seat: int, new_sid: str) -> None:
         }
 
     emit("reconnected", state)
+
+    # Now re-fire any pending move/bid request so the client receives it after the hand
+    player = room.game.players[seat] if room.game else None
+    if isinstance(player, HumanPlayer):
+        player.set_reconnected()
+
     socketio.emit("player_reconnected", {
         "seat": seat,
         "name": room.seats[seat]["name"],
@@ -534,6 +575,10 @@ def _room_state(room: Room, event: str, data: dict) -> None:
         room.cur_tricks[:] = [0, 0]
         room.cur_round_tricks.clear()
         room.cur_trick_cards.clear()
+        room.cur_trump = None
+        room.cur_declaring_player = None
+        room.cur_declaring_player_idx = None
+        room.cur_declaring_team = None
 
         # Send each human their own hand privately
         if room.game:
@@ -551,6 +596,10 @@ def _room_state(room: Room, event: str, data: dict) -> None:
         return  # already sent per-player
 
     elif event == "trump_set":
+        room.cur_trump = data.get("trump")
+        room.cur_declaring_player = data.get("declaring_player")
+        room.cur_declaring_player_idx = data.get("declaring_player_idx")
+        room.cur_declaring_team = data.get("declaring_team")
         # Resend hands to each human
         if room.game:
             for seat, info in room.seats.items():

@@ -68,9 +68,22 @@ body {
 .btn-new    { background: #555; }
 .btn-hist   { background: #1a4a6a; }
 .btn-hands  { background: #4a1a6a; }
+.btn-leave  { background: #6a1a1a; }
 .btn-new:hover   { background: #777; }
 .btn-hist:hover  { background: #2a6a9a; }
 .btn-hands:hover { background: #6a3a8a; }
+.btn-leave:hover { background: #9a2a2a; }
+
+.btn-leave-confirm {
+    background: #9a2a2a;
+    color: white;
+    font-size: 14px;
+    padding: 10px 20px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+}
+.btn-leave-confirm:hover { background: #c0392b; }
 
 .score-bottom {
     display: flex;
@@ -215,6 +228,15 @@ body {
     cursor: default;
 }
 
+/* Drag-to-reorder */
+#south-cards .card-face { cursor: grab; }
+#south-cards .card-face.legal { cursor: pointer; }
+.card-face.dragging { opacity: 0.3; }
+.card-face.drag-over {
+    box-shadow: -6px 0 0 var(--accent);
+    transform: translateX(4px);
+}
+
 .card-back {
     background: var(--card-back);
     border-color: #0e3a5a;
@@ -312,6 +334,15 @@ body:has(#bid-overlay.active) .card-face.disabled {
 
 .mode-btn { font-size: 12px; padding: 6px 14px; }
 .mode-btn.active { background: var(--felt); border: 2px solid var(--green-txt); }
+
+.spinner {
+    width: 28px; height: 28px;
+    border: 3px solid #444;
+    border-top-color: var(--green-txt);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* ─── Next round banner ──────────────────────────────────────────────── */
 

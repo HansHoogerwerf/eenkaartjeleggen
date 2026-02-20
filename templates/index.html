@@ -20,6 +20,13 @@
         <h2 data-i18n="lobby.heading">Klaverjassen</h2>
         <p style="text-align:center; color:#aaa; margin-bottom:16px;" data-i18n="lobby.subtitle">Rotterdam rules — 1 to 4 players</p>
 
+        <!-- Auto-reconnect (shown when a saved session is found on page load) -->
+        <div id="lobby-reconnecting" style="display:none; text-align:center; padding:8px 0 16px;">
+            <p style="color:#aaa; margin-bottom:12px;" data-i18n="lobby.reconnecting">Reconnecting to game…</p>
+            <div class="spinner" style="margin:0 auto 14px;"></div>
+            <button class="btn-pass" onclick="cancelAutoReconnect()" data-i18n="lobby.reconnect_cancel">Cancel</button>
+        </div>
+
         <!-- Name input -->
         <div id="lobby-name-section" style="text-align:center; margin-bottom:16px;">
             <label style="color:#ccc; font-size:13px;" data-i18n="lobby.your_name">Your name:</label><br>
@@ -110,6 +117,7 @@
             <button class="btn btn-hands" onclick="openHands()" data-i18n="btn.hands">Hands</button>
             <button class="btn btn-hist"  onclick="openHistory()" data-i18n="btn.history">History</button>
             <button class="btn btn-new" id="new-game-btn" onclick="newGame()" style="display:none;" data-i18n="btn.new_game">New Game</button>
+            <button class="btn btn-leave" id="leave-game-btn" onclick="leaveGame()" style="display:none;" data-i18n="btn.leave_game">Leave</button>
             <div class="chat-btn-wrapper">
                 <button class="btn btn-chat" onclick="toggleChat()" data-i18n="btn.chat">Chat</button>
                 <span class="chat-badge" id="chat-badge"></span>
@@ -201,6 +209,18 @@
             <button class="btn-pass" onclick="document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.close">
                 Close
             </button>
+        </div>
+    </div>
+</div>
+
+<!-- ── Leave confirm modal ──────────────────────────────────────────── -->
+<div class="modal-overlay" id="leave-overlay">
+    <div class="modal modal-wrapper" style="max-width:320px;">
+        <h2 data-i18n="modal.leave_confirm">Leave game?</h2>
+        <p style="text-align:center; color:#aaa; margin-bottom:16px;" data-i18n="modal.leave_msg">This will end the game for all players.</p>
+        <div style="text-align:center; display:flex; gap:10px; justify-content:center;">
+            <button class="btn-leave-confirm" onclick="confirmLeave()" data-i18n="btn.leave_confirm">Yes, leave</button>
+            <button class="btn-pass" onclick="document.getElementById('leave-overlay').classList.remove('active')" data-i18n="btn.close">Cancel</button>
         </div>
     </div>
 </div>
