@@ -43,8 +43,6 @@ fi
 "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans
 "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" ps
 
-chown -R "ubuntu:deploy-users" "${REPO_DIR}"
-
 if [[ "${PRUNE_IMAGES}" == "1" ]]; then
   docker image prune -f
 fi
