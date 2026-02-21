@@ -85,6 +85,9 @@ const TRANSLATIONS = {
         "mode.target_score": "Target score:",
         "ai.label": "AI strength:",
         "ai.beginner": "Beginner",
+        "rules.label": "Rules:",
+        "rules.rotterdam": "Rotterdam",
+        "rules.amsterdam": "Amsterdam",
         "ai.advanced": "Advanced",
         "ai.expert": "Expert",
 
@@ -239,6 +242,9 @@ const TRANSLATIONS = {
         "mode.target_score": "Doelscore:",
         "ai.label": "AI niveau:",
         "ai.beginner": "Beginner",
+        "rules.label": "Regels:",
+        "rules.rotterdam": "Rotterdam",
+        "rules.amsterdam": "Amsterdam",
         "ai.advanced": "Gevorderd",
         "ai.expert": "Expert",
 

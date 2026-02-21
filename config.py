@@ -28,6 +28,8 @@ class RoomConfig:
     allowed_game_modes: tuple[str, ...]
     default_ai_strength: str
     allowed_ai_strengths: tuple[str, ...]
+    default_rules_variant: str
+    allowed_rules_variants: tuple[str, ...]
     default_score_limit: int
     min_score_limit: int
     max_score_limit: int
@@ -61,6 +63,8 @@ CONFIG = AppConfig(
         allowed_game_modes=("score_limit", "boom", "free_play"),
         default_ai_strength="expert",
         allowed_ai_strengths=("beginner", "advanced", "expert"),
+        default_rules_variant="rotterdam",
+        allowed_rules_variants=("rotterdam", "amsterdam"),
         default_score_limit=500,
         min_score_limit=50,
         max_score_limit=5000,

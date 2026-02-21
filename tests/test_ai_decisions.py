@@ -14,6 +14,17 @@ class TestAIDecisions(unittest.TestCase):
         legal = ai.legal_moves(trick, "♠")
         self.assertEqual([str(c) for c in legal], ["J♠"])
 
+    def test_amsterdam_allows_discard_when_partner_winning(self):
+        ai = AIPlayer("AI East", team=1, seat_idx=3)
+        ai.rules_variant = "amsterdam"
+        ai.hand = [Card("♠", "8"), Card("♦", "A")]
+        trick = [
+            (AIPlayer("S", team=0, seat_idx=0), Card("♣", "7")),
+            (AIPlayer("W", team=1, seat_idx=1), Card("♠", "9")),
+        ]
+        legal = ai.legal_moves(trick, "♠")
+        self.assertEqual(sorted(str(c) for c in legal), ["8♠", "A♦"])
+
     def test_strong_hand_declares(self):
         ai = AIPlayer("AI South", team=0, seat_idx=0)
         ai.hand = [
