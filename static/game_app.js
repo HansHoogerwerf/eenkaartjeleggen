@@ -2,7 +2,53 @@
 
 function createRoom() {
     const name = document.getElementById("lobby-name").value.trim() || t("lobby.name_placeholder");
-    socket.emit("create_room", {name});
+    const publicToggle = document.getElementById("create-public-lobby");
+    const is_public = publicToggle ? publicToggle.checked : false;
+    socket.emit("create_room", {name, is_public});
+}
+
+
+function renderPublicLobbies(search, lobbies) {
+    const container = document.getElementById("public-lobby-results");
+    if (!container) return;
+    if (!lobbies || lobbies.length === 0) {
+        container.innerHTML = `<div class="public-lobby-empty">${t("lobby.public_empty")}</div>`;
+        return;
+    }
+
+    container.innerHTML = "";
+    for (const lobby of lobbies) {
+        const row = document.createElement("div");
+        row.className = "public-lobby-item";
+        row.innerHTML = `<div>
+            <div><strong>${lobby.code}</strong> — ${escapeHtml(lobby.host_name || "?")}</div>
+            <div class="public-lobby-meta">${t("lobby.public_meta", {
+                players: lobby.players_joined,
+                max: lobby.max_players,
+                ai: t("ai." + lobby.ai_strength),
+                mode: t("mode." + lobby.game_mode),
+            })}</div>
+        </div>`;
+        const btn = document.createElement("button");
+        btn.className = "btn-declare";
+        btn.textContent = t("lobby.join");
+        btn.onclick = () => {
+            document.getElementById("join-code").value = lobby.code;
+            peekRoom();
+        };
+        row.appendChild(btn);
+        container.appendChild(row);
+    }
+}
+
+function refreshPublicLobbies() {
+    const searchEl = document.getElementById("public-lobby-search");
+    const search = searchEl ? searchEl.value.trim() : "";
+    socket.emit("get_public_lobbies", {search});
+}
+
+function toggleLobbyPublic(isPublic) {
+    socket.emit("set_lobby_public", {is_public: !!isPublic});
 }
 
 function peekRoom() {
@@ -138,7 +184,9 @@ let selectedAiStrength = "expert";
 function selectMode(mode) {
     selectedMode = mode;
     document.querySelectorAll(".mode-btn").forEach(btn => {
-        if (btn.dataset.mode === mode) {
+        const isActive = btn.dataset.mode === mode;
+        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+        if (isActive) {
             btn.className = "btn-declare mode-btn active";
         } else {
             btn.className = "btn-pass mode-btn";
@@ -151,7 +199,9 @@ function selectMode(mode) {
 function selectAiStrength(level) {
     selectedAiStrength = level;
     document.querySelectorAll(".ai-btn").forEach(btn => {
-        if (btn.dataset.strength === level) {
+        const isActive = btn.dataset.strength === level;
+        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+        if (isActive) {
             btn.className = "btn-declare ai-btn active";
         } else {
             btn.className = "btn-pass ai-btn";
@@ -187,6 +237,8 @@ function showWaitingRoom(lobby) {
     document.getElementById("lobby-name-section").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
     document.getElementById("lobby-code").textContent = lobby.code;
+    const status = document.getElementById("lobby-public-status");
+    if (status) status.style.display = "block";
     updateLobbySeats(lobby);
 }
 
@@ -248,25 +300,24 @@ function updateLobbySeats(lobby) {
             aiDisplay.style.display = "none";
         }
     }
+    const creatorToggleWrap = document.getElementById("lobby-public-toggle-wrap");
+    const creatorToggle = document.getElementById("lobby-public-toggle");
+    const readOnlyStatus = document.getElementById("lobby-public-readonly");
+    if (creatorToggleWrap && creatorToggle && readOnlyStatus) {
+        if (isCreator) {
+            creatorToggleWrap.style.display = "inline-flex";
+            readOnlyStatus.style.display = "none";
+            creatorToggle.checked = !!lobby.is_public;
+        } else {
+            creatorToggleWrap.style.display = "none";
+            readOnlyStatus.style.display = "block";
+            readOnlyStatus.textContent = lobby.is_public ? t("lobby.public_yes") : t("lobby.public_no");
+        }
+    }
+
     if (isCreator) {
         selectAiStrength(selectedAiStrength);
     }
-}
-
-function applyCreatorState() {
-    const lobbyStart = document.getElementById("lobby-start-btn");
-    const lobbyWait = document.getElementById("lobby-wait-msg");
-    const newGameBtn = document.getElementById("new-game-btn");
-    const gameOverNewGameBtn = document.getElementById("gameover-newgame-btn");
-    const nextRoundBtn = document.getElementById("nextround-btn");
-    const nextRoundWait = document.getElementById("nextround-wait");
-
-    if (lobbyStart) lobbyStart.style.display = isCreator ? "inline-block" : "none";
-    if (lobbyWait) lobbyWait.style.display = isCreator ? "none" : "block";
-    if (newGameBtn) newGameBtn.style.display = isCreator ? "inline-block" : "none";
-    if (gameOverNewGameBtn) gameOverNewGameBtn.style.display = isCreator ? "inline-block" : "none";
-    if (nextRoundBtn) nextRoundBtn.style.display = isCreator ? "inline-block" : "none";
-    if (nextRoundWait) nextRoundWait.style.display = isCreator ? "none" : "inline";
 }
 
 // Lobby socket events
@@ -319,13 +370,8 @@ socket.on("lobby_update", data => {
     }
 });
 
-socket.on("host_migrated", data => {
-    if (data && data.creator_sid) {
-        isCreator = data.creator_sid === socket.id;
-    } else if (data && data.seat !== undefined) {
-        isCreator = Number(data.seat) === Number(mySeat);
-    }
-    applyCreatorState();
+socket.on("public_lobbies", data => {
+    renderPublicLobbies(data.search || "", data.lobbies || []);
 });
 
 socket.on("game_starting", data => {
@@ -441,7 +487,8 @@ socket.on("nat", () => {});
 
 socket.on("waiting_for_host", () => {
     const banner = document.getElementById("nextround-banner");
-    applyCreatorState();
+    document.getElementById("nextround-btn").style.display = isCreator ? "inline-block" : "none";
+    document.getElementById("nextround-wait").style.display = isCreator ? "none" : "inline";
 
     // Show round outcome
     const msg = document.getElementById("nextround-msg");
@@ -630,7 +677,7 @@ socket.on("history_data", data => {
     const detailEl = document.getElementById("history-detail");
 
     if (!rounds || rounds.length === 0) {
-        listEl.innerHTML = `<p style='color:#aaa;'>${t("history.empty")}</p>`;
+        listEl.innerHTML = `<p class="history-empty">${t("history.empty")}</p>`;
         detailEl.textContent = "";
         document.getElementById("history-overlay").classList.add("active");
         return;
@@ -771,8 +818,15 @@ function toggleChat() {
 function openChat() {
     chatOpen = true;
     chatUnread = 0;
-    document.getElementById("chat-panel").classList.add("open");
-    document.getElementById("chat-badge").classList.remove("visible");
+    const panel = document.getElementById("chat-panel");
+    const badge = document.getElementById("chat-badge");
+    const toggleBtn = document.getElementById("chat-toggle-btn");
+    panel.classList.add("open");
+    panel.setAttribute("aria-hidden", "false");
+    if (toggleBtn) toggleBtn.setAttribute("aria-expanded", "true");
+    badge.classList.remove("visible");
+    badge.textContent = "";
+    badge.setAttribute("aria-hidden", "true");
     document.getElementById("chat-input").focus();
     const msgs = document.getElementById("chat-messages");
     msgs.scrollTop = msgs.scrollHeight;
@@ -780,7 +834,11 @@ function openChat() {
 
 function closeChat() {
     chatOpen = false;
-    document.getElementById("chat-panel").classList.remove("open");
+    const panel = document.getElementById("chat-panel");
+    const toggleBtn = document.getElementById("chat-toggle-btn");
+    panel.classList.remove("open");
+    panel.setAttribute("aria-hidden", "true");
+    if (toggleBtn) toggleBtn.setAttribute("aria-expanded", "false");
 }
 
 function sendChat() {
@@ -806,15 +864,165 @@ socket.on("chat_message", data => {
         const badge = document.getElementById("chat-badge");
         badge.textContent = chatUnread > 99 ? "99+" : String(chatUnread);
         badge.classList.add("visible");
+        badge.setAttribute("aria-hidden", "false");
     }
 });
+
+/* ─── Modal keyboard accessibility ────────────────────────────────────── */
+
+const MODAL_OVERLAY_SELECTOR = ".modal-overlay";
+const FOCUSABLE_SELECTOR = [
+    "button:not([disabled])",
+    "[href]",
+    "input:not([disabled]):not([type='hidden'])",
+    "select:not([disabled])",
+    "textarea:not([disabled])",
+    "[tabindex]:not([tabindex='-1'])",
+].join(", ");
+const modalFocusRestore = new WeakMap();
+let modalObserver = null;
+
+function isVisibleForFocus(el) {
+    return !!(el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length));
+}
+
+function getActiveModalOverlays() {
+    return Array.from(document.querySelectorAll(`${MODAL_OVERLAY_SELECTOR}.active`))
+        .filter(isVisibleForFocus);
+}
+
+function getTopActiveModalOverlay() {
+    const modals = getActiveModalOverlays();
+    return modals.length > 0 ? modals[modals.length - 1] : null;
+}
+
+function getFocusableWithin(container) {
+    return Array.from(container.querySelectorAll(FOCUSABLE_SELECTOR))
+        .filter(el => isVisibleForFocus(el) && el.getAttribute("aria-hidden") !== "true");
+}
+
+function focusFirstInModal(modal) {
+    const focusable = getFocusableWithin(modal);
+    if (focusable.length > 0) {
+        focusable[0].focus();
+        return;
+    }
+
+    const fallback = modal.querySelector(".modal") || modal;
+    if (!fallback.hasAttribute("tabindex")) fallback.setAttribute("tabindex", "-1");
+    fallback.focus();
+}
+
+function closeTopModalWithEscape(modal) {
+    const closeBtn = Array.from(modal.querySelectorAll("[data-modal-close]"))
+        .find(btn => !btn.disabled && isVisibleForFocus(btn));
+    if (!closeBtn) return false;
+    closeBtn.click();
+    return true;
+}
+
+function handleModalOpened(modal) {
+    if (!modalFocusRestore.has(modal)) {
+        const active = document.activeElement;
+        if (active instanceof HTMLElement && !modal.contains(active)) {
+            modalFocusRestore.set(modal, active);
+        }
+    }
+    setTimeout(() => {
+        const topModal = getTopActiveModalOverlay();
+        const active = document.activeElement;
+        if (topModal === modal && !(active instanceof HTMLElement && modal.contains(active))) {
+            focusFirstInModal(modal);
+        }
+    }, 0);
+}
+
+function handleModalClosed(modal) {
+    const restoreEl = modalFocusRestore.get(modal);
+    modalFocusRestore.delete(modal);
+    if (restoreEl instanceof HTMLElement && document.contains(restoreEl)) {
+        restoreEl.focus();
+    }
+}
+
+function hadClass(oldValue, className) {
+    return (oldValue || "").split(/\s+/).includes(className);
+}
+
+function handleModalKeydown(event) {
+    const modal = getTopActiveModalOverlay();
+    if (!modal) return;
+
+    if (event.key === "Escape") {
+        if (closeTopModalWithEscape(modal)) {
+            event.preventDefault();
+            event.stopPropagation();
+        }
+        return;
+    }
+
+    if (event.key !== "Tab") return;
+    const focusable = getFocusableWithin(modal);
+    if (focusable.length === 0) {
+        event.preventDefault();
+        focusFirstInModal(modal);
+        return;
+    }
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement;
+
+    if (!(active instanceof HTMLElement) || !modal.contains(active)) {
+        event.preventDefault();
+        first.focus();
+        return;
+    }
+    if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+    } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+    }
+}
+
+function initModalKeyboardAccessibility() {
+    modalObserver = new MutationObserver((mutations) => {
+        for (const mutation of mutations) {
+            if (mutation.type !== "attributes" || mutation.attributeName !== "class") continue;
+            if (!(mutation.target instanceof HTMLElement)) continue;
+            const modal = mutation.target;
+            const isActive = modal.classList.contains("active");
+            const wasActive = hadClass(mutation.oldValue, "active");
+            if (isActive && !wasActive) handleModalOpened(modal);
+            if (!isActive && wasActive) handleModalClosed(modal);
+        }
+    });
+
+    document.querySelectorAll(MODAL_OVERLAY_SELECTOR).forEach((modal) => {
+        modalObserver.observe(modal, {
+            attributes: true,
+            attributeFilter: ["class"],
+            attributeOldValue: true,
+        });
+    });
+
+    document.addEventListener("keydown", handleModalKeydown);
+}
 
 /* ─── Initialization ──────────────────────────────────────────────────── */
 
 // Apply saved language on page load
 (function init() {
     setLang(getLang());
+    initModalKeyboardAccessibility();
     bindLobbyInputUx();
+    const searchEl = document.getElementById("public-lobby-search");
+    if (searchEl) {
+        searchEl.addEventListener("input", refreshPublicLobbies);
+    }
+    refreshPublicLobbies();
     const nameEl = document.getElementById("lobby-name");
     if (nameEl) nameEl.focus();
 })();

@@ -347,11 +347,14 @@ function getLang() { return currentLang; }
 function setLang(lang) {
     currentLang = lang;
     localStorage.setItem("klaverjas_lang", lang);
+    document.documentElement.lang = lang;
     document.title = t("page.title");
     applyStaticTranslations();
     // Update the flag button active states
     document.querySelectorAll(".lang-btn").forEach(btn => {
-        btn.classList.toggle("active", btn.dataset.lang === lang);
+        const isActive = btn.dataset.lang === lang;
+        btn.classList.toggle("active", isActive);
+        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
     });
 }
 

@@ -25,6 +25,13 @@ body {
     align-items: center;
 }
 
+.noscript-warning {
+    background: #9a2a2a;
+    color: #fff;
+    text-align: center;
+    padding: 8px 12px;
+}
+
 /* ─── Score panel ─────────────────────────────────────────────────────── */
 
 #score-panel {
@@ -73,6 +80,8 @@ body {
 .btn-hist:hover  { background: #2a6a9a; }
 .btn-hands:hover { background: #6a3a8a; }
 .btn-leave:hover { background: #9a2a2a; }
+#new-game-btn { display: none; }
+#leave-game-btn { display: none; }
 
 .btn-leave-confirm {
     background: #9a2a2a;
@@ -428,10 +437,235 @@ input:focus-visible {
 }
 #nextround-banner.active { display: flex; }
 #nextround-msg { color: #ccc; font-size: 14px; font-weight: bold; }
-#nextround-wait { color: var(--accent); font-size: 12px; }
+#nextround-wait { display: none; color: var(--accent); font-size: 12px; }
 #nextround-banner .btn-declare { padding: 6px 18px; font-size: 13px; }
+#nextround-btn { display: none; }
 
 /* ─── Lobby ───────────────────────────────────────────────────────────── */
+
+#lobby-overlay .modal { min-width: 360px; }
+#lobby-subtitle {
+    text-align: center;
+    color: #aaa;
+    margin-bottom: 16px;
+}
+
+#lobby-reconnecting {
+    display: none;
+    text-align: center;
+    padding: 8px 0 16px;
+}
+#lobby-reconnecting p {
+    color: #aaa;
+    margin-bottom: 12px;
+}
+#lobby-reconnecting .spinner { margin: 0 auto 14px; }
+
+#lobby-name-section {
+    text-align: center;
+    margin-bottom: 16px;
+}
+#lobby-name-section > label { color: #ccc; font-size: 13px; }
+#lobby-name {
+    margin-top: 4px;
+    padding: 6px 12px;
+    font-size: 14px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #0a0a1a;
+    color: #ccc;
+    width: 180px;
+}
+#lobby-name-hint {
+    color: #7d7d7d;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+#lobby-actions { text-align: center; }
+#lobby-create-btn { margin: 4px; }
+#lobby-or-divider {
+    margin: 12px 0;
+    color: #666;
+}
+.lobby-join-row {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+#join-code {
+    padding: 6px 12px;
+    font-size: 16px;
+    width: 80px;
+    text-align: center;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #0a0a1a;
+    color: #ccc;
+}
+
+#join-code-hint {
+    color: #7d7d7d;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+#lobby-error {
+    color: #e74c3c;
+    margin-top: 8px;
+    display: none;
+}
+
+#lobby-seat-picker { display: none; }
+#lobby-seat-picker > p {
+    text-align: center;
+    color: #ccc;
+    margin-bottom: 10px;
+}
+.lobby-seat-picker-actions {
+    text-align: center;
+    margin-top: 10px;
+}
+
+#lobby-waiting { display: none; }
+.lobby-room-code-row {
+    text-align: center;
+    margin-bottom: 12px;
+}
+#lobby-room-code-label { color: #aaa; }
+#lobby-code {
+    font-size: 24px;
+    font-weight: bold;
+    color: var(--accent);
+    letter-spacing: 4px;
+    margin-left: 8px;
+}
+#lobby-copy-code {
+    padding: 4px 10px;
+    font-size: 12px;
+    margin-left: 10px;
+}
+
+#lobby-public-status {
+    display: none;
+    text-align: center;
+    margin: 10px 0;
+}
+#lobby-public-toggle-wrap { display: none; }
+#lobby-public-readonly {
+    display: none;
+    color: #aaa;
+    font-size: 12px;
+}
+
+#lobby-team-names {
+    display: none;
+    margin-top: 10px;
+    text-align: center;
+}
+#lobby-team-names > p {
+    color: #aaa;
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+.lobby-team-inputs {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    align-items: center;
+    flex-wrap: wrap;
+}
+.lobby-team-label { font-size: 11px; }
+.lobby-team-label.team0 { color: var(--green-txt); }
+.lobby-team-label.team1 { color: var(--red-txt); }
+#team0-name,
+#team1-name {
+    width: 110px;
+    padding: 4px 8px;
+    font-size: 13px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #0a0a1a;
+    text-align: center;
+}
+#team0-name { color: var(--green-txt); }
+#team1-name { color: var(--red-txt); }
+
+#lobby-mode-picker {
+    display: none;
+    margin-top: 12px;
+    text-align: center;
+}
+#lobby-mode-picker > p {
+    color: #aaa;
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+.lobby-mode-buttons {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+#score-limit-input { margin-top: 8px; }
+#score-limit-input > label { color: #ccc; font-size: 12px; }
+#mode-score-limit {
+    width: 70px;
+    padding: 4px 8px;
+    font-size: 14px;
+    border-radius: 4px;
+    border: 1px solid #555;
+    background: #0a0a1a;
+    color: #ccc;
+    text-align: center;
+    margin-left: 6px;
+}
+
+#lobby-mode-display {
+    display: none;
+    margin-top: 8px;
+    text-align: center;
+}
+#lobby-mode-text { color: #888; font-size: 12px; }
+
+#lobby-ai-picker {
+    display: none;
+    margin-top: 10px;
+    text-align: center;
+}
+#lobby-ai-picker > p {
+    color: #aaa;
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+.lobby-ai-buttons {
+    display: flex;
+    gap: 6px;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+#lobby-ai-display {
+    display: none;
+    margin-top: 8px;
+    text-align: center;
+}
+#lobby-ai-text { color: #888; font-size: 12px; }
+
+.lobby-start-row {
+    text-align: center;
+    margin-top: 12px;
+}
+#lobby-start-btn { display: none; }
+#lobby-wait-msg {
+    color: #aaa;
+    font-size: 12px;
+    margin-top: 6px;
+}
 
 .lobby-seat-row {
     display: flex;
@@ -550,6 +784,7 @@ input:focus-visible {
 }
 .history-list-item:hover { background: #2a5a2a; }
 .history-list-item.selected { background: var(--felt); color: white; }
+.history-empty { color: #aaa; }
 
 .history-detail {
     flex: 1;
@@ -577,6 +812,34 @@ input:focus-visible {
 .close-btn:hover { color: white; }
 
 .modal-wrapper { position: relative; }
+#gameover-msg {
+    text-align: center;
+    font-size: 16px;
+    margin: 12px 0;
+}
+#gameover-actions { text-align: center; }
+#gameover-newgame-btn { display: none; }
+
+#leave-overlay .modal { max-width: 320px; }
+#leave-msg {
+    text-align: center;
+    color: #aaa;
+    margin-bottom: 16px;
+}
+#leave-actions {
+    text-align: center;
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+}
+
+#paused-msg {
+    text-align: center;
+    font-size: 14px;
+    color: #f1c40f;
+}
+
+.history-main-pane { flex: 1; }
 
 /* ─── Language switcher ──────────────────────────────────────────────── */
 

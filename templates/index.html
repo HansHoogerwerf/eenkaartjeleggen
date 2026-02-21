@@ -1,124 +1,156 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="nl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Play multiplayer Klaverjassen with Rotterdam rules.">
     <title>Klaverjassen — Rotterdam rules</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<noscript>
+    <p class="noscript-warning">
+        This game requires JavaScript to run.
+    </p>
+</noscript>
 
 <!-- ── Language switcher ──────────────────────────────────────────── -->
-<div id="lang-switcher">
-    <button class="lang-btn" data-lang="en" onclick="setLang('en')" title="English">&#127468;&#127463;</button>
-    <button class="lang-btn active" data-lang="nl" onclick="setLang('nl')" title="Nederlands">&#127475;&#127473;</button>
-</div>
+<nav id="lang-switcher" aria-label="Language selector">
+    <button type="button" class="lang-btn" data-lang="en" onclick="setLang('en')" title="English" aria-label="Switch language to English" aria-pressed="false">&#127468;&#127463;</button>
+    <button type="button" class="lang-btn active" data-lang="nl" onclick="setLang('nl')" title="Nederlands" aria-label="Schakel taal naar Nederlands" aria-pressed="true">&#127475;&#127473;</button>
+</nav>
 
 <!-- ── Lobby overlay (shown by default) ─────────────────────────────── -->
 <div class="modal-overlay active" id="lobby-overlay">
-    <div class="modal modal-wrapper" style="min-width:360px;">
-        <h2 data-i18n="lobby.heading">Klaverjassen</h2>
-        <p style="text-align:center; color:#aaa; margin-bottom:16px;" data-i18n="lobby.subtitle">Rotterdam rules — 1 to 4 players</p>
+    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="lobby-title">
+        <h2 id="lobby-title" data-i18n="lobby.heading">Klaverjassen</h2>
+        <p id="lobby-subtitle" data-i18n="lobby.subtitle">Rotterdam rules — 1 to 4 players</p>
 
         <!-- Auto-reconnect (shown when a saved session is found on page load) -->
-        <div id="lobby-reconnecting" style="display:none; text-align:center; padding:8px 0 16px;">
-            <p style="color:#aaa; margin-bottom:12px;" data-i18n="lobby.reconnecting">Reconnecting to game…</p>
-            <div class="spinner" style="margin:0 auto 14px;"></div>
-            <button class="btn-pass" onclick="cancelAutoReconnect()" data-i18n="lobby.reconnect_cancel">Cancel</button>
+        <div id="lobby-reconnecting">
+            <p data-i18n="lobby.reconnecting">Reconnecting to game…</p>
+            <div class="spinner"></div>
+            <button type="button" class="btn-pass" onclick="cancelAutoReconnect()" data-i18n="lobby.reconnect_cancel" data-modal-close>Cancel</button>
         </div>
 
         <!-- Name input -->
-        <div id="lobby-name-section" style="text-align:center; margin-bottom:16px;">
-            <label style="color:#ccc; font-size:13px;" data-i18n="lobby.your_name">Your name:</label><br>
+        <div id="lobby-name-section">
+            <label for="lobby-name" data-i18n="lobby.your_name">Your name:</label><br>
             <input type="text" id="lobby-name" maxlength="16" placeholder="Player" data-i18n-placeholder="lobby.name_placeholder"
-                   style="margin-top:4px; padding:6px 12px; font-size:14px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc; width:180px;">
-            <p style="color:#7d7d7d; font-size:12px; margin-top:8px;" data-i18n="lobby.name_join_hint">Choose a name before joining a room.</p>
+                   autocomplete="nickname" spellcheck="false" aria-describedby="lobby-name-hint"
+                   >
+            <p id="lobby-name-hint" data-i18n="lobby.name_join_hint">Choose a name before joining a room.</p>
         </div>
 
         <!-- Create / Join -->
-        <div id="lobby-actions" style="text-align:center;">
-            <button class="btn-declare" onclick="createRoom()" style="margin:4px;" data-i18n="lobby.create_game">Create Game</button>
-            <div style="margin:12px 0; color:#666;" data-i18n="lobby.or">— or —</div>
-            <div>
+        <div id="lobby-actions">
+            <button type="button" class="btn-declare" id="lobby-create-btn" onclick="createRoom()" data-i18n="lobby.create_game">Create Game</button>
+            <div id="lobby-or-divider" data-i18n="lobby.or">— or —</div>
+            <div class="lobby-join-row">
                 <input type="text" id="join-code" maxlength="4" placeholder="CODE" data-i18n-placeholder="lobby.code_placeholder"
-                       style="padding:6px 12px; font-size:16px; width:80px; text-align:center; letter-spacing:3px; text-transform:uppercase; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc;">
-                <button class="btn-declare" onclick="peekRoom()" style="margin-left:6px;" data-i18n="lobby.join">Join</button>
+                       inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Room code" aria-describedby="join-code-hint"
+                       >
+                <button type="button" class="btn-declare" id="lobby-join-btn" onclick="peekRoom()" data-i18n="lobby.join">Join</button>
             </div>
-            <p style="color:#7d7d7d; font-size:12px; margin-top:8px;" data-i18n="lobby.enter_hint">Press Enter to create or join quickly.</p>
-            <p id="lobby-error" style="color:#e74c3c; margin-top:8px; display:none;"></p>
+            <p id="join-code-hint" data-i18n="lobby.enter_hint">Press Enter to create or join quickly.</p>
+            <div class="public-toggle-wrap">
+                <label class="public-toggle-label">
+                    <input type="checkbox" id="create-public-lobby">
+                    <span data-i18n="lobby.make_public">Make new lobby public</span>
+                </label>
+            </div>
+            <div id="public-lobbies" class="public-lobbies-panel">
+                <div class="public-lobbies-head">
+                    <strong data-i18n="lobby.public_heading">Public lobbies</strong>
+                    <button type="button" class="btn-pass" onclick="refreshPublicLobbies()" data-i18n="lobby.refresh">Refresh</button>
+                </div>
+                <input type="search" id="public-lobby-search" data-i18n-placeholder="lobby.search_placeholder" placeholder="Search public lobbies..." aria-label="Search public lobbies" autocomplete="off" spellcheck="false">
+                <div id="public-lobby-results" class="public-lobby-results"></div>
+            </div>
+            <p id="lobby-error" role="alert" aria-live="assertive"></p>
         </div>
 
         <!-- Seat picker (hidden initially) -->
-        <div id="lobby-seat-picker" style="display:none;">
-            <p style="text-align:center; color:#ccc; margin-bottom:10px;" data-i18n="lobby.choose_seat">Choose your seat:</p>
+        <div id="lobby-seat-picker">
+            <p data-i18n="lobby.choose_seat">Choose your seat:</p>
             <div id="seat-picker-grid"></div>
-            <div style="text-align:center; margin-top:10px;">
-                <button class="btn-pass" onclick="cancelSeatPicker()" data-i18n="lobby.back">Back</button>
+            <div class="lobby-seat-picker-actions">
+                <button type="button" class="btn-pass" onclick="cancelSeatPicker()" data-i18n="lobby.back" data-modal-close>Back</button>
             </div>
         </div>
 
         <!-- Waiting room (hidden initially) -->
-        <div id="lobby-waiting" style="display:none;">
-            <div style="text-align:center; margin-bottom:12px;">
-                <span style="color:#aaa;" data-i18n="lobby.room_code">Room code:</span>
-                <span id="lobby-code" style="font-size:24px; font-weight:bold; color:var(--accent); letter-spacing:4px; margin-left:8px;"></span>
-                <button class="btn-pass" id="lobby-copy-code" onclick="copyRoomCode()" style="padding:4px 10px; font-size:12px; margin-left:10px;" data-i18n="lobby.copy_code">Copy</button>
+        <div id="lobby-waiting">
+            <div class="lobby-room-code-row">
+                <span id="lobby-room-code-label" data-i18n="lobby.room_code">Room code:</span>
+                <span id="lobby-code"></span>
+                <button type="button" class="btn-pass" id="lobby-copy-code" onclick="copyRoomCode()" data-i18n="lobby.copy_code">Copy</button>
             </div>
             <div id="lobby-seats">
                 <!-- Filled by JS -->
             </div>
+            <div id="lobby-public-status">
+                <label class="public-toggle-label" id="lobby-public-toggle-wrap">
+                    <input type="checkbox" id="lobby-public-toggle" onchange="toggleLobbyPublic(this.checked)">
+                    <span data-i18n="lobby.make_public">Make new lobby public</span>
+                </label>
+                <p id="lobby-public-readonly" role="status" aria-live="polite"></p>
+            </div>
             <!-- Team names (host only) -->
-            <div id="lobby-team-names" style="display:none; margin-top:10px; text-align:center;">
-                <p style="color:#aaa; font-size:12px; margin-bottom:6px;" data-i18n="lobby.team_names">Team names:</p>
-                <div style="display:flex; gap:10px; justify-content:center; align-items:center; flex-wrap:wrap;">
+            <div id="lobby-team-names">
+                <p data-i18n="lobby.team_names">Team names:</p>
+                <div class="lobby-team-inputs">
                     <div>
-                        <label style="color:var(--green-txt); font-size:11px;">Team 0</label><br>
+                        <label for="team0-name" class="lobby-team-label team0">Team 0</label><br>
                         <input type="text" id="team0-name" maxlength="16" placeholder="Team 0" value="Team 0"
-                               style="width:110px; padding:4px 8px; font-size:13px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:var(--green-txt); text-align:center;">
+                               autocomplete="off" spellcheck="false"
+                               >
                     </div>
                     <div>
-                        <label style="color:var(--red-txt); font-size:11px;">Team 1</label><br>
+                        <label for="team1-name" class="lobby-team-label team1">Team 1</label><br>
                         <input type="text" id="team1-name" maxlength="16" placeholder="Team 1" value="Team 1"
-                               style="width:110px; padding:4px 8px; font-size:13px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:var(--red-txt); text-align:center;">
+                               autocomplete="off" spellcheck="false"
+                               >
                     </div>
                 </div>
             </div>
             <!-- Game mode picker (host only) -->
-            <div id="lobby-mode-picker" style="display:none; margin-top:12px; text-align:center;">
-                <p style="color:#aaa; font-size:12px; margin-bottom:6px;" data-i18n="mode.label">Game mode:</p>
-                <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
-                    <button class="btn-declare mode-btn active" data-mode="score_limit" onclick="selectMode('score_limit')" data-i18n="mode.score_limit">Score Limit</button>
-                    <button class="btn-pass mode-btn" data-mode="boom" onclick="selectMode('boom')" data-i18n="mode.boom">Boom (16 rounds)</button>
-                    <button class="btn-pass mode-btn" data-mode="free_play" onclick="selectMode('free_play')" data-i18n="mode.free_play">Free Play</button>
+            <div id="lobby-mode-picker">
+                <p data-i18n="mode.label">Game mode:</p>
+                <div class="lobby-mode-buttons">
+                    <button type="button" class="btn-declare mode-btn active" data-mode="score_limit" onclick="selectMode('score_limit')" data-i18n="mode.score_limit" aria-pressed="true">Score Limit</button>
+                    <button type="button" class="btn-pass mode-btn" data-mode="boom" onclick="selectMode('boom')" data-i18n="mode.boom" aria-pressed="false">Boom (16 rounds)</button>
+                    <button type="button" class="btn-pass mode-btn" data-mode="free_play" onclick="selectMode('free_play')" data-i18n="mode.free_play" aria-pressed="false">Free Play</button>
                 </div>
-                <div id="score-limit-input" style="margin-top:8px;">
-                    <label style="color:#ccc; font-size:12px;" data-i18n="mode.target_score">Target score:</label>
+                <div id="score-limit-input">
+                    <label for="mode-score-limit" data-i18n="mode.target_score">Target score:</label>
                     <input type="number" id="mode-score-limit" value="500" min="50" max="5000" step="50"
-                           style="width:70px; padding:4px 8px; font-size:14px; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc; text-align:center; margin-left:6px;">
+                           inputmode="numeric" aria-label="Target score"
+                           >
                 </div>
             </div>
             <!-- Mode display for non-host -->
-            <div id="lobby-mode-display" style="display:none; margin-top:8px; text-align:center;">
-                <span style="color:#888; font-size:12px;" id="lobby-mode-text"></span>
+            <div id="lobby-mode-display">
+                <span id="lobby-mode-text"></span>
             </div>
             <!-- AI strength picker (host only) -->
-            <div id="lobby-ai-picker" style="display:none; margin-top:10px; text-align:center;">
-                <p style="color:#aaa; font-size:12px; margin-bottom:6px;" data-i18n="ai.label">AI strength:</p>
-                <div style="display:flex; gap:6px; justify-content:center; flex-wrap:wrap;">
-                    <button class="btn-pass ai-btn" data-strength="beginner" onclick="selectAiStrength('beginner')" data-i18n="ai.beginner">Beginner</button>
-                    <button class="btn-pass ai-btn" data-strength="advanced" onclick="selectAiStrength('advanced')" data-i18n="ai.advanced">Advanced</button>
-                    <button class="btn-declare ai-btn active" data-strength="expert" onclick="selectAiStrength('expert')" data-i18n="ai.expert">Expert</button>
+            <div id="lobby-ai-picker">
+                <p data-i18n="ai.label">AI strength:</p>
+                <div class="lobby-ai-buttons">
+                    <button type="button" class="btn-pass ai-btn" data-strength="beginner" onclick="selectAiStrength('beginner')" data-i18n="ai.beginner" aria-pressed="false">Beginner</button>
+                    <button type="button" class="btn-pass ai-btn" data-strength="advanced" onclick="selectAiStrength('advanced')" data-i18n="ai.advanced" aria-pressed="false">Advanced</button>
+                    <button type="button" class="btn-declare ai-btn active" data-strength="expert" onclick="selectAiStrength('expert')" data-i18n="ai.expert" aria-pressed="true">Expert</button>
                 </div>
             </div>
             <!-- AI strength display for non-host -->
-            <div id="lobby-ai-display" style="display:none; margin-top:8px; text-align:center;">
-                <span style="color:#888; font-size:12px;" id="lobby-ai-text"></span>
+            <div id="lobby-ai-display">
+                <span id="lobby-ai-text"></span>
             </div>
-            <div style="text-align:center; margin-top:12px;">
-                <button class="btn-declare" id="lobby-start-btn" onclick="startGame()" style="display:none;" data-i18n="lobby.start_game">
+            <div class="lobby-start-row">
+                <button type="button" class="btn-declare" id="lobby-start-btn" onclick="startGame()" data-i18n="lobby.start_game">
                     Start Game
                 </button>
-                <p id="lobby-wait-msg" style="color:#aaa; font-size:12px; margin-top:6px;" data-i18n="lobby.waiting_host">Waiting for the host to start...</p>
+                <p id="lobby-wait-msg" data-i18n="lobby.waiting_host" role="status" aria-live="polite">Waiting for the host to start...</p>
             </div>
         </div>
     </div>
@@ -130,13 +162,13 @@
         <span class="score-team0" id="score-t0">Team 0: 0</span>
         <span id="trump-label" data-i18n="score.trump_default">Trump: —</span>
         <div class="score-buttons">
-            <button class="btn btn-hands" onclick="openHands()" data-i18n="btn.hands">Hands</button>
-            <button class="btn btn-hist"  onclick="openHistory()" data-i18n="btn.history">History</button>
-            <button class="btn btn-new" id="new-game-btn" onclick="newGame()" style="display:none;" data-i18n="btn.new_game">New Game</button>
-            <button class="btn btn-leave" id="leave-game-btn" onclick="leaveGame()" style="display:none;" data-i18n="btn.leave_game">Leave</button>
+            <button type="button" class="btn btn-hands" onclick="openHands()" data-i18n="btn.hands">Hands</button>
+            <button type="button" class="btn btn-hist"  onclick="openHistory()" data-i18n="btn.history">History</button>
+            <button type="button" class="btn btn-new" id="new-game-btn" onclick="newGame()" data-i18n="btn.new_game">New Game</button>
+            <button type="button" class="btn btn-leave" id="leave-game-btn" onclick="leaveGame()" data-i18n="btn.leave_game">Leave</button>
             <div class="chat-btn-wrapper">
-                <button class="btn btn-chat" onclick="toggleChat()" data-i18n="btn.chat">Chat</button>
-                <span class="chat-badge" id="chat-badge"></span>
+                <button type="button" class="btn btn-chat" id="chat-toggle-btn" onclick="toggleChat()" data-i18n="btn.chat" aria-controls="chat-panel" aria-expanded="false">Chat</button>
+                <span class="chat-badge" id="chat-badge" aria-live="polite" aria-hidden="true"></span>
             </div>
         </div>
         <span class="score-team1" id="score-t1">Team 1: 0</span>
@@ -184,46 +216,47 @@
 
 <!-- ── Next round banner (non-blocking, bottom of screen) ─────────── -->
 <div id="nextround-banner">
-    <span id="nextround-msg"></span>
-    <button class="btn-declare" id="nextround-btn" onclick="nextRound()" style="display:none;" data-i18n="btn.next_round">Next Round</button>
-    <span id="nextround-wait" style="display:none;" data-i18n="msg.waiting_host_round">Waiting for host to start next round...</span>
+    <span id="nextround-msg" role="status" aria-live="polite"></span>
+    <button type="button" class="btn-declare" id="nextround-btn" onclick="nextRound()" data-i18n="btn.next_round">Next Round</button>
+    <span id="nextround-wait" data-i18n="msg.waiting_host_round" role="status" aria-live="polite">Waiting for host to start next round...</span>
 </div>
 
 <!-- ── Chat panel ───────────────────────────────────────────────────── -->
-<div id="chat-panel">
+<div id="chat-panel" role="complementary" aria-label="Game chat" aria-hidden="true">
     <div id="chat-header">
         <span data-i18n="chat.title">Chat</span>
-        <button id="chat-close-btn" onclick="closeChat()">&times;</button>
+        <button type="button" id="chat-close-btn" onclick="closeChat()" aria-label="Close chat">&times;</button>
     </div>
-    <div id="chat-messages"></div>
+    <div id="chat-messages" role="log" aria-live="polite" aria-relevant="additions text"></div>
     <div id="chat-input-area">
         <input type="text" id="chat-input" maxlength="200"
-               placeholder="Type a message..." data-i18n-placeholder="chat.placeholder"
+               placeholder="Type a message..." data-i18n-placeholder="chat.placeholder" aria-label="Chat message"
+               autocomplete="off"
                onkeydown="if(event.key==='Enter') sendChat()">
-        <button class="btn-declare" onclick="sendChat()" data-i18n="chat.send">Send</button>
+        <button type="button" class="btn-declare" onclick="sendChat()" data-i18n="chat.send">Send</button>
     </div>
 </div>
 
 <!-- ── Bid modal ────────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="bid-overlay">
-    <div class="modal modal-wrapper">
-        <h2 data-i18n="bid.heading">Trump Declaration</h2>
+    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="bid-title">
+        <h2 id="bid-title" data-i18n="bid.heading">Trump Declaration</h2>
         <div class="bid-suit" id="bid-suit"></div>
-        <div class="bid-msg" id="bid-msg"></div>
+        <div class="bid-msg" id="bid-msg" role="status" aria-live="polite"></div>
         <div class="bid-buttons" id="bid-buttons"></div>
     </div>
 </div>
 
 <!-- ── Game over modal ──────────────────────────────────────────────── -->
 <div class="modal-overlay" id="gameover-overlay">
-    <div class="modal modal-wrapper">
-        <h2 data-i18n="modal.game_over">Game Over</h2>
-        <p id="gameover-msg" style="text-align:center; font-size:16px; margin:12px 0;"></p>
-        <div style="text-align:center;">
-            <button class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); document.getElementById('gameover-overlay').classList.remove('active');" style="display:none;" data-i18n="btn.new_game">
+    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
+        <h2 id="gameover-title" data-i18n="modal.game_over">Game Over</h2>
+        <p id="gameover-msg" role="status" aria-live="polite"></p>
+        <div id="gameover-actions">
+            <button type="button" class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.new_game">
                 New Game
             </button>
-            <button class="btn-pass" onclick="document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.close">
+            <button type="button" class="btn-pass" onclick="document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.close" data-modal-close>
                 Close
             </button>
         </div>
@@ -232,52 +265,52 @@
 
 <!-- ── Leave confirm modal ──────────────────────────────────────────── -->
 <div class="modal-overlay" id="leave-overlay">
-    <div class="modal modal-wrapper" style="max-width:320px;">
-        <h2 data-i18n="modal.leave_confirm">Leave game?</h2>
-        <p style="text-align:center; color:#aaa; margin-bottom:16px;" data-i18n="modal.leave_msg">This will end the game for all players.</p>
-        <div style="text-align:center; display:flex; gap:10px; justify-content:center;">
-            <button class="btn-leave-confirm" onclick="confirmLeave()" data-i18n="btn.leave_confirm">Yes, leave</button>
-            <button class="btn-pass" onclick="document.getElementById('leave-overlay').classList.remove('active')" data-i18n="btn.close">Cancel</button>
+    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="leave-title">
+        <h2 id="leave-title" data-i18n="modal.leave_confirm">Leave game?</h2>
+        <p id="leave-msg" data-i18n="modal.leave_msg">This will end the game for all players.</p>
+        <div id="leave-actions">
+            <button type="button" class="btn-leave-confirm" onclick="confirmLeave()" data-i18n="btn.leave_confirm">Yes, leave</button>
+            <button type="button" class="btn-pass" onclick="document.getElementById('leave-overlay').classList.remove('active')" data-i18n="btn.close" data-modal-close>Cancel</button>
         </div>
     </div>
 </div>
 
 <!-- ── Paused overlay ───────────────────────────────────────────────── -->
 <div class="modal-overlay" id="paused-overlay">
-    <div class="modal modal-wrapper">
-        <h2 data-i18n="modal.paused">Game Paused</h2>
-        <p id="paused-msg" style="text-align:center; font-size:14px; color:#f1c40f;"></p>
+    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="paused-title">
+        <h2 id="paused-title" data-i18n="modal.paused">Game Paused</h2>
+        <p id="paused-msg" role="status" aria-live="polite"></p>
     </div>
 </div>
 
 <!-- ── Hands modal ──────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="hands-overlay">
-    <div class="modal modal-wrapper hands-modal">
-        <button class="close-btn" onclick="document.getElementById('hands-overlay').classList.remove('active')">&times;</button>
-        <h2 data-i18n="modal.hands">Hands — Current Round</h2>
+    <div class="modal modal-wrapper hands-modal" role="dialog" aria-modal="true" aria-labelledby="hands-title">
+        <button type="button" class="close-btn" onclick="document.getElementById('hands-overlay').classList.remove('active')" aria-label="Close hands" data-modal-close>&times;</button>
+        <h2 id="hands-title" data-i18n="modal.hands">Hands — Current Round</h2>
         <div id="hands-content"></div>
     </div>
 </div>
 
 <!-- ── History modal ────────────────────────────────────────────────── -->
 <div class="modal-overlay" id="history-overlay">
-    <div class="modal modal-wrapper history-modal">
-        <button class="close-btn" onclick="document.getElementById('history-overlay').classList.remove('active')">&times;</button>
+    <div class="modal modal-wrapper history-modal" role="dialog" aria-modal="true" aria-labelledby="history-title">
+        <button type="button" class="close-btn" onclick="document.getElementById('history-overlay').classList.remove('active')" aria-label="Close history" data-modal-close>&times;</button>
         <div>
-            <h3 data-i18n="modal.history_rounds">Rounds</h3>
+            <h3 id="history-title" data-i18n="modal.history_rounds">Rounds</h3>
             <div class="history-list" id="history-list"></div>
         </div>
-        <div style="flex:1;">
+        <div class="history-main-pane">
             <h3 data-i18n="modal.history_details">Details</h3>
             <div class="history-detail" id="history-detail" data-i18n="history.select_round">Select a round...</div>
         </div>
     </div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
-<script src="/static/i18n.js"></script>
-<script src="/static/game_state.js"></script>
-<script src="/static/game_render.js"></script>
-<script src="/static/game_app.js"></script>
+<script defer src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
+<script defer src="/static/i18n.js"></script>
+<script defer src="/static/game_state.js"></script>
+<script defer src="/static/game_render.js"></script>
+<script defer src="/static/game_app.js"></script>
 </body>
 </html>
