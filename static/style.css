@@ -549,18 +549,6 @@ input:focus-visible {
     margin-left: 10px;
 }
 
-#lobby-public-status {
-    display: none;
-    text-align: center;
-    margin: 10px 0;
-}
-#lobby-public-toggle-wrap { display: none; }
-#lobby-public-readonly {
-    display: none;
-    color: #aaa;
-    font-size: 12px;
-}
-
 #lobby-team-names {
     display: none;
     margin-top: 10px;
