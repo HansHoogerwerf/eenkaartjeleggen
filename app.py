@@ -72,12 +72,28 @@ def handle_join_room(data):
 
     room = rooms[code]
     room.touch()
+    reconnect_seat = None
+    for seat, info in room.seats.items():
+        if not info["connected"] and info["name"] == name:
+            reconnect_seat = seat
+            break
+
+    if reconnect_seat is not None and not room.started:
+        leave_current_room(socketio, leave_room, sid)
+        old_sid = room.seats[reconnect_seat]["sid"]
+        room.seats[reconnect_seat]["sid"] = sid
+        room.seats[reconnect_seat]["connected"] = True
+        room.mark_reconnected(reconnect_seat)
+        if room.creator_sid == old_sid:
+            room.creator_sid = sid
+        sid_to_room.pop(old_sid, None)
+        sid_to_room[sid] = code
+        join_room(code)
+        emit("room_joined", {"code": code, "seat": reconnect_seat, "lobby": room.lobby_state()})
+        socketio.emit("lobby_update", room.lobby_state(), room=code)
+        return
+
     if room.started:
-        reconnect_seat = None
-        for seat, info in room.seats.items():
-            if not info["connected"] and info["name"] == name:
-                reconnect_seat = seat
-                break
         if reconnect_seat is not None:
             reconnect_player(socketio, emit, join_room, room, reconnect_seat, sid)
             return
@@ -359,6 +375,13 @@ def handle_disconnect():
             "name": room.seats[seat]["name"],
             "reconnect_timeout_seconds": room.reconnect_timeout_seconds,
         }, room=code)
+        return
+
+    if seat == 0 and room.creator_sid == sid:
+        room.seats[seat]["connected"] = False
+        room.mark_disconnected(seat)
+        sid_to_room.pop(sid, None)
+        socketio.emit("lobby_update", room.lobby_state(), room=code)
         return
 
     room.remove_seat(seat)
