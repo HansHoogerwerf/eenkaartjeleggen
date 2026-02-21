@@ -128,6 +128,24 @@ class TestAppIntegration(unittest.TestCase):
         code = created["args"][0]["code"]
         self.assertEqual(rooms[code].reconnect_timeout_seconds, 45)
 
+
+    def test_lobby_creator_disconnect_keeps_room_for_reconnect(self):
+        code = self._create_room()
+        self.c1.disconnect()
+
+        self.assertIn(code, rooms)
+        self.assertFalse(rooms[code].seats[0]["connected"])
+
+        c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
+        try:
+            c3.emit("join_room", {"code": code, "name": "Alice"})
+            rec3 = c3.get_received()
+            joined = next(e for e in rec3 if e["name"] == "room_joined")
+            self.assertEqual(joined["args"][0]["seat"], 0)
+            self.assertTrue(rooms[code].seats[0]["connected"])
+        finally:
+            c3.disconnect()
+
     def test_disconnect_host_emits_host_migrated(self):
         code = self._create_room()
         self.c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
