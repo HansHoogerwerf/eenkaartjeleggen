@@ -135,6 +135,7 @@ function cancelAutoReconnect() {
 let selectedMode = "score_limit";
 let selectedAiStrength = "expert";
 let selectedRulesVariant = "rotterdam";
+let hasPendingRulesVariantSelection = false;
 
 function selectMode(mode) {
     selectedMode = mode;
@@ -164,8 +165,18 @@ function selectAiStrength(level) {
     });
 }
 
-function selectRulesVariant(variant) {
+function selectRulesVariant(variant, options = {}) {
+    const { fromLobby = false, keepPending = false } = options;
     selectedRulesVariant = variant;
+
+    if (isCreator) {
+        if (fromLobby) {
+            if (!keepPending) hasPendingRulesVariantSelection = false;
+        } else {
+            hasPendingRulesVariantSelection = true;
+        }
+    }
+
     document.querySelectorAll(".rules-btn").forEach(btn => {
         const isActive = btn.dataset.rules === variant;
         btn.setAttribute("aria-pressed", isActive ? "true" : "false");
@@ -216,7 +227,9 @@ function updateLobbySeats(lobby) {
     }
     if (lobby && typeof lobby.rules_variant === "string") {
         if (["rotterdam", "amsterdam"].includes(lobby.rules_variant)) {
-            selectedRulesVariant = lobby.rules_variant;
+            if (!isCreator || !hasPendingRulesVariantSelection) {
+                selectRulesVariant(lobby.rules_variant, { fromLobby: true });
+            }
         }
     }
 
@@ -288,7 +301,7 @@ function updateLobbySeats(lobby) {
 
     if (isCreator) {
         selectAiStrength(selectedAiStrength);
-        selectRulesVariant(selectedRulesVariant);
+        selectRulesVariant(selectedRulesVariant, { fromLobby: true, keepPending: true });
     }
 }
 
