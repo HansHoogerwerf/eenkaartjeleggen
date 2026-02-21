@@ -84,6 +84,8 @@ def handle_join_room(data):
         room.seats[reconnect_seat]["sid"] = sid
         room.seats[reconnect_seat]["connected"] = True
         room.mark_reconnected(reconnect_seat)
+        if room.creator_sid == old_sid:
+            room.creator_sid = sid
         sid_to_room.pop(old_sid, None)
         sid_to_room[sid] = code
         join_room(code)

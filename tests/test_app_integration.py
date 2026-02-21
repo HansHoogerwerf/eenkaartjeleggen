@@ -146,6 +146,24 @@ class TestAppIntegration(unittest.TestCase):
         finally:
             c3.disconnect()
 
+
+    def test_lobby_creator_reconnect_can_start_game(self):
+        code = self._create_room()
+        self.c1.disconnect()
+
+        c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
+        try:
+            c3.emit("join_room", {"code": code, "name": "Alice"})
+            c3.get_received()
+
+            with patch("app.start_room_game") as start_game:
+                c3.emit("start_game", {"mode": "boom"})
+                rec3 = c3.get_received()
+                self.assertFalse(any(e["name"] == "error" for e in rec3))
+                self.assertEqual(start_game.call_count, 1)
+        finally:
+            c3.disconnect()
+
     def test_disconnect_host_emits_host_migrated(self):
         code = self._create_room()
         self.c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
