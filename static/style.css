@@ -390,6 +390,14 @@ body:has(#bid-overlay.active) .card-face.disabled {
 }
 .btn-pass:hover { background: #777; }
 
+.btn-declare:focus-visible,
+.btn-pass:focus-visible,
+.btn:focus-visible,
+input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
 .mode-btn { font-size: 12px; padding: 6px 14px; }
 .mode-btn.active { background: var(--felt); border: 2px solid var(--green-txt); }
 

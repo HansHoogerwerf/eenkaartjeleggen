@@ -4,6 +4,7 @@ import threading
 import time
 import os
 
+from config import CONFIG
 from main import KlaverjasGame, SEAT_DEFAULTS, SEAT_TEAMS
 
 
@@ -23,10 +24,10 @@ class Room:
         self.game: KlaverjasGame | None = None
         self.game_thread: threading.Thread | None = None
         self.started = False
-        self.game_mode: str = "score_limit"
-        self.score_limit: int = 500
-        self.ai_strength: str = "expert"
-        self.team_names: list[str] = ["Team 0", "Team 1"]
+        self.game_mode: str = CONFIG.room.default_game_mode
+        self.score_limit: int = CONFIG.room.default_score_limit
+        self.ai_strength: str = CONFIG.room.default_ai_strength
+        self.team_names: list[str] = list(CONFIG.room.default_team_names)
 
         self.cur_round_tricks: list[dict] = []
         self.cur_trick_cards: dict[int, dict] = {}
@@ -73,7 +74,7 @@ class Room:
         return min(candidates, key=lambda s: (self._seat_join_order.get(s, 10_000), s))
 
     def next_free_seat(self) -> int | None:
-        for i in range(4):
+        for i in range(CONFIG.room.seat_count):
             if i not in self.seats:
                 return i
         return None
@@ -86,7 +87,7 @@ class Room:
 
     def player_names(self) -> dict[int, str]:
         names = {}
-        for i in range(4):
+        for i in range(CONFIG.room.seat_count):
             if i in self.seats:
                 names[i] = self.seats[i]["name"]
             else:
@@ -103,7 +104,7 @@ class Room:
                     "team": SEAT_TEAMS[i],
                     "is_human": i in self.seats,
                 }
-                for i in range(4)
+                for i in range(CONFIG.room.seat_count)
             },
             "started": self.started,
             "ai_strength": self.ai_strength,
@@ -130,7 +131,7 @@ ROOM_STARTED_TTL_SECONDS = int(os.environ.get("ROOM_STARTED_TTL_SECONDS", "21600
 
 def generate_code() -> str:
     while True:
-        code = "".join(random.choices(string.ascii_uppercase + string.digits, k=4))
+        code = "".join(random.choices(string.ascii_uppercase + string.digits, k=CONFIG.room.room_code_length))
         if code not in rooms:
             return code
 

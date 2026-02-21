@@ -43,6 +43,7 @@
                        style="padding:6px 12px; font-size:16px; width:80px; text-align:center; letter-spacing:3px; text-transform:uppercase; border-radius:4px; border:1px solid #555; background:#0a0a1a; color:#ccc;">
                 <button class="btn-declare" onclick="peekRoom()" style="margin-left:6px;" data-i18n="lobby.join">Join</button>
             </div>
+            <p style="color:#7d7d7d; font-size:12px; margin-top:8px;" data-i18n="lobby.enter_hint">Press Enter to create or join quickly.</p>
             <p id="lobby-error" style="color:#e74c3c; margin-top:8px; display:none;"></p>
         </div>
 
@@ -60,6 +61,7 @@
             <div style="text-align:center; margin-bottom:12px;">
                 <span style="color:#aaa;" data-i18n="lobby.room_code">Room code:</span>
                 <span id="lobby-code" style="font-size:24px; font-weight:bold; color:var(--accent); letter-spacing:4px; margin-left:8px;"></span>
+                <button class="btn-pass" id="lobby-copy-code" onclick="copyRoomCode()" style="padding:4px 10px; font-size:12px; margin-left:10px;" data-i18n="lobby.copy_code">Copy</button>
             </div>
             <div id="lobby-seats">
                 <!-- Filled by JS -->

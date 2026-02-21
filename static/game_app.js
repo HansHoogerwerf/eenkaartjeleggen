@@ -6,7 +6,8 @@ function createRoom() {
 }
 
 function peekRoom() {
-    const code = document.getElementById("join-code").value.trim().toUpperCase();
+    const code = cleanRoomCode(document.getElementById("join-code").value);
+    document.getElementById("join-code").value = code;
     if (!code || code.length < 4) {
         showLobbyError(t("error.enter_code"));
         return;
@@ -16,8 +17,68 @@ function peekRoom() {
 
 function joinRoom(seat) {
     const name = document.getElementById("lobby-name").value.trim() || t("lobby.name_placeholder");
-    const code = document.getElementById("join-code").value.trim().toUpperCase();
+    const code = cleanRoomCode(document.getElementById("join-code").value);
     socket.emit("join_room", {code, name, seat});
+}
+
+function cleanRoomCode(value) {
+    return (value || "").toUpperCase().replace(/[^A-Z0-9]/g, "").slice(0, 4);
+}
+
+function bindLobbyInputUx() {
+    const nameEl = document.getElementById("lobby-name");
+    const codeEl = document.getElementById("join-code");
+
+    if (nameEl) {
+        nameEl.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") createRoom();
+        });
+    }
+
+    if (codeEl) {
+        const normalizeCode = () => {
+            codeEl.value = cleanRoomCode(codeEl.value);
+        };
+        codeEl.addEventListener("input", normalizeCode);
+        codeEl.addEventListener("paste", () => setTimeout(normalizeCode, 0));
+        codeEl.addEventListener("keydown", (event) => {
+            if (event.key === "Enter") peekRoom();
+        });
+    }
+}
+
+function copyRoomCode() {
+    const code = (document.getElementById("lobby-code").textContent || "").trim();
+    if (!code) return;
+    const btn = document.getElementById("lobby-copy-code");
+    const copiedTxt = t("lobby.copied");
+    const fallbackCopy = () => {
+        const input = document.createElement("input");
+        input.value = code;
+        document.body.appendChild(input);
+        input.select();
+        document.execCommand("copy");
+        document.body.removeChild(input);
+    };
+
+    const onCopied = () => {
+        if (!btn) return;
+        btn.textContent = copiedTxt;
+        setTimeout(() => {
+            btn.textContent = t("lobby.copy_code");
+        }, 1300);
+    };
+
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(code).then(onCopied).catch(() => {
+            fallbackCopy();
+            onCopied();
+        });
+        return;
+    }
+
+    fallbackCopy();
+    onCopied();
 }
 
 function showSeatPicker(lobby) {
@@ -724,4 +785,7 @@ socket.on("chat_message", data => {
 // Apply saved language on page load
 (function init() {
     setLang(getLang());
+    bindLobbyInputUx();
+    const nameEl = document.getElementById("lobby-name");
+    if (nameEl) nameEl.focus();
 })();
