@@ -104,6 +104,7 @@ class TestAppIntegration(unittest.TestCase):
                 "score_limit": 700,
                 "team_names": ["A", "B"],
                 "ai_strength": "advanced",
+                "rules_variant": "amsterdam",
             })
             self.assertEqual(start_game.call_count, 1)
             room = rooms[code]
@@ -111,6 +112,7 @@ class TestAppIntegration(unittest.TestCase):
             self.assertEqual(room.score_limit, 700)
             self.assertEqual(room.team_names, ["A", "B"])
             self.assertEqual(room.ai_strength, "advanced")
+            self.assertEqual(room.rules_variant, "amsterdam")
 
     def test_leave_room_removes_unstarted_player(self):
         code = self._create_room()

@@ -143,6 +143,9 @@ def handle_start_game(data=None):
         strength = data.get("ai_strength", CONFIG.room.default_ai_strength)
         if strength in CONFIG.room.allowed_ai_strengths:
             room.ai_strength = strength
+        rules_variant = data.get("rules_variant", CONFIG.room.default_rules_variant)
+        if rules_variant in CONFIG.room.allowed_rules_variants:
+            room.rules_variant = rules_variant
         limit = data.get("score_limit")
         if isinstance(limit, int) and CONFIG.room.min_score_limit <= limit <= CONFIG.room.max_score_limit:
             room.score_limit = limit

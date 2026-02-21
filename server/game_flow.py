@@ -88,6 +88,7 @@ def start_room_game(socketio, room: Room) -> None:
         game_mode=room.game_mode,
         score_limit=room.score_limit,
         ai_strength=room.ai_strength,
+        rules_variant=room.rules_variant,
     )
 
     for seat in human_seats:

@@ -67,6 +67,7 @@ class Player(ABC):
         self.seat_idx = seat_idx
         self.hand: list[Card] = []
         self.played_cards: set[str] = set()   # all cards seen this round
+        self.rules_variant: str = "rotterdam"
 
     def observe_card(self, card: Card) -> None:
         """Record a card that has been played this round (called for every card played)."""
@@ -83,7 +84,7 @@ class Player(ABC):
         self.hand = sorted(cards, key=lambda c: (SUITS.index(c.suit), RANKS.index(c.rank)))
 
     def legal_moves(self, trick: Trick, trump: str) -> list[Card]:
-        """Rotterdam rules: must trump and overtrump in all cases."""
+        """Return legal moves for the configured rule variant."""
         if not trick:
             return list(self.hand)
 
@@ -98,17 +99,27 @@ class Player(ABC):
                 return over if over else same_suit
             return same_suit
 
-        # Cannot follow suit — Rotterdam: must trump regardless of partner
         trumps = [c for c in self.hand if c.suit == trump]
-        if trumps:
-            trick_trumps = [c for _, c in trick if c.suit == trump]
-            if trick_trumps:
-                highest = max(trick_trumps, key=lambda c: c.strength(trump))
-                over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
-                return over if over else trumps
+        if not trumps:
+            return list(self.hand)
+
+        trick_winner = trick[trick_winner_index(trick, trump)][0]
+        partner_winning = trick_winner.team == self.team
+        trick_trumps = [c for _, c in trick if c.suit == trump]
+
+        if self.rules_variant == "amsterdam" and partner_winning:
+            return list(self.hand)
+
+        if trick_trumps:
+            highest = max(trick_trumps, key=lambda c: c.strength(trump))
+            over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
+            if over:
+                return over
+            if self.rules_variant == "amsterdam":
+                return list(self.hand)
             return trumps
 
-        return list(self.hand)
+        return trumps
 
     @abstractmethod
     def choose_card(self, trick: Trick, trump: str) -> Card: ...
@@ -1231,6 +1242,7 @@ class KlaverjasGame:
         ai_seed_base: int | None = None,
         ai_signal_profile: str = "core",
         ai_strength: str = "expert",
+        rules_variant: str = "rotterdam",
         game_seed: int | None = None,
         replay_output_path: str | None = None,
     ):
@@ -1250,6 +1262,7 @@ class KlaverjasGame:
         self.ai_seed_base = ai_seed_base if ai_seed_base is not None else (self.game_seed * 17 + 11)
         self.ai_signal_profile = ai_signal_profile
         self.ai_strength = ai_strength
+        self.rules_variant = rules_variant if rules_variant in {"rotterdam", "amsterdam"} else "rotterdam"
         self.replay_output_path = replay_output_path
         self._current_round_replay: dict | None = None
 
@@ -1272,6 +1285,9 @@ class KlaverjasGame:
                     )
                 )
 
+        for p in self.players:
+            p.rules_variant = self.rules_variant
+
         self.scores = [0, 0]
         self.log = log_fn or (lambda msg, tag="": print(msg))
         self.notify = state_fn or (lambda event, data: None)
@@ -1285,6 +1301,7 @@ class KlaverjasGame:
             "ai_seed_base": self.ai_seed_base,
             "ai_strength": self.ai_strength,
             "ai_signal_profile": self.ai_signal_profile,
+            "rules_variant": self.rules_variant,
             "game_mode": self.game_mode,
             "score_limit": self.score_limit,
             "rounds": [],
