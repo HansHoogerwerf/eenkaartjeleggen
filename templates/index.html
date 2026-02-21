@@ -116,9 +116,9 @@
             <div id="lobby-ai-picker">
                 <p data-i18n="ai.label">AI strength:</p>
                 <div class="lobby-ai-buttons">
-                    <button type="button" class="btn-pass ai-btn" data-strength="beginner" onclick="selectAiStrength('beginner')" data-i18n="ai.beginner" aria-pressed="false">Beginner</button>
-                    <button type="button" class="btn-pass ai-btn" data-strength="advanced" onclick="selectAiStrength('advanced')" data-i18n="ai.advanced" aria-pressed="false">Advanced</button>
-                    <button type="button" class="btn-declare ai-btn active" data-strength="expert" onclick="selectAiStrength('expert')" data-i18n="ai.expert" aria-pressed="true">Expert</button>
+                    <button type="button" class="btn-pass mode-btn ai-btn" data-strength="beginner" onclick="selectAiStrength('beginner')" data-i18n="ai.beginner" aria-pressed="false">Beginner</button>
+                    <button type="button" class="btn-pass mode-btn ai-btn" data-strength="advanced" onclick="selectAiStrength('advanced')" data-i18n="ai.advanced" aria-pressed="false">Advanced</button>
+                    <button type="button" class="btn-declare mode-btn ai-btn active" data-strength="expert" onclick="selectAiStrength('expert')" data-i18n="ai.expert" aria-pressed="true">Expert</button>
                 </div>
             </div>
             <!-- AI strength display for non-host -->
@@ -129,8 +129,8 @@
             <div id="lobby-rules-picker">
                 <p data-i18n="rules.label">Rules:</p>
                 <div class="lobby-ai-buttons">
-                    <button type="button" class="btn-declare rules-btn active" data-rules="rotterdam" onclick="selectRulesVariant('rotterdam')" data-i18n="rules.rotterdam" aria-pressed="true">Rotterdam</button>
-                    <button type="button" class="btn-pass rules-btn" data-rules="amsterdam" onclick="selectRulesVariant('amsterdam')" data-i18n="rules.amsterdam" aria-pressed="false">Amsterdam</button>
+                    <button type="button" class="btn-declare mode-btn rules-btn active" data-rules="rotterdam" onclick="selectRulesVariant('rotterdam')" data-i18n="rules.rotterdam" aria-pressed="true">Rotterdam</button>
+                    <button type="button" class="btn-pass mode-btn rules-btn" data-rules="amsterdam" onclick="selectRulesVariant('amsterdam')" data-i18n="rules.amsterdam" aria-pressed="false">Amsterdam</button>
                 </div>
             </div>
             <!-- Rules display for non-host -->

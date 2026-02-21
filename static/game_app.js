@@ -157,9 +157,9 @@ function selectAiStrength(level) {
         const isActive = btn.dataset.strength === level;
         btn.setAttribute("aria-pressed", isActive ? "true" : "false");
         if (isActive) {
-            btn.className = "btn-declare ai-btn active";
+            btn.className = "btn-declare mode-btn ai-btn active";
         } else {
-            btn.className = "btn-pass ai-btn";
+            btn.className = "btn-pass mode-btn ai-btn";
         }
     });
 }
@@ -170,9 +170,9 @@ function selectRulesVariant(variant) {
         const isActive = btn.dataset.rules === variant;
         btn.setAttribute("aria-pressed", isActive ? "true" : "false");
         if (isActive) {
-            btn.className = "btn-declare rules-btn active";
+            btn.className = "btn-declare mode-btn rules-btn active";
         } else {
-            btn.className = "btn-pass rules-btn";
+            btn.className = "btn-pass mode-btn rules-btn";
         }
     });
 }
