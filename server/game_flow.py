@@ -11,15 +11,17 @@ def leave_current_room(socketio, leave_room, sid: str) -> None:
     room = rooms[code]
     seat = room.seat_for_sid(sid)
     if seat is not None and not room.started:
-        del room.seats[seat]
+        room.remove_seat(seat)
     leave_room(code)
 
     if not room.seats:
         rooms.pop(code, None)
     else:
         if room.creator_sid == sid and not room.started:
-            first_seat = min(room.seats.keys())
-            room.creator_sid = room.seats[first_seat]["sid"]
+            host_seat = room.host_migration_target()
+            if host_seat is not None:
+                room.creator_sid = room.seats[host_seat]["sid"]
+                socketio.emit("host_migrated", {"seat": host_seat, "name": room.seats[host_seat]["name"]}, room=code)
         socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
@@ -27,6 +29,7 @@ def reconnect_player(socketio, emit, join_room, room: Room, seat: int, new_sid: 
     old_sid = room.seats[seat]["sid"]
     room.seats[seat]["sid"] = new_sid
     room.seats[seat]["connected"] = True
+    room.mark_reconnected(seat)
     sid_to_room[new_sid] = room.code
 
     if room.creator_sid == old_sid:
@@ -90,6 +93,7 @@ def start_room_game(socketio, room: Room) -> None:
     for seat in human_seats:
         player = room.game.players[seat]
         if isinstance(player, HumanPlayer):
+            player.disconnect_timeout = room.reconnect_timeout_seconds
             player._on_move_request = lambda seat_idx, legal, r=room: on_move_request(socketio, r, seat_idx, legal)
             player._on_bid_request = lambda seat_idx, suit, forced, r=room: on_bid_request(socketio, r, seat_idx, suit, forced)
             player._on_disconnect_pause = lambda seat_idx, r=room: on_disconnect_pause(socketio, r, seat_idx)

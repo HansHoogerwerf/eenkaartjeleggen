@@ -13,7 +13,7 @@ from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from main import HumanPlayer
 from server.game_flow import leave_current_room, reconnect_player, start_room_game
-from server.room_state import Room, generate_code, rooms, sid_to_room
+from server.room_state import Room, cleanup_expired_rooms, generate_code, rooms, sid_to_room
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "klaverjas-secret")
@@ -32,6 +32,17 @@ def index():
     return render_template("index.html")
 
 
+def _cleanup_rooms_task():
+    while True:
+        socketio.sleep(30)
+        expired = cleanup_expired_rooms()
+        for code in expired:
+            socketio.emit("room_expired", {"code": code}, room=code)
+
+
+socketio.start_background_task(_cleanup_rooms_task)
+
+
 @socketio.on("create_room")
 def handle_create_room(data):
     sid = request.sid
@@ -41,6 +52,9 @@ def handle_create_room(data):
 
     code = generate_code()
     room = Room(code, sid, name)
+    timeout = data.get("reconnect_timeout_seconds")
+    if isinstance(timeout, int) and 15 <= timeout <= 600:
+        room.reconnect_timeout_seconds = timeout
     rooms[code] = room
     sid_to_room[sid] = code
 
@@ -59,6 +73,7 @@ def handle_join_room(data):
         return
 
     room = rooms[code]
+    room.touch()
     if room.started:
         reconnect_seat = None
         for seat, info in room.seats.items():
@@ -89,7 +104,7 @@ def handle_join_room(data):
 
     leave_current_room(socketio, leave_room, sid)
 
-    room.seats[seat] = {"sid": sid, "name": name, "connected": True}
+    room.add_seat(seat, sid, name, connected=True)
     sid_to_room[sid] = code
     join_room(code)
     emit("room_joined", {"code": code, "seat": seat, "lobby": room.lobby_state()})
@@ -103,6 +118,7 @@ def handle_peek_room(data):
         emit("join_error", {"key": "error.room_not_found"})
         return
     room = rooms[code]
+    room.touch()
     if room.started:
         emit("join_error", {"key": "error.game_in_progress"})
         return
@@ -116,6 +132,7 @@ def handle_start_game(data=None):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     if room.creator_sid != sid or room.started:
         if room.creator_sid != sid:
             emit("error", {"key": "error.only_creator"})
@@ -134,6 +151,9 @@ def handle_start_game(data=None):
         names = data.get("team_names")
         if isinstance(names, list) and len(names) == 2:
             room.team_names = [str(n).strip()[:16] or f"Team {i}" for i, n in enumerate(names)]
+        timeout = data.get("reconnect_timeout_seconds")
+        if isinstance(timeout, int) and 15 <= timeout <= 600:
+            room.reconnect_timeout_seconds = timeout
 
     start_room_game(socketio, room)
 
@@ -150,6 +170,7 @@ def handle_play_card(data):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     if not room.game:
         return
     seat = room.seat_for_sid(sid)
@@ -167,6 +188,7 @@ def handle_bid_response(data):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     if not room.game:
         return
     seat = room.seat_for_sid(sid)
@@ -184,6 +206,7 @@ def handle_new_game(_data=None):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     if room.creator_sid != sid:
         return
 
@@ -211,6 +234,7 @@ def handle_next_round(_data=None):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     if room.creator_sid != sid:
         return
     if room.game:
@@ -224,6 +248,7 @@ def handle_chat_message(data):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     seat = room.seat_for_sid(sid)
     if seat is None:
         return
@@ -244,12 +269,14 @@ def handle_leave_game():
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     if not room.started:
         return
 
     seat = room.seat_for_sid(sid)
     name = room.seats.get(seat, {}).get("name", "?") if seat is not None else "?"
 
+    room.touch()
     if room.game:
         room.game.signal_next_round()
         for p in room.game.players:
@@ -269,6 +296,7 @@ def handle_get_hands(_data=None):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     emit("hands_data", {"tricks": room.cur_round_tricks, "players": room.player_names()})
 
 
@@ -279,6 +307,7 @@ def handle_get_history(_data=None):
     if not code or code not in rooms:
         return
     room = rooms[code]
+    room.touch()
     emit("history_data", {"rounds": room.round_history})
 
 
@@ -296,6 +325,7 @@ def handle_disconnect():
         return
 
     room = rooms[code]
+    room.touch()
     seat = room.seat_for_sid(sid)
     if seat is None:
         sid_to_room.pop(sid, None)
@@ -303,24 +333,33 @@ def handle_disconnect():
 
     if room.started:
         room.seats[seat]["connected"] = False
+        room.mark_disconnected(seat)
         player = room.game.players[seat] if room.game else None
         if isinstance(player, HumanPlayer):
             player.set_disconnected()
+        if room.creator_sid == sid:
+            host_seat = room.host_migration_target()
+            if host_seat is not None:
+                room.creator_sid = room.seats[host_seat]["sid"]
+                socketio.emit("host_migrated", {"seat": host_seat, "name": room.seats[host_seat]["name"]}, room=code)
         socketio.emit("player_disconnected", {
             "seat": seat,
             "name": room.seats[seat]["name"],
+            "reconnect_timeout_seconds": room.reconnect_timeout_seconds,
         }, room=code)
         return
 
-    del room.seats[seat]
+    room.remove_seat(seat)
     sid_to_room.pop(sid, None)
     leave_room(code)
     if not room.seats:
         del rooms[code]
     else:
         if room.creator_sid == sid:
-            first_seat = min(room.seats.keys())
-            room.creator_sid = room.seats[first_seat]["sid"]
+            host_seat = room.host_migration_target()
+            if host_seat is not None:
+                room.creator_sid = room.seats[host_seat]["sid"]
+                socketio.emit("host_migrated", {"seat": host_seat, "name": room.seats[host_seat]["name"]}, room=code)
         socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 

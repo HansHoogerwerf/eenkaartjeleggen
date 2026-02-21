@@ -143,6 +143,7 @@ class HumanPlayer(Player):
         self._bid_result: bool = False
         self._interrupted = False
         self.connected = True
+        self.disconnect_timeout = DISCONNECT_TIMEOUT
 
         # Track in-flight requests so set_reconnected() can re-fire them
         self._pending_legal: list | None = None
@@ -205,7 +206,7 @@ class HumanPlayer(Player):
             if self._pending_legal is not None and self._on_move_request:
                 self._on_move_request(self.seat_idx, legal)
 
-        self._move_event.wait(timeout=DISCONNECT_TIMEOUT)
+        self._move_event.wait(timeout=self.disconnect_timeout)
         self._pending_legal = None
         if self._interrupted or self._chosen_card is None:
             if not self._interrupted:
@@ -246,7 +247,7 @@ class HumanPlayer(Player):
             if self._pending_bid_suit is not None and self._on_bid_request:
                 self._on_bid_request(self.seat_idx, suit, forced)
 
-        self._bid_event.wait(timeout=DISCONNECT_TIMEOUT)
+        self._bid_event.wait(timeout=self.disconnect_timeout)
         self._pending_bid_suit = None
         if self._interrupted:
             raise GameInterrupt()
