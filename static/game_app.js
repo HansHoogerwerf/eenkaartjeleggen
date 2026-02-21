@@ -253,6 +253,22 @@ function updateLobbySeats(lobby) {
     }
 }
 
+function applyCreatorState() {
+    const lobbyStart = document.getElementById("lobby-start-btn");
+    const lobbyWait = document.getElementById("lobby-wait-msg");
+    const newGameBtn = document.getElementById("new-game-btn");
+    const gameOverNewGameBtn = document.getElementById("gameover-newgame-btn");
+    const nextRoundBtn = document.getElementById("nextround-btn");
+    const nextRoundWait = document.getElementById("nextround-wait");
+
+    if (lobbyStart) lobbyStart.style.display = isCreator ? "inline-block" : "none";
+    if (lobbyWait) lobbyWait.style.display = isCreator ? "none" : "block";
+    if (newGameBtn) newGameBtn.style.display = isCreator ? "inline-block" : "none";
+    if (gameOverNewGameBtn) gameOverNewGameBtn.style.display = isCreator ? "inline-block" : "none";
+    if (nextRoundBtn) nextRoundBtn.style.display = isCreator ? "inline-block" : "none";
+    if (nextRoundWait) nextRoundWait.style.display = isCreator ? "none" : "inline";
+}
+
 // Lobby socket events
 
 socket.on("room_created", data => {
@@ -301,6 +317,15 @@ socket.on("lobby_update", data => {
     if (document.getElementById("lobby-waiting").style.display !== "none") {
         updateLobbySeats(data);
     }
+});
+
+socket.on("host_migrated", data => {
+    if (data && data.creator_sid) {
+        isCreator = data.creator_sid === socket.id;
+    } else if (data && data.seat !== undefined) {
+        isCreator = Number(data.seat) === Number(mySeat);
+    }
+    applyCreatorState();
 });
 
 socket.on("game_starting", data => {
@@ -416,8 +441,7 @@ socket.on("nat", () => {});
 
 socket.on("waiting_for_host", () => {
     const banner = document.getElementById("nextround-banner");
-    document.getElementById("nextround-btn").style.display = isCreator ? "inline-block" : "none";
-    document.getElementById("nextround-wait").style.display = isCreator ? "none" : "inline";
+    applyCreatorState();
 
     // Show round outcome
     const msg = document.getElementById("nextround-msg");

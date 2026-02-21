@@ -121,6 +121,28 @@ class TestAppIntegration(unittest.TestCase):
         self.c2.emit("leave_room")
         self.assertNotIn(1, rooms[code].seats)
 
+    def test_create_room_accepts_reconnect_timeout(self):
+        self.c1.emit("create_room", {"name": "Alice", "reconnect_timeout_seconds": 45})
+        events = self.c1.get_received()
+        created = next(e for e in events if e["name"] == "room_created")
+        code = created["args"][0]["code"]
+        self.assertEqual(rooms[code].reconnect_timeout_seconds, 45)
+
+    def test_disconnect_host_emits_host_migrated(self):
+        code = self._create_room()
+        self.c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
+        self.c1.get_received()
+        self.c2.get_received()
+
+        room = rooms[code]
+        room.started = True
+        self.c1.disconnect()
+
+        rec2 = self.c2.get_received()
+        migrated = next(e for e in rec2 if e["name"] == "host_migrated")
+        self.assertEqual(migrated["args"][0]["seat"], 1)
+        self.assertEqual(migrated["args"][0]["creator_sid"], room.creator_sid)
+
 
 if __name__ == "__main__":
     unittest.main()
