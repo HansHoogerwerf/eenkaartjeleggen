@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${REPO_DIR}"
 
+CURRENT_BRANCH="$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD)"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 FORCE_DOWN_UP="${FORCE_DOWN_UP:-0}"
 PRUNE_IMAGES="${PRUNE_IMAGES:-0}"
@@ -16,6 +17,15 @@ elif command -v docker-compose >/dev/null 2>&1; then
 else
   echo "Error: neither 'docker compose' nor 'docker-compose' is available on this host." >&2
   exit 1
+fi
+
+if [[ "${CURRENT_BRANCH}" == "main" ]]; then
+  if ! "${COMPOSE_CMD[@]}" -f docker-compose.traefik.yml ps --services --filter "status=running" 2>/dev/null | grep -q traefik; then
+    echo "Traefik is not running. Starting Traefik..."
+    "${COMPOSE_CMD[@]}" -f docker-compose.traefik.yml up -d
+  else
+    echo "Traefik is already running."
+  fi
 fi
 
 if [[ ! -f "${COMPOSE_FILE}" ]]; then
