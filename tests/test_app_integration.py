@@ -141,6 +141,7 @@ class TestAppIntegration(unittest.TestCase):
         rec2 = self.c2.get_received()
         migrated = next(e for e in rec2 if e["name"] == "host_migrated")
         self.assertEqual(migrated["args"][0]["seat"], 1)
+        self.assertEqual(migrated["args"][0]["creator_sid"], room.creator_sid)
 
 
 if __name__ == "__main__":

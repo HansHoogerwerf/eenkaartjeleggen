@@ -342,7 +342,15 @@ def handle_disconnect():
             host_seat = room.host_migration_target()
             if host_seat is not None:
                 room.creator_sid = room.seats[host_seat]["sid"]
-                socketio.emit("host_migrated", {"seat": host_seat, "name": room.seats[host_seat]["name"]}, room=code)
+                socketio.emit(
+                    "host_migrated",
+                    {
+                        "seat": host_seat,
+                        "name": room.seats[host_seat]["name"],
+                        "creator_sid": room.creator_sid,
+                    },
+                    room=code,
+                )
         socketio.emit("player_disconnected", {
             "seat": seat,
             "name": room.seats[seat]["name"],
@@ -360,7 +368,15 @@ def handle_disconnect():
             host_seat = room.host_migration_target()
             if host_seat is not None:
                 room.creator_sid = room.seats[host_seat]["sid"]
-                socketio.emit("host_migrated", {"seat": host_seat, "name": room.seats[host_seat]["name"]}, room=code)
+                socketio.emit(
+                    "host_migrated",
+                    {
+                        "seat": host_seat,
+                        "name": room.seats[host_seat]["name"],
+                        "creator_sid": room.creator_sid,
+                    },
+                    room=code,
+                )
         socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
