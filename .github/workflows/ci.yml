@@ -1,0 +1,41 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  tests-and-quality-gate:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Run benchmark quality gate
+        run: |
+          python tools/ci_quality_gate.py \
+            --rounds 256 \
+            --seed 42 \
+            --candidate-strength expert \
+            --baseline-strength advanced \
+            --max-win-rate-drop 0.03 \
+            --max-avg-point-diff-drop 20 \
+            --max-declare-success-drop 0.06

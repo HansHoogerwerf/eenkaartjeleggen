@@ -24,6 +24,8 @@ Roem (honours) scored at start of each round:
 First team to reach 500 points wins.
 """
 
+import copy
+import json
 import random
 import threading
 import time
@@ -689,13 +691,13 @@ class AIPlayer(Player):
             return own_cards
 
         poss = self.possible_cards_by_seat.get(seat, set())
-        cards = [self._card_from_str(cs) for cs in poss if cs not in used_cards]
+        cards = [self._card_from_str(cs) for cs in sorted(poss) if cs not in used_cards]
         if cards:
             return cards
 
         # Fallback if inference became too restrictive/inconsistent.
         unseen = self._all_card_strings() - self.played_cards - {str(c) for c in self.hand} - used_cards
-        return [self._card_from_str(cs) for cs in unseen]
+        return [self._card_from_str(cs) for cs in sorted(unseen)]
 
     def _estimate_team_trick_win_prob(self, trick: Trick, my_card: Card, trump: str) -> float:
         if not self.use_trick_prob:
@@ -1106,7 +1108,7 @@ class AIPlayer(Player):
             return None
 
         for seat in targets:
-            cards = [self._card_from_str(cs) for cs in assigned.get(seat, set())]
+            cards = [self._card_from_str(cs) for cs in sorted(assigned.get(seat, set()))]
             if len(cards) != counts[seat]:
                 return None
             hands[seat] = cards
@@ -1228,6 +1230,8 @@ class KlaverjasGame:
         ai_seed_base: int | None = None,
         ai_signal_profile: str = "core",
         ai_strength: str = "expert",
+        game_seed: int | None = None,
+        replay_output_path: str | None = None,
     ):
         """
         Args:
@@ -1240,6 +1244,14 @@ class KlaverjasGame:
         if human_seats is None:
             human_seats = {0: "You"}
 
+        self.game_seed = game_seed if game_seed is not None else random.randrange(1, 2**31)
+        self.rng = random.Random(self.game_seed)
+        self.ai_seed_base = ai_seed_base if ai_seed_base is not None else (self.game_seed * 17 + 11)
+        self.ai_signal_profile = ai_signal_profile
+        self.ai_strength = ai_strength
+        self.replay_output_path = replay_output_path
+        self._current_round_replay: dict | None = None
+
         self.players: list[Player] = []
         for seat in range(4):
             team = SEAT_TEAMS[seat]
@@ -1248,13 +1260,12 @@ class KlaverjasGame:
                 self.players.append(HumanPlayer(name, team, seat_idx=seat))
             else:
                 name = f"AI {SEAT_DEFAULTS[seat]}"
-                rng_seed = None if ai_seed_base is None else ai_seed_base + seat
                 self.players.append(
                     AIPlayer(
                         name,
                         team,
                         seat_idx=seat,
-                        rng_seed=rng_seed,
+                        rng_seed=self.ai_seed_base + seat,
                         signal_profile=ai_signal_profile,
                         ai_strength=ai_strength,
                     )
@@ -1267,10 +1278,31 @@ class KlaverjasGame:
         self.game_mode = game_mode
         self.score_limit = score_limit
         self.boom_rounds = 16
+        self.replay_data: dict = {
+            "version": 1,
+            "game_seed": self.game_seed,
+            "ai_seed_base": self.ai_seed_base,
+            "ai_strength": self.ai_strength,
+            "ai_signal_profile": self.ai_signal_profile,
+            "game_mode": self.game_mode,
+            "score_limit": self.score_limit,
+            "rounds": [],
+            "scores_after": [],
+            "winner": None,
+        }
 
     def signal_next_round(self) -> None:
         """Called by the web layer when the host advances to the next round."""
         self._next_round_event.set()
+
+    def get_replay_data(self) -> dict:
+        """Return a deep copy of the deterministic replay trace for this game."""
+        return copy.deepcopy(self.replay_data)
+
+    def save_replay(self, path: str) -> None:
+        """Persist replay trace to JSON on disk."""
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.replay_data, f, ensure_ascii=False, indent=2)
 
     def _game_continues(self, round_num: int) -> bool:
         """Return True if more rounds should be played."""
@@ -1282,12 +1314,14 @@ class KlaverjasGame:
         return True
 
     def play(self) -> None:
-        dealer = random.randint(0, 3)
+        self.replay_data["boom_rounds"] = self.boom_rounds
+        dealer = self.rng.randint(0, 3)
         round_num = 0
 
         while self._game_continues(round_num):
             round_num += 1
             first_bidder = (dealer + 1) % 4
+            round_seed = self.rng.randrange(1, 2**31)
             self.log(f"\n{'='*40}", "round")
             self.log(f"Round {round_num}  (dealer: {self.players[dealer].name})", "round")
 
@@ -1299,7 +1333,12 @@ class KlaverjasGame:
                     p.boom_rounds = self.boom_rounds
                     p.round_num = round_num
 
-            t0, t1, leader, history = self._play_round(first_bidder)
+            t0, t1, leader, history = self._play_round(
+                first_bidder,
+                round_seed=round_seed,
+                dealer_idx=dealer,
+                round_num=round_num,
+            )
 
             self.scores[0] += t0
             self.scores[1] += t1
@@ -1331,12 +1370,18 @@ class KlaverjasGame:
 
         if self.game_mode != "free_play":
             winner = 0 if self.scores[0] >= self.scores[1] else 1
+            self.replay_data["winner"] = winner
             self.log(f"GAME OVER – Team {winner} wins!  ({self.scores[0]} – {self.scores[1]})")
             self.notify("game_over", {"winner": winner, "scores": list(self.scores)})
+        self.replay_data["scores_after"] = list(self.scores)
+        if self.replay_output_path:
+            self.save_replay(self.replay_output_path)
 
-    def _bidding(self, first_bidder: int) -> tuple[int, str]:
+    def _bidding(self, first_bidder: int, rng: random.Random) -> tuple[int, str]:
         """Two-round random-suit bidding."""
-        suits = random.sample(SUITS, 2)
+        suits = rng.sample(SUITS, 2)
+        if self._current_round_replay is not None:
+            self._current_round_replay["offered_suits"] = list(suits)
 
         self.log("── Bidding ──")
         for round_num, suit in enumerate(suits, 1):
@@ -1348,6 +1393,14 @@ class KlaverjasGame:
                 player = self.players[bidder_idx]
 
                 declared = player.choose_trump(suit, False)
+                if self._current_round_replay is not None:
+                    self._current_round_replay["bids"].append({
+                        "round_num": round_num,
+                        "player_idx": bidder_idx,
+                        "suit": suit,
+                        "declare": bool(declared),
+                        "forced": False,
+                    })
 
                 if declared:
                     self.log(
@@ -1372,22 +1425,61 @@ class KlaverjasGame:
             "trump",
         )
         self.notify("bid", {"player_idx": first_bidder, "trump": forced_suit})
+        if self._current_round_replay is not None:
+            self._current_round_replay["bids"].append({
+                "round_num": 2,
+                "player_idx": first_bidder,
+                "suit": forced_suit,
+                "declare": True,
+                "forced": True,
+            })
         return first_bidder, forced_suit
 
-    def _play_round(self, first_leader: int) -> tuple[int, int, int, dict]:
+    def _play_round(
+        self,
+        first_leader: int,
+        round_seed: int,
+        dealer_idx: int,
+        round_num: int,
+    ) -> tuple[int, int, int, dict]:
         """Returns (team0_pts, team1_pts, last_trick_winner_idx, history_record)."""
+        round_rng = random.Random(round_seed)
+        round_replay = {
+            "round_num": round_num,
+            "round_seed": round_seed,
+            "dealer_idx": dealer_idx,
+            "first_bidder_idx": first_leader,
+            "hands": {},
+            "offered_suits": [],
+            "bids": [],
+            "tricks": [],
+            "trump": None,
+            "declaring_player_idx": None,
+            "declaring_team": None,
+            "trick_pts": [0, 0],
+            "roem_pts": [0, 0],
+            "round_pts": [0, 0],
+            "nat": False,
+            "scores_after": [0, 0],
+        }
+        self._current_round_replay = round_replay
+
         for p in self.players:
             p.start_round()
 
-        deck = Deck()
+        deck = Deck(rng=round_rng)
         hands = deck.deal(4, 8)
         for i, p in enumerate(self.players):
             p.receive_hand(hands[i])
+        round_replay["hands"] = {str(i): [str(c) for c in hands[i]] for i in range(4)}
 
         self.notify("deal_done", {})
-        declaring_player_idx, trump = self._bidding(first_leader)
+        declaring_player_idx, trump = self._bidding(first_leader, round_rng)
         declaring_team = self.players[declaring_player_idx].team
         declaring_name = self.players[declaring_player_idx].name
+        round_replay["trump"] = trump
+        round_replay["declaring_player_idx"] = declaring_player_idx
+        round_replay["declaring_team"] = declaring_team
 
         self.notify("trump_set", {"trump": trump, "declaring_team": declaring_team,
                                     "declaring_player": declaring_name,
@@ -1418,7 +1510,7 @@ class KlaverjasGame:
                     p.current_trump = trump
 
             self.log(f"Trick {trick_num + 1}")
-            winner_idx, pts, trick_cards, cards_played = self._play_trick(leader, trump)
+            winner_idx, pts, trick_cards, cards_played, trick_cards_by_seat = self._play_trick(leader, trump)
             winning_team = self.players[winner_idx].team
             bonus = 10 if trick_num == 7 else 0
             trick_pts[winning_team] += pts + bonus
@@ -1447,6 +1539,20 @@ class KlaverjasGame:
                 "winner": self.players[winner_idx].name,
                 "pts": pts + bonus,
                 "roem": list(roem_items) if roem_items else [],
+            })
+            round_replay["tricks"].append({
+                "trick_num": trick_num + 1,
+                "leader_idx": leader,
+                "winner_idx": winner_idx,
+                "points": pts + bonus,
+                "cards": [
+                    {"player_idx": player_idx, "card": card_str}
+                    for player_idx, card_str in trick_cards_by_seat
+                ],
+                "roem": [
+                    {"description": desc, "points": roem_pts_item}
+                    for desc, roem_pts_item in roem_items
+                ],
             })
 
             self.notify("trick_won", {
@@ -1490,16 +1596,25 @@ class KlaverjasGame:
             "nat": nat,
         }
 
+        round_replay["trick_pts"] = list(trick_pts)
+        round_replay["roem_pts"] = list(roem_pts)
+        round_replay["round_pts"] = list(round_pts)
+        round_replay["nat"] = nat
+        round_replay["scores_after"] = [self.scores[0] + round_pts[0], self.scores[1] + round_pts[1]]
+        self.replay_data["rounds"].append(round_replay)
+        self._current_round_replay = None
+
         return round_pts[0], round_pts[1], leader, history
 
     def _play_trick(
         self, leader: int, trump: str
-    ) -> tuple[int, int, list[tuple[str, str]], list[Card]]:
+    ) -> tuple[int, int, list[tuple[str, str]], list[Card], list[tuple[int, str]]]:
         """Play one trick.
-        Returns (winner_idx, trick_pts, [(player_name, card_str)], [card_objects])."""
+        Returns (winner_idx, trick_pts, [(player_name, card_str)], [card_objects], [(player_idx, card_str)])."""
         trick: Trick = []
         trick_cards: list[tuple[str, str]] = []
         cards_played: list[Card] = []
+        trick_cards_by_seat: list[tuple[int, str]] = []
 
         for offset in range(4):
             idx = (leader + offset) % 4
@@ -1508,6 +1623,7 @@ class KlaverjasGame:
             trick.append((player, card))
             trick_cards.append((player.name, str(card)))
             cards_played.append(card)
+            trick_cards_by_seat.append((idx, str(card)))
 
             lead_suit = trick[0][1].suit if trick else None
             for p in self.players:
@@ -1522,4 +1638,4 @@ class KlaverjasGame:
         wi = trick_winner_index(trick, trump)
         winner_global = self.players.index(trick[wi][0])
         total_pts = sum(c.points(trump) for _, c in trick)
-        return winner_global, total_pts, trick_cards, cards_played
+        return winner_global, total_pts, trick_cards, cards_played, trick_cards_by_seat

@@ -1,0 +1,11 @@
+{
+  "rounds": 256,
+  "seed": 42,
+  "candidate_strength": "expert",
+  "baseline_strength": "advanced",
+  "metrics": {
+    "win_rate": 0.5,
+    "avg_point_diff": 49.88,
+    "declare_success_rate": 0.7737
+  }
+}

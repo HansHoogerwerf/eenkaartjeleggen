@@ -39,9 +39,12 @@ class Card:
 
 
 class Deck:
-    def __init__(self):
+    def __init__(self, rng: random.Random | None = None):
         self.cards = [Card(s, r) for s in SUITS for r in RANKS]
-        random.shuffle(self.cards)
+        if rng is None:
+            random.shuffle(self.cards)
+        else:
+            rng.shuffle(self.cards)
 
     def deal(self, n_players: int, per_player: int) -> list[list[Card]]:
         hands: list[list[Card]] = [[] for _ in range(n_players)]
@@ -93,4 +96,3 @@ def find_roem(hand: list[Card], trump: str) -> list[tuple[str, int]]:
             roem.append(("Four Jacks", 200) if rank == "J" else (f"Four {rank}s", 100))
 
     return roem
-
