@@ -89,7 +89,7 @@ def handle_join_room(data):
         sid_to_room.pop(old_sid, None)
         sid_to_room[sid] = code
         join_room(code)
-        emit("room_joined", {"code": code, "seat": reconnect_seat, "lobby": room.lobby_state()})
+        emit("room_joined", {"code": code, "seat": reconnect_seat, "lobby": room.lobby_state(), "is_creator": room.creator_sid == sid})
         socketio.emit("lobby_update", room.lobby_state(), room=code)
         return
 
@@ -121,7 +121,7 @@ def handle_join_room(data):
     room.add_seat(seat, sid, name, connected=True)
     sid_to_room[sid] = code
     join_room(code)
-    emit("room_joined", {"code": code, "seat": seat, "lobby": room.lobby_state()})
+    emit("room_joined", {"code": code, "seat": seat, "lobby": room.lobby_state(), "is_creator": room.creator_sid == sid})
     socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
