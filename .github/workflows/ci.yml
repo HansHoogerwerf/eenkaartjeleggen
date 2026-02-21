@@ -39,3 +39,80 @@ jobs:
             --max-win-rate-drop 0.03 \
             --max-avg-point-diff-drop 20 \
             --max-declare-success-drop 0.06
+
+  deploy-vps:
+    needs: tests-and-quality-gate
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deploy configuration
+        id: config
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          [ -z "${VPS_HOST}" ] && missing+=("VPS_HOST")
+          [ -z "${VPS_USER}" ] && missing+=("VPS_USER")
+          [ -z "${VPS_SSH_KEY}" ] && missing+=("VPS_SSH_KEY")
+          [ -z "${VPS_APP_DIR}" ] && missing+=("VPS_APP_DIR")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping deploy. Missing required secrets: ${missing[*]}"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${VPS_PORT:-22}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "${VPS_KNOWN_HOSTS}" ]; then
+            printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${PORT}" "${VPS_HOST}" > ~/.ssh/known_hosts
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_APP_DIR: ${{ secrets.VPS_APP_DIR }}
+          VPS_COMPOSE_FILE: ${{ secrets.VPS_COMPOSE_FILE }}
+          VPS_BRANCH: ${{ secrets.VPS_BRANCH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${VPS_PORT:-22}"
+          DEPLOY_BRANCH="${VPS_BRANCH:-main}"
+          COMPOSE_FILE="${VPS_COMPOSE_FILE:-docker-compose.prod.yml}"
+          ssh -i ~/.ssh/id_ed25519 -p "${PORT}" "${VPS_USER}@${VPS_HOST}" /bin/bash -s -- "${VPS_APP_DIR}" "${DEPLOY_BRANCH}" "${COMPOSE_FILE}" <<'EOF'
+          set -Eeuo pipefail
+          APP_DIR="$1"
+          DEPLOY_BRANCH="$2"
+          COMPOSE_FILE="$3"
+          cd "${APP_DIR}"
+          git fetch origin "${DEPLOY_BRANCH}"
+          git checkout "${DEPLOY_BRANCH}"
+          git pull --ff-only origin "${DEPLOY_BRANCH}"
+          COMPOSE_FILE="${COMPOSE_FILE}" bash scripts/deploy.sh
+          EOF
