@@ -6,24 +6,22 @@ from gevent import monkey
 
 monkey.patch_all()
 
-import os
-
 from flask import Flask, render_template, request
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
+from config import CONFIG
 from main import HumanPlayer
 from server.game_flow import leave_current_room, reconnect_player, start_room_game
 from server.room_state import Room, generate_code, rooms, sid_to_room
 
 app = Flask(__name__)
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "klaverjas-secret")
-_cors_origins = os.environ.get("CORS_ORIGINS", "*")
+app.config["SECRET_KEY"] = CONFIG.server.secret_key
 socketio = SocketIO(
     app,
     async_mode="gevent",
-    ping_timeout=30,
-    ping_interval=10,
-    cors_allowed_origins=_cors_origins,
+    ping_timeout=CONFIG.server.ping_timeout,
+    ping_interval=CONFIG.server.ping_interval,
+    cors_allowed_origins=CONFIG.server.cors_origins,
 )
 
 
@@ -35,7 +33,7 @@ def index():
 @socketio.on("create_room")
 def handle_create_room(data):
     sid = request.sid
-    name = (data.get("name") or "Player").strip()[:16] or "Player"
+    name = (data.get("name") or CONFIG.room.default_player_name).strip()[:CONFIG.room.max_player_name_len] or CONFIG.room.default_player_name
 
     leave_current_room(socketio, leave_room, sid)
 
@@ -52,7 +50,7 @@ def handle_create_room(data):
 def handle_join_room(data):
     sid = request.sid
     code = (data.get("code") or "").strip().upper()
-    name = (data.get("name") or "Player").strip()[:16] or "Player"
+    name = (data.get("name") or CONFIG.room.default_player_name).strip()[:CONFIG.room.max_player_name_len] or CONFIG.room.default_player_name
 
     if code not in rooms:
         emit("join_error", {"key": "error.room_not_found"})
@@ -74,7 +72,7 @@ def handle_join_room(data):
     requested_seat = data.get("seat")
     if requested_seat is not None:
         requested_seat = int(requested_seat)
-        if requested_seat < 0 or requested_seat > 3:
+        if requested_seat < 0 or requested_seat >= CONFIG.room.seat_count:
             emit("join_error", {"key": "error.invalid_seat"})
             return
         if requested_seat in room.seats:
@@ -122,18 +120,21 @@ def handle_start_game(data=None):
         return
 
     if data:
-        mode = data.get("mode", "score_limit")
-        if mode in ("score_limit", "boom", "free_play"):
+        mode = data.get("mode", CONFIG.room.default_game_mode)
+        if mode in CONFIG.room.allowed_game_modes:
             room.game_mode = mode
-        strength = data.get("ai_strength", "expert")
-        if strength in ("beginner", "advanced", "expert"):
+        strength = data.get("ai_strength", CONFIG.room.default_ai_strength)
+        if strength in CONFIG.room.allowed_ai_strengths:
             room.ai_strength = strength
         limit = data.get("score_limit")
-        if isinstance(limit, int) and 50 <= limit <= 5000:
+        if isinstance(limit, int) and CONFIG.room.min_score_limit <= limit <= CONFIG.room.max_score_limit:
             room.score_limit = limit
         names = data.get("team_names")
         if isinstance(names, list) and len(names) == 2:
-            room.team_names = [str(n).strip()[:16] or f"Team {i}" for i, n in enumerate(names)]
+            room.team_names = [
+                str(n).strip()[:CONFIG.room.max_team_name_len] or CONFIG.room.default_team_names[i]
+                for i, n in enumerate(names)
+            ]
 
     start_room_game(socketio, room)
 
@@ -227,7 +228,7 @@ def handle_chat_message(data):
     seat = room.seat_for_sid(sid)
     if seat is None:
         return
-    text = str(data.get("text", "")).strip()[:200]
+    text = str(data.get("text", "")).strip()[:CONFIG.room.max_chat_message_len]
     if not text:
         return
     emit("chat_message", {
@@ -325,5 +326,10 @@ def handle_disconnect():
 
 
 if __name__ == "__main__":
-    debug = os.environ.get("FLASK_DEBUG", "0") == "1"
-    socketio.run(app, host="0.0.0.0", port=5000, debug=debug, use_reloader=False)
+    socketio.run(
+        app,
+        host=CONFIG.server.host,
+        port=CONFIG.server.port,
+        debug=CONFIG.server.debug,
+        use_reloader=False,
+    )
