@@ -149,12 +149,16 @@ class TestAppIntegration(unittest.TestCase):
 
     def test_lobby_creator_reconnect_can_start_game(self):
         code = self._create_room()
+        old_creator_sid = rooms[code].creator_sid
         self.c1.disconnect()
 
         c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
         try:
             c3.emit("join_room", {"code": code, "name": "Alice"})
             c3.get_received()
+
+            self.assertEqual(rooms[code].creator_sid, rooms[code].seats[0]["sid"])
+            self.assertNotEqual(rooms[code].creator_sid, old_creator_sid)
 
             with patch("app.start_room_game") as start_game:
                 c3.emit("start_game", {"mode": "boom"})
