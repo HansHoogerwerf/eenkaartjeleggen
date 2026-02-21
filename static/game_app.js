@@ -16,7 +16,12 @@ function peekRoom() {
 }
 
 function joinRoom(seat) {
-    const name = document.getElementById("lobby-name").value.trim() || t("lobby.name_placeholder");
+    const name = document.getElementById("lobby-name").value.trim();
+    if (!name) {
+        showLobbyError(t("error.enter_name_join"));
+        document.getElementById("lobby-name").focus();
+        return;
+    }
     const code = cleanRoomCode(document.getElementById("join-code").value);
     socket.emit("join_room", {code, name, seat});
 }
