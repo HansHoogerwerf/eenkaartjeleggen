@@ -9,7 +9,7 @@ from main import KlaverjasGame, SEAT_DEFAULTS, SEAT_TEAMS
 class Room:
     """One game room with up to 4 human players."""
 
-    def __init__(self, code: str, creator_sid: str, creator_name: str):
+    def __init__(self, code: str, creator_sid: str, creator_name: str, is_public: bool = False):
         self.code = code
         self.creator_sid = creator_sid
 
@@ -20,6 +20,7 @@ class Room:
         self.game: KlaverjasGame | None = None
         self.game_thread: threading.Thread | None = None
         self.started = False
+        self.is_public = is_public
         self.game_mode: str = CONFIG.room.default_game_mode
         self.score_limit: int = CONFIG.room.default_score_limit
         self.ai_strength: str = CONFIG.room.default_ai_strength
@@ -59,6 +60,7 @@ class Room:
     def lobby_state(self) -> dict:
         return {
             "code": self.code,
+            "is_public": self.is_public,
             "seats": {
                 str(i): {
                     "name": self.seats[i]["name"] if i in self.seats else None,
@@ -69,6 +71,18 @@ class Room:
             },
             "started": self.started,
             "ai_strength": self.ai_strength,
+        }
+
+    def public_lobby_state(self) -> dict:
+        return {
+            "code": self.code,
+            "host_name": self.seats.get(0, {}).get("name", "?"),
+            "players_joined": len(self.seats),
+            "max_players": CONFIG.room.seat_count,
+            "ai_strength": self.ai_strength,
+            "game_mode": self.game_mode,
+            "score_limit": self.score_limit,
+            "team_names": list(self.team_names),
         }
 
 

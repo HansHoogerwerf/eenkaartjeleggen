@@ -45,6 +45,20 @@
                 <button class="btn-declare" onclick="peekRoom()" style="margin-left:6px;" data-i18n="lobby.join">Join</button>
             </div>
             <p style="color:#7d7d7d; font-size:12px; margin-top:8px;" data-i18n="lobby.enter_hint">Press Enter to create or join quickly.</p>
+            <div class="public-toggle-wrap">
+                <label class="public-toggle-label">
+                    <input type="checkbox" id="create-public-lobby">
+                    <span data-i18n="lobby.make_public">Make new lobby public</span>
+                </label>
+            </div>
+            <div id="public-lobbies" class="public-lobbies-panel">
+                <div class="public-lobbies-head">
+                    <strong data-i18n="lobby.public_heading">Public lobbies</strong>
+                    <button class="btn-pass" onclick="refreshPublicLobbies()" data-i18n="lobby.refresh">Refresh</button>
+                </div>
+                <input type="text" id="public-lobby-search" data-i18n-placeholder="lobby.search_placeholder" placeholder="Search public lobbies...">
+                <div id="public-lobby-results" class="public-lobby-results"></div>
+            </div>
             <p id="lobby-error" style="color:#e74c3c; margin-top:8px; display:none;"></p>
         </div>
 
@@ -66,6 +80,13 @@
             </div>
             <div id="lobby-seats">
                 <!-- Filled by JS -->
+            </div>
+            <div id="lobby-public-status" style="display:none; text-align:center; margin:10px 0;">
+                <label class="public-toggle-label" id="lobby-public-toggle-wrap" style="display:none;">
+                    <input type="checkbox" id="lobby-public-toggle" onchange="toggleLobbyPublic(this.checked)">
+                    <span data-i18n="lobby.make_public">Make new lobby public</span>
+                </label>
+                <p id="lobby-public-readonly" style="display:none; color:#aaa; font-size:12px;"></p>
             </div>
             <!-- Team names (host only) -->
             <div id="lobby-team-names" style="display:none; margin-top:10px; text-align:center;">

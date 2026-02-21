@@ -25,8 +25,8 @@ class TestAppIntegration(unittest.TestCase):
         rooms.clear()
         sid_to_room.clear()
 
-    def _create_room(self, name="Alice"):
-        self.c1.emit("create_room", {"name": name})
+    def _create_room(self, name="Alice", is_public=False):
+        self.c1.emit("create_room", {"name": name, "is_public": is_public})
         events = self.c1.get_received()
         created = next(e for e in events if e["name"] == "room_created")
         return created["args"][0]["code"]
@@ -45,6 +45,39 @@ class TestAppIntegration(unittest.TestCase):
         self.assertTrue(any(e["name"] == "lobby_update" for e in rec1))
         self.assertIn(code, rooms)
         self.assertEqual(rooms[code].seats[1]["name"], "Bob")
+
+
+    def test_public_lobbies_only_contains_public_not_started(self):
+        self._create_room(name="Alice", is_public=False)
+        public_code = self._create_room(name="PublicHost", is_public=True)
+        self.c1.get_received()
+        self.c2.get_received()
+
+        self.c2.emit("get_public_lobbies", {"search": ""})
+        rec = self.c2.get_received()
+        evt = [e for e in rec if e["name"] == "public_lobbies"][-1]
+        lobbies = evt["args"][0]["lobbies"]
+        self.assertEqual(len(lobbies), 1)
+        self.assertEqual(lobbies[0]["code"], public_code)
+        self.assertEqual(lobbies[0]["players_joined"], 1)
+
+    def test_public_lobbies_search_and_toggle(self):
+        code = self._create_room(name="SearchHost", is_public=True)
+        self.c1.get_received()
+
+        self.c2.get_received()
+        self.c2.emit("get_public_lobbies", {"search": "search"})
+        rec = self.c2.get_received()
+        evt = [e for e in rec if e["name"] == "public_lobbies"][-1]
+        self.assertEqual(len(evt["args"][0]["lobbies"]), 1)
+
+        self.c1.emit("set_lobby_public", {"is_public": False})
+        self.c1.get_received()
+
+        self.c2.emit("get_public_lobbies", {"search": code})
+        rec = self.c2.get_received()
+        evt = [e for e in rec if e["name"] == "public_lobbies"][-1]
+        self.assertEqual(evt["args"][0]["lobbies"], [])
 
     def test_join_room_invalid_code(self):
         self.c2.emit("join_room", {"code": "ZZZZ", "name": "Bob"})

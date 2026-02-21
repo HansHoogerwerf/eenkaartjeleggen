@@ -26,6 +26,14 @@ const TRANSLATIONS = {
         "lobby.waiting_host": "Waiting for the host to start...",
         "lobby.reconnecting": "Reconnecting to game…",
         "lobby.reconnect_cancel": "Cancel",
+        "lobby.make_public": "Make new lobby public",
+        "lobby.public_heading": "Public lobbies",
+        "lobby.refresh": "Refresh",
+        "lobby.search_placeholder": "Search public lobbies...",
+        "lobby.public_empty": "No public lobbies found.",
+        "lobby.public_meta": "{players}/{max} players • AI: {ai} • Mode: {mode}",
+        "lobby.public_yes": "This lobby is public.",
+        "lobby.public_no": "This lobby is private.",
 
         // ── Seat names ──
         "seat.south": "South",
@@ -180,6 +188,14 @@ const TRANSLATIONS = {
         "lobby.waiting_host": "Wachten tot de host het spel start...",
         "lobby.reconnecting": "Verbinding herstellen…",
         "lobby.reconnect_cancel": "Annuleren",
+        "lobby.make_public": "Nieuwe lobby openbaar maken",
+        "lobby.public_heading": "Openbare lobby's",
+        "lobby.refresh": "Vernieuwen",
+        "lobby.search_placeholder": "Zoek openbare lobby's...",
+        "lobby.public_empty": "Geen openbare lobby's gevonden.",
+        "lobby.public_meta": "{players}/{max} spelers • AI: {ai} • Modus: {mode}",
+        "lobby.public_yes": "Deze lobby is openbaar.",
+        "lobby.public_no": "Deze lobby is privé.",
 
         // ── Stoelnamen ──
         "seat.south": "Zuid",

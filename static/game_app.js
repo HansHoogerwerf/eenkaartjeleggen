@@ -2,7 +2,53 @@
 
 function createRoom() {
     const name = document.getElementById("lobby-name").value.trim() || t("lobby.name_placeholder");
-    socket.emit("create_room", {name});
+    const publicToggle = document.getElementById("create-public-lobby");
+    const is_public = publicToggle ? publicToggle.checked : false;
+    socket.emit("create_room", {name, is_public});
+}
+
+
+function renderPublicLobbies(search, lobbies) {
+    const container = document.getElementById("public-lobby-results");
+    if (!container) return;
+    if (!lobbies || lobbies.length === 0) {
+        container.innerHTML = `<div class="public-lobby-empty">${t("lobby.public_empty")}</div>`;
+        return;
+    }
+
+    container.innerHTML = "";
+    for (const lobby of lobbies) {
+        const row = document.createElement("div");
+        row.className = "public-lobby-item";
+        row.innerHTML = `<div>
+            <div><strong>${lobby.code}</strong> — ${escapeHtml(lobby.host_name || "?")}</div>
+            <div class="public-lobby-meta">${t("lobby.public_meta", {
+                players: lobby.players_joined,
+                max: lobby.max_players,
+                ai: t("ai." + lobby.ai_strength),
+                mode: t("mode." + lobby.game_mode),
+            })}</div>
+        </div>`;
+        const btn = document.createElement("button");
+        btn.className = "btn-declare";
+        btn.textContent = t("lobby.join");
+        btn.onclick = () => {
+            document.getElementById("join-code").value = lobby.code;
+            peekRoom();
+        };
+        row.appendChild(btn);
+        container.appendChild(row);
+    }
+}
+
+function refreshPublicLobbies() {
+    const searchEl = document.getElementById("public-lobby-search");
+    const search = searchEl ? searchEl.value.trim() : "";
+    socket.emit("get_public_lobbies", {search});
+}
+
+function toggleLobbyPublic(isPublic) {
+    socket.emit("set_lobby_public", {is_public: !!isPublic});
 }
 
 function peekRoom() {
@@ -187,6 +233,8 @@ function showWaitingRoom(lobby) {
     document.getElementById("lobby-name-section").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
     document.getElementById("lobby-code").textContent = lobby.code;
+    const status = document.getElementById("lobby-public-status");
+    if (status) status.style.display = "block";
     updateLobbySeats(lobby);
 }
 
@@ -248,6 +296,21 @@ function updateLobbySeats(lobby) {
             aiDisplay.style.display = "none";
         }
     }
+    const creatorToggleWrap = document.getElementById("lobby-public-toggle-wrap");
+    const creatorToggle = document.getElementById("lobby-public-toggle");
+    const readOnlyStatus = document.getElementById("lobby-public-readonly");
+    if (creatorToggleWrap && creatorToggle && readOnlyStatus) {
+        if (isCreator) {
+            creatorToggleWrap.style.display = "inline-flex";
+            readOnlyStatus.style.display = "none";
+            creatorToggle.checked = !!lobby.is_public;
+        } else {
+            creatorToggleWrap.style.display = "none";
+            readOnlyStatus.style.display = "block";
+            readOnlyStatus.textContent = lobby.is_public ? t("lobby.public_yes") : t("lobby.public_no");
+        }
+    }
+
     if (isCreator) {
         selectAiStrength(selectedAiStrength);
     }
@@ -301,6 +364,10 @@ socket.on("lobby_update", data => {
     if (document.getElementById("lobby-waiting").style.display !== "none") {
         updateLobbySeats(data);
     }
+});
+
+socket.on("public_lobbies", data => {
+    renderPublicLobbies(data.search || "", data.lobbies || []);
 });
 
 socket.on("game_starting", data => {
@@ -791,6 +858,11 @@ socket.on("chat_message", data => {
 (function init() {
     setLang(getLang());
     bindLobbyInputUx();
+    const searchEl = document.getElementById("public-lobby-search");
+    if (searchEl) {
+        searchEl.addEventListener("input", refreshPublicLobbies);
+    }
+    refreshPublicLobbies();
     const nameEl = document.getElementById("lobby-name");
     if (nameEl) nameEl.focus();
 })();

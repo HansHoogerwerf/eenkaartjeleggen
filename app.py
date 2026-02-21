@@ -25,6 +25,35 @@ socketio = SocketIO(
 )
 
 
+def _public_lobby_list(search: str = "") -> list[dict]:
+    needle = search.strip().lower()
+    lobbies = []
+    for room in rooms.values():
+        if room.started or not room.is_public:
+            continue
+        summary = room.public_lobby_state()
+        haystack = f"{summary['code']} {summary['host_name']} {summary['ai_strength']} {summary['game_mode']}"
+        if needle and needle not in haystack.lower():
+            continue
+        lobbies.append(summary)
+    lobbies.sort(key=lambda lobby: lobby["code"])
+    return lobbies
+
+
+def _emit_public_lobbies(search: str = ""):
+    emit("public_lobbies", {
+        "search": search,
+        "lobbies": _public_lobby_list(search),
+    })
+
+
+def _broadcast_public_lobbies():
+    socketio.emit("public_lobbies", {
+        "search": "",
+        "lobbies": _public_lobby_list(),
+    })
+
+
 @app.route("/")
 def index():
     return render_template("index.html")
@@ -38,12 +67,39 @@ def handle_create_room(data):
     leave_current_room(socketio, leave_room, sid)
 
     code = generate_code()
-    room = Room(code, sid, name)
+    is_public = bool(data.get("is_public", False))
+    room = Room(code, sid, name, is_public=is_public)
     rooms[code] = room
     sid_to_room[sid] = code
 
     join_room(code)
     emit("room_created", {"code": code, "seat": 0, "lobby": room.lobby_state()})
+    _broadcast_public_lobbies()
+
+
+@socketio.on("set_lobby_public")
+def handle_set_lobby_public(data):
+    sid = request.sid
+    code = sid_to_room.get(sid)
+    if not code or code not in rooms:
+        return
+    room = rooms[code]
+    if room.creator_sid != sid:
+        emit("error", {"key": "error.only_creator"})
+        return
+    if room.started:
+        return
+    room.is_public = bool(data.get("is_public", False))
+    socketio.emit("lobby_update", room.lobby_state(), room=code)
+    _broadcast_public_lobbies()
+
+
+@socketio.on("get_public_lobbies")
+def handle_get_public_lobbies(data=None):
+    search = ""
+    if isinstance(data, dict):
+        search = str(data.get("search", ""))[:40]
+    _emit_public_lobbies(search)
 
 
 @socketio.on("join_room")
@@ -92,6 +148,7 @@ def handle_join_room(data):
     join_room(code)
     emit("room_joined", {"code": code, "seat": seat, "lobby": room.lobby_state()})
     socketio.emit("lobby_update", room.lobby_state(), room=code)
+    _broadcast_public_lobbies()
 
 
 @socketio.on("peek_room")
@@ -137,11 +194,13 @@ def handle_start_game(data=None):
             ]
 
     start_room_game(socketio, room)
+    _broadcast_public_lobbies()
 
 
 @socketio.on("leave_room")
 def handle_leave_room(_data=None):
     leave_current_room(socketio, leave_room, request.sid)
+    _broadcast_public_lobbies()
 
 
 @socketio.on("play_card")
@@ -261,6 +320,7 @@ def handle_leave_game():
     for info in room.seats.values():
         sid_to_room.pop(info.get("sid"), None)
     rooms.pop(code, None)
+    _broadcast_public_lobbies()
 
 
 @socketio.on("get_hands")
@@ -323,6 +383,7 @@ def handle_disconnect():
             first_seat = min(room.seats.keys())
             room.creator_sid = room.seats[first_seat]["sid"]
         socketio.emit("lobby_update", room.lobby_state(), room=code)
+    _broadcast_public_lobbies()
 
 
 if __name__ == "__main__":
