@@ -315,7 +315,9 @@ socket.on("lobby_update", data => {
 });
 
 socket.on("host_migrated", data => {
-    if (data && data.seat !== undefined) {
+    if (data && data.creator_sid) {
+        isCreator = data.creator_sid === socket.id;
+    } else if (data && data.seat !== undefined) {
         isCreator = Number(data.seat) === Number(mySeat);
     }
     applyCreatorState();
