@@ -9,6 +9,8 @@ CURRENT_BRANCH="$(git -C "${REPO_DIR}" rev-parse --abbrev-ref HEAD)"
 COMPOSE_FILE="${COMPOSE_FILE:-docker-compose.prod.yml}"
 FORCE_DOWN_UP="${FORCE_DOWN_UP:-0}"
 PRUNE_IMAGES="${PRUNE_IMAGES:-0}"
+DEPLOY_PROJECT_NAME="${DEPLOY_PROJECT_NAME:-$(basename "${COMPOSE_FILE}" .yml)}"
+TRAEFIK_PROJECT_NAME="${TRAEFIK_PROJECT_NAME:-traefik}"
 
 if docker compose version >/dev/null 2>&1; then
   COMPOSE_CMD=(docker compose)
@@ -19,10 +21,13 @@ else
   exit 1
 fi
 
+TRAEFIK_COMPOSE_CMD=("${COMPOSE_CMD[@]}" -p "${TRAEFIK_PROJECT_NAME}")
+DEPLOY_COMPOSE_CMD=("${COMPOSE_CMD[@]}" -p "${DEPLOY_PROJECT_NAME}")
+
 if [[ "${CURRENT_BRANCH}" == "main" ]]; then
-  if ! "${COMPOSE_CMD[@]}" -f docker-compose.traefik.yml ps --services --filter "status=running" 2>/dev/null | grep -q traefik; then
+  if ! "${TRAEFIK_COMPOSE_CMD[@]}" -f docker-compose.traefik.yml ps --services --filter "status=running" 2>/dev/null | grep -q traefik; then
     echo "Traefik is not running. Starting Traefik..."
-    "${COMPOSE_CMD[@]}" -f docker-compose.traefik.yml up -d
+    "${TRAEFIK_COMPOSE_CMD[@]}" -f docker-compose.traefik.yml up -d
   else
     echo "Traefik is already running."
   fi
@@ -33,15 +38,15 @@ if [[ ! -f "${COMPOSE_FILE}" ]]; then
   exit 1
 fi
 
-echo "Deploying with ${COMPOSE_CMD[*]} -f ${COMPOSE_FILE}"
+echo "Deploying with ${DEPLOY_COMPOSE_CMD[*]} -f ${COMPOSE_FILE}"
 
 if [[ "${FORCE_DOWN_UP}" == "1" ]]; then
-  "${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" down --remove-orphans
+  "${DEPLOY_COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" down --remove-orphans
 fi
 
-"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" pull || true
-"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans
-"${COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" ps
+"${DEPLOY_COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" pull || true
+"${DEPLOY_COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" up -d --build --remove-orphans
+"${DEPLOY_COMPOSE_CMD[@]}" -f "${COMPOSE_FILE}" ps
 
 if [[ "${PRUNE_IMAGES}" == "1" ]]; then
   docker image prune -f
