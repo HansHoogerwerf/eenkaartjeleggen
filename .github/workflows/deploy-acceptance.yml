@@ -1,0 +1,83 @@
+name: Deploy Acceptance Build
+
+on:
+  push:
+    branches:
+      - develop
+  workflow_dispatch:
+
+jobs:
+  deploy-acceptance:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check deploy configuration
+        id: config
+        env:
+          ACCEPTANCE_VPS_HOST: ${{ secrets.ACCEPTANCE_VPS_HOST }}
+          ACCEPTANCE_VPS_USER: ${{ secrets.ACCEPTANCE_VPS_USER }}
+          ACCEPTANCE_VPS_SSH_KEY: ${{ secrets.ACCEPTANCE_VPS_SSH_KEY }}
+          ACCEPTANCE_VPS_APP_DIR: ${{ secrets.ACCEPTANCE_VPS_APP_DIR }}
+        run: |
+          set -Eeuo pipefail
+          missing=()
+          [ -z "${ACCEPTANCE_VPS_HOST}" ] && missing+=("ACCEPTANCE_VPS_HOST")
+          [ -z "${ACCEPTANCE_VPS_USER}" ] && missing+=("ACCEPTANCE_VPS_USER")
+          [ -z "${ACCEPTANCE_VPS_SSH_KEY}" ] && missing+=("ACCEPTANCE_VPS_SSH_KEY")
+          [ -z "${ACCEPTANCE_VPS_APP_DIR}" ] && missing+=("ACCEPTANCE_VPS_APP_DIR")
+          if [ "${#missing[@]}" -gt 0 ]; then
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::Skipping acceptance deploy. Missing required secrets: ${missing[*]}"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.config.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          ACCEPTANCE_VPS_HOST: ${{ secrets.ACCEPTANCE_VPS_HOST }}
+          ACCEPTANCE_VPS_PORT: ${{ secrets.ACCEPTANCE_VPS_PORT }}
+          ACCEPTANCE_VPS_SSH_KEY: ${{ secrets.ACCEPTANCE_VPS_SSH_KEY }}
+          ACCEPTANCE_VPS_KNOWN_HOSTS: ${{ secrets.ACCEPTANCE_VPS_KNOWN_HOSTS }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${ACCEPTANCE_VPS_PORT:-22}"
+          mkdir -p ~/.ssh
+          chmod 700 ~/.ssh
+          printf '%s\n' "${ACCEPTANCE_VPS_SSH_KEY}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          if [ -n "${ACCEPTANCE_VPS_KNOWN_HOSTS}" ]; then
+            printf '%s\n' "${ACCEPTANCE_VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          else
+            ssh-keyscan -p "${PORT}" "${ACCEPTANCE_VPS_HOST}" > ~/.ssh/known_hosts
+          fi
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Deploy acceptance build
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          ACCEPTANCE_VPS_HOST: ${{ secrets.ACCEPTANCE_VPS_HOST }}
+          ACCEPTANCE_VPS_PORT: ${{ secrets.ACCEPTANCE_VPS_PORT }}
+          ACCEPTANCE_VPS_USER: ${{ secrets.ACCEPTANCE_VPS_USER }}
+          ACCEPTANCE_VPS_APP_DIR: ${{ secrets.ACCEPTANCE_VPS_APP_DIR }}
+          ACCEPTANCE_VPS_COMPOSE_FILE: ${{ secrets.ACCEPTANCE_VPS_COMPOSE_FILE }}
+          ACCEPTANCE_VPS_BRANCH: ${{ secrets.ACCEPTANCE_VPS_BRANCH }}
+        run: |
+          set -Eeuo pipefail
+          PORT="${ACCEPTANCE_VPS_PORT:-22}"
+          DEPLOY_BRANCH="${ACCEPTANCE_VPS_BRANCH:-develop}"
+          COMPOSE_FILE="${ACCEPTANCE_VPS_COMPOSE_FILE:-docker-compose.acceptance.yml}"
+          ssh -i ~/.ssh/id_ed25519 -p "${PORT}" "${ACCEPTANCE_VPS_USER}@${ACCEPTANCE_VPS_HOST}" /bin/bash -s -- "${ACCEPTANCE_VPS_APP_DIR}" "${DEPLOY_BRANCH}" "${COMPOSE_FILE}" <<'EOF'
+          set -Eeuo pipefail
+          APP_DIR="$1"
+          DEPLOY_BRANCH="$2"
+          COMPOSE_FILE="$3"
+          cd "${APP_DIR}"
+          git fetch origin "${DEPLOY_BRANCH}"
+          git checkout "${DEPLOY_BRANCH}"
+          git pull --ff-only origin "${DEPLOY_BRANCH}"
+          COMPOSE_FILE="${COMPOSE_FILE}" bash scripts/deploy.sh
+          EOF

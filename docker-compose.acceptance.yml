@@ -1,0 +1,22 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    expose:
+      - "5050"
+    environment:
+      - SECRET_KEY=${SECRET_KEY}
+      - CORS_ORIGINS=${CORS_ORIGINS}
+    command: gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:5050 app:app
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.app-acceptance.rule=Host(`acceptance.eenkaartjeleggen.nl`)"
+      - "traefik.http.routers.app-acceptance.entrypoints=websecure"
+      - "traefik.http.routers.app-acceptance.tls.certresolver=letsencrypt"
+      - "traefik.http.services.app-acceptance.loadbalancer.server.port=5050"
+    networks:
+      - traefik-public
+
+networks:
+  traefik-public:
+    external: true

@@ -1,25 +1,4 @@
 services:
-  traefik:
-    image: traefik:latest
-    restart: unless-stopped
-    command:
-      - "--providers.docker=true"
-      - "--providers.docker.exposedbydefault=false"
-      - "--entryPoints.web.address=:80"
-      - "--entryPoints.websecure.address=:443"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge=true"
-      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
-      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL}"
-      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
-      - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
-      - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-      - letsencrypt:/letsencrypt
-
   app:
     build: .
     restart: unless-stopped
@@ -31,10 +10,13 @@ services:
     command: gunicorn --worker-class geventwebsocket.gunicorn.workers.GeventWebSocketWorker -w 1 --bind 0.0.0.0:5000 app:app
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.app.rule=Host(`eenkaartjeleggen.nl`)"
-      - "traefik.http.routers.app.entrypoints=websecure"
-      - "traefik.http.routers.app.tls.certresolver=letsencrypt"
-      - "traefik.http.services.app.loadbalancer.server.port=5000"
+      - "traefik.http.routers.app-prod.rule=Host(`eenkaartjeleggen.nl`)"
+      - "traefik.http.routers.app-prod.entrypoints=websecure"
+      - "traefik.http.routers.app-prod.tls.certresolver=letsencrypt"
+      - "traefik.http.services.app-prod.loadbalancer.server.port=5000"
+    networks:
+      - traefik-public
 
-volumes:
-  letsencrypt:
+networks:
+  traefik-public:
+    external: true

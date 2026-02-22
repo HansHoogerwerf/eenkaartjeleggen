@@ -134,6 +134,8 @@ function cancelAutoReconnect() {
 
 let selectedMode = "score_limit";
 let selectedAiStrength = "expert";
+let selectedRulesVariant = "rotterdam";
+let hasPendingRulesVariantSelection = false;
 
 function selectMode(mode) {
     selectedMode = mode;
@@ -163,8 +165,31 @@ function selectAiStrength(level) {
     });
 }
 
+function selectRulesVariant(variant, options = {}) {
+    const { fromLobby = false, keepPending = false } = options;
+    selectedRulesVariant = variant;
+
+    if (isCreator) {
+        if (fromLobby) {
+            if (!keepPending) hasPendingRulesVariantSelection = false;
+        } else {
+            hasPendingRulesVariantSelection = true;
+        }
+    }
+
+    document.querySelectorAll(".rules-btn").forEach(btn => {
+        const isActive = btn.dataset.rules === variant;
+        btn.setAttribute("aria-pressed", isActive ? "true" : "false");
+        if (isActive) {
+            btn.className = "btn-declare rules-btn active";
+        } else {
+            btn.className = "btn-pass rules-btn";
+        }
+    });
+}
+
 function startGame() {
-    const data = { mode: selectedMode, ai_strength: selectedAiStrength };
+    const data = { mode: selectedMode, ai_strength: selectedAiStrength, rules_variant: selectedRulesVariant };
     if (selectedMode === "score_limit") {
         const el = document.getElementById("mode-score-limit");
         data.score_limit = el ? (parseInt(el.value) || 500) : 500;
@@ -198,6 +223,13 @@ function updateLobbySeats(lobby) {
     if (lobby && typeof lobby.ai_strength === "string") {
         if (["beginner", "advanced", "expert"].includes(lobby.ai_strength)) {
             selectedAiStrength = lobby.ai_strength;
+        }
+    }
+    if (lobby && typeof lobby.rules_variant === "string") {
+        if (["rotterdam", "amsterdam"].includes(lobby.rules_variant)) {
+            if (!isCreator || !hasPendingRulesVariantSelection) {
+                selectRulesVariant(lobby.rules_variant, { fromLobby: true });
+            }
         }
     }
 
@@ -252,8 +284,24 @@ function updateLobbySeats(lobby) {
             aiDisplay.style.display = "none";
         }
     }
+
+    const rulesPicker = document.getElementById("lobby-rules-picker");
+    const rulesDisplay = document.getElementById("lobby-rules-display");
+    if (rulesPicker) {
+        rulesPicker.style.display = isCreator ? "block" : "none";
+    }
+    if (rulesDisplay) {
+        if (!isCreator) {
+            rulesDisplay.style.display = "block";
+            document.getElementById("lobby-rules-text").textContent = t("rules." + selectedRulesVariant);
+        } else {
+            rulesDisplay.style.display = "none";
+        }
+    }
+
     if (isCreator) {
         selectAiStrength(selectedAiStrength);
+        selectRulesVariant(selectedRulesVariant, { fromLobby: true, keepPending: true });
     }
 }
 
@@ -273,7 +321,7 @@ socket.on("room_created", data => {
 socket.on("room_joined", data => {
     roomCode = data.code;
     mySeat = data.seat;
-    isCreator = false;
+    isCreator = data.is_creator === true;
     const name = document.getElementById("lobby-name").value.trim()
         || (loadSession() || {}).name
         || t("lobby.name_placeholder");

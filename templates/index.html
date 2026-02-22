@@ -125,6 +125,18 @@
             <div id="lobby-ai-display">
                 <span id="lobby-ai-text"></span>
             </div>
+            <!-- Rules picker (host only) -->
+            <div id="lobby-rules-picker">
+                <p data-i18n="rules.label">Rules:</p>
+                <div class="lobby-ai-buttons">
+                    <button type="button" class="btn-declare rules-btn active" data-rules="rotterdam" onclick="selectRulesVariant('rotterdam')" data-i18n="rules.rotterdam" aria-pressed="true">Rotterdam</button>
+                    <button type="button" class="btn-pass rules-btn" data-rules="amsterdam" onclick="selectRulesVariant('amsterdam')" data-i18n="rules.amsterdam" aria-pressed="false">Amsterdam</button>
+                </div>
+            </div>
+            <!-- Rules display for non-host -->
+            <div id="lobby-rules-display">
+                <span id="lobby-rules-text"></span>
+            </div>
             <div class="lobby-start-row">
                 <button type="button" class="btn-declare" id="lobby-start-btn" onclick="startGame()" data-i18n="lobby.start_game">
                     Start Game

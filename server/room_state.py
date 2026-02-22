@@ -27,6 +27,7 @@ class Room:
         self.game_mode: str = CONFIG.room.default_game_mode
         self.score_limit: int = CONFIG.room.default_score_limit
         self.ai_strength: str = CONFIG.room.default_ai_strength
+        self.rules_variant: str = CONFIG.room.default_rules_variant
         self.team_names: list[str] = list(CONFIG.room.default_team_names)
 
         self.cur_round_tricks: list[dict] = []
@@ -108,6 +109,7 @@ class Room:
             },
             "started": self.started,
             "ai_strength": self.ai_strength,
+            "rules_variant": self.rules_variant,
             "reconnect_timeout_seconds": self.reconnect_timeout_seconds,
         }
 

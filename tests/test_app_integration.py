@@ -104,6 +104,7 @@ class TestAppIntegration(unittest.TestCase):
                 "score_limit": 700,
                 "team_names": ["A", "B"],
                 "ai_strength": "advanced",
+                "rules_variant": "amsterdam",
             })
             self.assertEqual(start_game.call_count, 1)
             room = rooms[code]
@@ -111,6 +112,7 @@ class TestAppIntegration(unittest.TestCase):
             self.assertEqual(room.score_limit, 700)
             self.assertEqual(room.team_names, ["A", "B"])
             self.assertEqual(room.ai_strength, "advanced")
+            self.assertEqual(room.rules_variant, "amsterdam")
 
     def test_leave_room_removes_unstarted_player(self):
         code = self._create_room()
@@ -127,6 +129,46 @@ class TestAppIntegration(unittest.TestCase):
         created = next(e for e in events if e["name"] == "room_created")
         code = created["args"][0]["code"]
         self.assertEqual(rooms[code].reconnect_timeout_seconds, 45)
+
+
+    def test_lobby_creator_disconnect_keeps_room_for_reconnect(self):
+        code = self._create_room()
+        self.c1.disconnect()
+
+        self.assertIn(code, rooms)
+        self.assertFalse(rooms[code].seats[0]["connected"])
+
+        c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
+        try:
+            c3.emit("join_room", {"code": code, "name": "Alice"})
+            rec3 = c3.get_received()
+            joined = next(e for e in rec3 if e["name"] == "room_joined")
+            self.assertEqual(joined["args"][0]["seat"], 0)
+            self.assertTrue(rooms[code].seats[0]["connected"])
+        finally:
+            c3.disconnect()
+
+
+    def test_lobby_creator_reconnect_can_start_game(self):
+        code = self._create_room()
+        old_creator_sid = rooms[code].creator_sid
+        self.c1.disconnect()
+
+        c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
+        try:
+            c3.emit("join_room", {"code": code, "name": "Alice"})
+            c3.get_received()
+
+            self.assertEqual(rooms[code].creator_sid, rooms[code].seats[0]["sid"])
+            self.assertNotEqual(rooms[code].creator_sid, old_creator_sid)
+
+            with patch("app.start_room_game") as start_game:
+                c3.emit("start_game", {"mode": "boom"})
+                rec3 = c3.get_received()
+                self.assertFalse(any(e["name"] == "error" for e in rec3))
+                self.assertEqual(start_game.call_count, 1)
+        finally:
+            c3.disconnect()
 
     def test_disconnect_host_emits_host_migrated(self):
         code = self._create_room()
