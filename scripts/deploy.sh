@@ -23,14 +23,13 @@ fi
 TRAEFIK_COMPOSE_CMD=("${COMPOSE_CMD[@]}" -p "${TRAEFIK_PROJECT_NAME}")
 DEPLOY_COMPOSE_CMD=("${COMPOSE_CMD[@]}")
 
-if [[ "${CURRENT_BRANCH}" == "main" ]]; then
-  if ! "${TRAEFIK_COMPOSE_CMD[@]}" -f docker-compose.traefik.yml ps --services --filter "status=running" 2>/dev/null | grep -q traefik; then
-    echo "Traefik is not running. Starting Traefik..."
-    "${TRAEFIK_COMPOSE_CMD[@]}" -f docker-compose.traefik.yml up -d
-  else
-    echo "Traefik is already running."
-  fi
+if ! "${TRAEFIK_COMPOSE_CMD[@]}" -f docker-compose.traefik.yml ps --services --filter "status=running" 2>/dev/null | grep -q traefik; then
+  echo "Traefik is not running. Starting Traefik..."
+  "${TRAEFIK_COMPOSE_CMD[@]}" -f docker-compose.traefik.yml up -d
+else
+  echo "Traefik is already running."
 fi
+
 
 if [[ ! -f "${COMPOSE_FILE}" ]]; then
   echo "Error: compose file '${COMPOSE_FILE}' was not found in ${REPO_DIR}." >&2
