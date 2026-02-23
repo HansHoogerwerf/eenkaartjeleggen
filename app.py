@@ -27,7 +27,12 @@ socketio = SocketIO(
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    return render_template(
+        "index.html",
+        adsense_enabled=CONFIG.ads.adsense_enabled,
+        adsense_client_id=CONFIG.ads.adsense_client_id,
+        adsense_mobile_slot_id=CONFIG.ads.adsense_mobile_slot_id,
+    )
 
 
 def _cleanup_rooms_task():

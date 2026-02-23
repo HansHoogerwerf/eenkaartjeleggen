@@ -38,9 +38,20 @@ class RoomConfig:
 
 
 @dataclass(frozen=True)
+class AdsConfig:
+    adsense_client_id: str
+    adsense_mobile_slot_id: str
+
+    @property
+    def adsense_enabled(self) -> bool:
+        return bool(self.adsense_client_id and self.adsense_mobile_slot_id)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     server: ServerConfig
     room: RoomConfig
+    ads: AdsConfig
 
 
 CONFIG = AppConfig(
@@ -70,5 +81,9 @@ CONFIG = AppConfig(
         max_score_limit=5000,
         default_team_names=("Team 0", "Team 1"),
         max_team_name_len=16,
+    ),
+    ads=AdsConfig(
+        adsense_client_id=os.environ.get("ADSENSE_CLIENT_ID", "").strip(),
+        adsense_mobile_slot_id=os.environ.get("ADSENSE_MOBILE_SLOT_ID", "").strip(),
     ),
 )

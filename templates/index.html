@@ -7,7 +7,7 @@
     <title>Klaverjassen — Rotterdam rules</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body{% if adsense_enabled %} class="has-ads-banner"{% endif %}>
 <noscript>
     <p class="noscript-warning">
         This game requires JavaScript to run.
@@ -205,6 +205,23 @@
     </div>
 </div>
 
+{% if adsense_enabled %}
+<!-- ── Bottom ads banner (AdSense mobile slot) ─────────────────────── -->
+<div id="ads-banner" role="complementary" aria-label="Sponsored">
+    <span class="ads-label">Sponsored</span>
+    <div class="ads-slot-shell">
+        <ins class="adsbygoogle ads-mobile-banner"
+             style="display:inline-block;width:320px;height:50px"
+             data-ad-client="{{ adsense_client_id }}"
+             data-ad-slot="{{ adsense_mobile_slot_id }}"></ins>
+    </div>
+    <script>
+        window.adsbygoogle = window.adsbygoogle || [];
+        window.adsbygoogle.push({});
+    </script>
+</div>
+{% endif %}
+
 <!-- ── Next round banner (non-blocking, bottom of screen) ─────────── -->
 <div id="nextround-banner">
     <span id="nextround-msg" role="status" aria-live="polite"></span>
@@ -298,6 +315,9 @@
     </div>
 </div>
 
+{% if adsense_enabled %}
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client={{ adsense_client_id }}" crossorigin="anonymous"></script>
+{% endif %}
 <script defer src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
 <script defer src="/static/i18n.js"></script>
 <script defer src="/static/game_state.js"></script>
