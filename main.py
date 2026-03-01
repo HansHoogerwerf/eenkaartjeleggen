@@ -273,7 +273,7 @@ class HumanPlayer(Player):
 # ─── AI player ────────────────────────────────────────────────────────────────
 
 class AIPlayer(Player):
-    DECLARATION_BASE_THRESHOLD = 2.75
+    DECLARATION_BASE_THRESHOLD = 3.10
     TIE_BREAK_DELTA = 0.35
     SIGNAL_MAX_CONFIDENCE = 1.0
     TRICK_WIN_SIM_SAMPLES = 20
