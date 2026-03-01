@@ -273,23 +273,23 @@ class HumanPlayer(Player):
 # ─── AI player ────────────────────────────────────────────────────────────────
 
 class AIPlayer(Player):
-    DECLARATION_BASE_THRESHOLD = 3.10
+    DECLARATION_BASE_THRESHOLD = 3.00
     TIE_BREAK_DELTA = 0.35
     SIGNAL_MAX_CONFIDENCE = 1.0
     TRICK_WIN_SIM_SAMPLES = 20
 
     BID_WEIGHTS = {
-        "trump_j": 1.85,
-        "trump_9": 1.30,
-        "trump_a": 0.85,
-        "trump_10": 0.55,
-        "trump_len_3p": 0.65,
-        "side_ace": 0.70,
-        "side_10_with_ace": 0.30,
-        "side_king": 0.15,
-        "void": 0.35,
-        "singleton": 0.17,
-        "roem_scale": 0.75,
+        "trump_j": 2.40,
+        "trump_9": 1.50,
+        "trump_a": 0.75,
+        "trump_10": 0.50,
+        "trump_len_3p": 0.55,
+        "side_ace": 0.60,
+        "side_10_with_ace": 0.25,
+        "side_king": 0.10,
+        "void": 0.18,
+        "singleton": 0.10,
+        "roem_scale": 0.60,
     }
     AI_STRENGTH_PROFILES = {
         "beginner": {
