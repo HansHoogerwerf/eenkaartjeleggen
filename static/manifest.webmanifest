@@ -1,0 +1,16 @@
+{
+  "name": "Eenkaartjeleggen - Klaverjassen",
+  "short_name": "Klaverjassen",
+  "description": "Multiplayer Klaverjassen kaartspel. Speel online met vrienden of tegen de computer.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#2e7d32",
+  "theme_color": "#2e7d32",
+  "lang": "nl",
+  "icons": [
+    { "src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/static/icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
