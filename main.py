@@ -1373,8 +1373,8 @@ class KlaverjasGame:
                 round_done_data["total_rounds"] = self.boom_rounds
 
             self.notify("round_done", round_done_data)
-            self.log(f"Round result  →  Team 0: +{t0}   Team 1: +{t1}")
-            self.log(f"Running total →  Team 0: {self.scores[0]}   Team 1: {self.scores[1]}")
+            self.log(f"Round result  →  Team A: +{t0}   Team B: +{t1}")
+            self.log(f"Running total →  Team A: {self.scores[0]}   Team B: {self.scores[1]}")
             dealer = (dealer + 1) % 4
 
             # Wait for the host to advance to the next round

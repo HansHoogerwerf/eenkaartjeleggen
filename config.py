@@ -68,7 +68,7 @@ CONFIG = AppConfig(
         default_score_limit=500,
         min_score_limit=50,
         max_score_limit=5000,
-        default_team_names=("Team 0", "Team 1"),
+        default_team_names=("Team A", "Team N"),
         max_team_name_len=16,
     ),
 )

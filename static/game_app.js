@@ -391,9 +391,14 @@ socket.on("deal_done", data => {
 });
 
 socket.on("trump_offered", data => {
-    const color = isRed(data.suit) ? "red" : "var(--accent)";
-    document.getElementById("trump-label").innerHTML =
-        `<span style="color:${color}">${t("score.offered", {suit: data.suit, name: tSuit(data.suit), round: data.round_num})}</span>`;
+
+    const indicator = document.getElementById("trump-card-indicator");
+    const card = document.getElementById("trump-card");
+    if (indicator && card) {
+        card.className = isRed(data.suit) ? "card red" : "card";
+        card.innerHTML = `<span>${data.suit}</span><span>${data.suit}</span>`;
+        indicator.classList.add("active");
+    }
 });
 
 socket.on("bid", data => {
@@ -401,8 +406,6 @@ socket.on("bid", data => {
 });
 
 socket.on("trump_set", data => {
-    document.getElementById("trump-label").innerHTML =
-        `${t("score.trump", {suit: data.trump, team: data.declaring_team, player: data.declaring_player})}`;
 
     // Highlight declaring player's seat label
     clearDeclaringHighlight();
@@ -584,8 +587,7 @@ socket.on("reconnected", data => {
 
     // Restore trump indicator
     if (data.trump) {
-        document.getElementById("trump-label").innerHTML =
-            t("score.trump", {suit: data.trump, team: data.declaring_team, player: data.declaring_player});
+
         clearDeclaringHighlight();
         if (data.declaring_player_idx !== null && data.declaring_player_idx !== undefined) {
             document.getElementById(labelId(data.declaring_player_idx)).classList.add("declaring");
@@ -743,7 +745,6 @@ function newGame() {
     clearDeclaringHighlight();
     for (const id of SEAT_CARD_IDS)
         document.getElementById(id).innerHTML = "";
-    document.getElementById("trump-label").textContent = t("score.trump_default");
     const trumpInd = document.getElementById("trump-card-indicator");
     if (trumpInd) trumpInd.classList.remove("active");
     updateScores([0, 0]);
