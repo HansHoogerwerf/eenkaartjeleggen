@@ -52,7 +52,6 @@ body {
 
 .score-team0 { color: var(--green-txt); font-weight: bold; font-size: 14px; }
 .score-team1 { color: var(--red-txt);   font-weight: bold; font-size: 14px; }
-#trump-label { color: var(--accent); font-weight: bold; font-size: 15px; display: flex; align-items: center; gap: 6px; }
 .trump-suit {
     font-size: 28px;
     line-height: 1;
@@ -279,6 +278,13 @@ body {
     color: var(--black-suit);
 }
 .card-face.red { color: var(--red-suit); }
+
+/* Suit symbol is rendered larger than the rank so ♠/♣/♥/♦ are easy to distinguish */
+.card-face span:last-child,
+.trick-slot span:last-child {
+    font-size: 1.5em;
+    line-height: 1.1;
+}
 
 .card-face.legal {
     cursor: pointer;
@@ -833,7 +839,7 @@ input:focus-visible {
 
 #lang-switcher {
     position: fixed;
-    top: 8px;
+    bottom: 12px;
     right: 12px;
     z-index: 200;
     display: flex;
@@ -972,9 +978,9 @@ input:focus-visible {
 /* ─── Responsive — mobile ────────────────────────────────────────────── */
 
 @media (max-width: 600px) {
-    /* Language switcher: smaller, don't overlap score */
+    /* Language switcher: smaller on mobile */
     #lang-switcher {
-        top: 4px;
+        bottom: 8px;
         right: 4px;
         gap: 2px;
     }
@@ -986,7 +992,6 @@ input:focus-visible {
     /* Score panel: stack vertically */
     #score-panel {
         padding: 6px 8px;
-        padding-right: 60px; /* make room for lang switcher */
     }
     .score-top {
         flex-wrap: wrap;
@@ -994,9 +999,8 @@ input:focus-visible {
         font-size: 12px;
     }
     .score-team0, .score-team1 { font-size: 12px; }
-    #trump-label { font-size: 12px; order: -1; width: 100%; justify-content: center; }
     .trump-suit { font-size: 22px; }
-    .score-buttons { order: 10; width: 100%; justify-content: center; }
+    .score-buttons { order: 10; width: 100%; justify-content: center; flex-wrap: wrap; gap: 4px; }
     .score-bottom { font-size: 10px; flex-wrap: wrap; gap: 2px; }
 
     /* Table: tighter */
@@ -1088,7 +1092,7 @@ input:focus-visible {
 
 /* Medium screens (tablets) */
 @media (max-width: 768px) and (min-width: 601px) {
-    #score-panel { padding-right: 70px; }
+    .score-buttons { width: 100%; justify-content: center; }
     .history-modal { min-width: unset !important; width: 90vw; }
     .hands-modal { min-width: unset !important; }
     .modal { min-width: unset !important; }

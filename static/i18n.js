@@ -3,7 +3,7 @@
 const TRANSLATIONS = {
     en: {
         // ── Page title ──
-        "page.title": "Klaverjassen — Rotterdam rules",
+        "page.title": "Een kaartje leggen - Klaverjassen",
 
         // ── Lobby ──
         "lobby.heading": "Klaverjassen",
@@ -160,7 +160,7 @@ const TRANSLATIONS = {
 
     nl: {
         // ── Paginatitel ──
-        "page.title": "Klaverjassen — Rotterdamse regels",
+        "page.title": "Een kaartje leggen - Klaverjassen",
 
         // ── Lobby ──
         "lobby.heading": "Klaverjassen",
