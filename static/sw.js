@@ -33,10 +33,21 @@ self.addEventListener('fetch', event => {
     // Let the browser handle WebSocket upgrades and Socket.IO traffic natively.
     if (event.request.url.includes('/socket.io')) return;
 
-    // Cache-first for static assets.
+    // Network-first for static assets so deployed updates are picked up,
+    // with cache fallback for offline support.
     if (new URL(event.request.url).pathname.startsWith('/static/')) {
         event.respondWith(
-            caches.match(event.request).then(cached => cached || fetch(event.request))
+            fetch(event.request)
+                .then(response => {
+                    if (response && response.ok) {
+                        const responseClone = response.clone();
+                        caches.open(CACHE_NAME).then(cache => {
+                            cache.put(event.request, responseClone);
+                        });
+                    }
+                    return response;
+                })
+                .catch(() => caches.match(event.request))
         );
         return;
     }
