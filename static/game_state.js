@@ -42,12 +42,16 @@ let trickPlayCount = 0;         // cards played so far in the current trick (0â€
 const SESSION_KEY = "klaverjas_session";
 function saveSession(code, name) {
     try { localStorage.setItem(SESSION_KEY, JSON.stringify({code, name})); } catch(e) {}
+    try { localStorage.setItem("klaverjas_player_name", name); } catch(e) {}
 }
 function loadSession() {
     try { const s = localStorage.getItem(SESSION_KEY); return s ? JSON.parse(s) : null; } catch(e) { return null; }
 }
 function clearSession() {
     try { localStorage.removeItem(SESSION_KEY); } catch(e) {}
+}
+function loadPlayerName() {
+    try { return localStorage.getItem("klaverjas_player_name") || null; } catch(e) { return null; }
 }
 
 /* On every socket connection (initial load AND mid-game reconnects):
