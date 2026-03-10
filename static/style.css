@@ -449,6 +449,7 @@ input:focus-visible {
 
 /* ─── Lobby ───────────────────────────────────────────────────────────── */
 
+#lobby-overlay { background: var(--table-bg); }
 #lobby-overlay .modal { min-width: 360px; }
 #lobby-subtitle {
     text-align: center;
@@ -649,6 +650,24 @@ input:focus-visible {
     text-align: center;
 }
 #lobby-ai-text { color: #888; font-size: 12px; }
+
+#lobby-rules-picker {
+    display: none;
+    margin-top: 10px;
+    text-align: center;
+}
+#lobby-rules-picker > p {
+    color: #aaa;
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+
+#lobby-rules-display {
+    display: none;
+    margin-top: 8px;
+    text-align: center;
+}
+#lobby-rules-text { color: #888; font-size: 12px; }
 
 .lobby-start-row {
     text-align: center;

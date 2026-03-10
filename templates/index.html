@@ -5,9 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Play multiplayer Klaverjassen with Rotterdam rules.">
     <title>Klaverjassen — Rotterdam rules</title>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=4">
     <link rel="manifest" href="/static/manifest.webmanifest">
     <meta name="theme-color" content="#2e7d32">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="Klaverjassen">
@@ -48,17 +49,17 @@
             <p id="lobby-name-hint" data-i18n="lobby.name_join_hint">Choose a name before joining a room.</p>
         </div>
 
-        <!-- Create / Join -->
+        <!-- Join / Create -->
         <div id="lobby-actions">
-            <button type="button" class="btn-declare" id="lobby-create-btn" onclick="createRoom()" data-i18n="lobby.create_game">Create Game</button>
-            <div id="lobby-or-divider" data-i18n="lobby.or">— or —</div>
             <div class="lobby-join-row">
                 <input type="text" id="join-code" maxlength="4" placeholder="CODE" data-i18n-placeholder="lobby.code_placeholder"
                        inputmode="text" autocapitalize="characters" autocomplete="off" spellcheck="false" aria-label="Room code" aria-describedby="join-code-hint"
                        >
                 <button type="button" class="btn-declare" id="lobby-join-btn" onclick="peekRoom()" data-i18n="lobby.join">Join</button>
             </div>
-            <p id="join-code-hint" data-i18n="lobby.enter_hint">Press Enter to create or join quickly.</p>
+            <div id="lobby-or-divider" data-i18n="lobby.or">— or —</div>
+            <button type="button" class="btn-pass" id="lobby-create-btn" onclick="createRoom()" data-i18n="lobby.create_game">Create Game</button>
+            <p id="join-code-hint" data-i18n="lobby.enter_hint">Press Enter to join quickly.</p>
             <p id="lobby-error" role="alert" aria-live="assertive"></p>
         </div>
 
@@ -87,13 +88,13 @@
                 <div class="lobby-team-inputs">
                     <div>
                         <label for="team0-name" class="lobby-team-label team0">Team 0</label><br>
-                        <input type="text" id="team0-name" maxlength="16" placeholder="Team 0" value="Team 0"
+                        <input type="text" id="team0-name" maxlength="16" placeholder="Team 0"
                                autocomplete="off" spellcheck="false"
                                >
                     </div>
                     <div>
                         <label for="team1-name" class="lobby-team-label team1">Team 1</label><br>
-                        <input type="text" id="team1-name" maxlength="16" placeholder="Team 1" value="Team 1"
+                        <input type="text" id="team1-name" maxlength="16" placeholder="Team 1"
                                autocomplete="off" spellcheck="false"
                                >
                     </div>
@@ -149,6 +150,11 @@
                 </button>
                 <p id="lobby-wait-msg" data-i18n="lobby.waiting_host" role="status" aria-live="polite">Waiting for the host to start...</p>
             </div>
+            <div class="lobby-start-row">
+                <button type="button" class="btn-pass" id="lobby-cancel-btn" onclick="cancelLobby()" data-i18n="lobby.cancel">
+                    Cancel
+                </button>
+            </div>
         </div>
     </div>
 </div>
@@ -160,7 +166,6 @@
         <div class="score-buttons">
             <button type="button" class="btn btn-hands" onclick="openHands()" data-i18n="btn.hands">Hands</button>
             <button type="button" class="btn btn-hist"  onclick="openHistory()" data-i18n="btn.history">History</button>
-            <button type="button" class="btn btn-new" id="new-game-btn" onclick="newGame()" data-i18n="btn.new_game">New Game</button>
             <button type="button" class="btn btn-leave" id="leave-game-btn" onclick="leaveGame()" data-i18n="btn.leave_game">Leave</button>
             <div class="chat-btn-wrapper">
                 <button type="button" class="btn btn-chat" id="chat-toggle-btn" onclick="toggleChat()" data-i18n="btn.chat" aria-controls="chat-panel" aria-expanded="false">Chat</button>
@@ -303,11 +308,11 @@
     </div>
 </div>
 
-<script defer src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.5/socket.io.min.js"></script>
-<script defer src="/static/i18n.js"></script>
-<script defer src="/static/game_state.js"></script>
-<script defer src="/static/game_render.js"></script>
-<script defer src="/static/game_app.js"></script>
+<script defer src="/static/socket.io.min.js"></script>
+<script defer src="/static/i18n.js?v=3"></script>
+<script defer src="/static/game_state.js?v=3"></script>
+<script defer src="/static/game_render.js?v=2"></script>
+<script defer src="/static/game_app.js?v=12"></script>
 <script>
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));

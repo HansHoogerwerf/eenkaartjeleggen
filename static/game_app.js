@@ -1,11 +1,22 @@
 /* ─── Lobby ───────────────────────────────────────────────────────────── */
 
 function createRoom() {
-    const name = document.getElementById("lobby-name").value.trim() || t("lobby.name_placeholder");
+    const name = document.getElementById("lobby-name").value.trim();
+    if (!name) {
+        showLobbyError(t("error.enter_name_join"), { sticky: true });
+        document.getElementById("lobby-name").focus();
+        return;
+    }
     socket.emit("create_room", {name});
 }
 
 function peekRoom() {
+    const name = document.getElementById("lobby-name").value.trim();
+    if (!name) {
+        showLobbyError(t("error.enter_name_join"), { sticky: true });
+        document.getElementById("lobby-name").focus();
+        return;
+    }
     const code = cleanRoomCode(document.getElementById("join-code").value);
     document.getElementById("join-code").value = code;
     if (!code || code.length < 4) {
@@ -18,7 +29,7 @@ function peekRoom() {
 function joinRoom(seat) {
     const name = document.getElementById("lobby-name").value.trim();
     if (!name) {
-        showLobbyError(t("error.enter_name_join"));
+        showLobbyError(t("error.enter_name_join"), { sticky: true });
         document.getElementById("lobby-name").focus();
         return;
     }
@@ -36,7 +47,13 @@ function bindLobbyInputUx() {
 
     if (nameEl) {
         nameEl.addEventListener("keydown", (event) => {
-            if (event.key === "Enter") createRoom();
+            if (event.key === "Enter") {
+                const code = document.getElementById("join-code");
+                if (code && code.value.trim()) peekRoom(); else createRoom();
+            }
+        });
+        nameEl.addEventListener("input", () => {
+            if (nameEl.value.trim()) clearLobbyError();
         });
     }
 
@@ -197,26 +214,41 @@ function startGame() {
     const t0 = document.getElementById("team0-name");
     const t1 = document.getElementById("team1-name");
     data.team_names = [
-        t0 ? (t0.value.trim() || "Team 0") : "Team 0",
-        t1 ? (t1.value.trim() || "Team 1") : "Team 1",
+        t0 ? (t0.value.trim() || t0.placeholder || "Team 0") : "Team 0",
+        t1 ? (t1.value.trim() || t1.placeholder || "Team 1") : "Team 1",
     ];
     socket.emit("start_game", data);
 }
 
-function showLobbyError(msg) {
+function showLobbyError(msg, { sticky = false } = {}) {
     const el = document.getElementById("lobby-error");
     el.textContent = msg;
     el.style.display = "block";
-    setTimeout(() => el.style.display = "none", 4000);
+    if (!sticky) setTimeout(() => el.style.display = "none", 4000);
+}
+
+function clearLobbyError() {
+    const el = document.getElementById("lobby-error");
+    el.style.display = "none";
 }
 
 function showWaitingRoom(lobby) {
     document.getElementById("lobby-reconnecting").style.display = "none";
     document.getElementById("lobby-actions").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "none";
+    document.getElementById("lobby-seat-picker").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
     document.getElementById("lobby-code").textContent = lobby.code;
     updateLobbySeats(lobby);
+}
+
+function cancelLobby() {
+    clearSession();
+    history.replaceState(null, "", window.location.pathname);
+    socket.emit("leave_room");
+    document.getElementById("lobby-waiting").style.display = "none";
+    document.getElementById("lobby-name-section").style.display = "block";
+    document.getElementById("lobby-actions").style.display = "block";
 }
 
 function updateLobbySeats(lobby) {
@@ -235,6 +267,7 @@ function updateLobbySeats(lobby) {
 
     const container = document.getElementById("lobby-seats");
     container.innerHTML = "";
+    const teamPlayerNames = {0: [], 1: []};
     for (let i = 0; i < 4; i++) {
         const seat = lobby.seats[String(i)];
         const teamLabel = t("team." + seat.team);
@@ -245,7 +278,12 @@ function updateLobbySeats(lobby) {
             <span class="seat-player ${cls}">${playerName}</span>
             <span class="seat-team">${teamLabel}</span>
         </div>`;
+        if (seat.is_human) teamPlayerNames[seat.team].push(seat.name);
     }
+    const t0el = document.getElementById("team0-name");
+    const t1el = document.getElementById("team1-name");
+    if (t0el) t0el.placeholder = teamPlayerNames[0].join(" & ") || "Team 0";
+    if (t1el) t1el.placeholder = teamPlayerNames[1].join(" & ") || "Team 1";
 
     // Show start button and mode picker only for creator
     document.getElementById("lobby-start-btn").style.display = isCreator ? "inline-block" : "none";
@@ -365,8 +403,7 @@ socket.on("game_starting", data => {
     updateSeatLabels();
     updateScores([0, 0]);
 
-    // Show New Game button only for creator; Leave button for everyone
-    document.getElementById("new-game-btn").style.display = isCreator ? "inline-block" : "none";
+    // Show gameover New Game button only for creator; Leave button for everyone
     document.getElementById("gameover-newgame-btn").style.display = isCreator ? "inline-block" : "none";
     document.getElementById("leave-game-btn").style.display = "inline-block";
 });
@@ -576,7 +613,6 @@ socket.on("reconnected", data => {
     document.getElementById("lobby-overlay").classList.remove("active");
     document.getElementById("paused-overlay").classList.remove("active");
     document.getElementById("leave-game-btn").style.display = "inline-block";
-    document.getElementById("new-game-btn").style.display = isCreator ? "inline-block" : "none";
     document.getElementById("gameover-newgame-btn").style.display = isCreator ? "inline-block" : "none";
     updateSeatLabels();
     updateScores(data.scores);
@@ -767,8 +803,8 @@ function confirmLeave() {
 socket.on("game_left", data => {
     // Return everyone to the lobby
     clearSession();
+    history.replaceState(null, "", window.location.pathname);
     document.getElementById("leave-game-btn").style.display = "none";
-    document.getElementById("new-game-btn").style.display = "none";
     document.getElementById("nextround-banner").classList.remove("active");
     document.getElementById("gameover-overlay").classList.remove("active");
     document.getElementById("paused-overlay").classList.remove("active");
@@ -1001,5 +1037,9 @@ function initModalKeyboardAccessibility() {
     initModalKeyboardAccessibility();
     bindLobbyInputUx();
     const nameEl = document.getElementById("lobby-name");
-    if (nameEl) nameEl.focus();
+    if (nameEl) {
+        const savedName = loadPlayerName();
+        if (savedName) nameEl.value = savedName;
+        nameEl.focus();
+    }
 })();
