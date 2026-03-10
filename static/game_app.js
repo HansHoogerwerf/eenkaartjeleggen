@@ -69,37 +69,47 @@ function bindLobbyInputUx() {
     }
 }
 
-function copyRoomCode() {
+function setRoomUrl(code) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("room", code);
+    history.replaceState(null, "", url.toString());
+}
+
+function shareOrCopy() {
     const code = (document.getElementById("lobby-code").textContent || "").trim();
     if (!code) return;
-    const btn = document.getElementById("lobby-copy-code");
-    const copiedTxt = t("lobby.copied");
-    const fallbackCopy = () => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("room", code);
+    const shareUrl = url.toString();
+    const btn = document.getElementById("lobby-share-btn");
+
+    // On mobile (touch/coarse pointer), use the native share sheet
+    const isMobile = window.matchMedia("(pointer: coarse)").matches;
+    if (isMobile && navigator.share) {
+        navigator.share({ title: document.title, url: shareUrl }).catch(() => {});
+        return;
+    }
+
+    // On desktop, copy the URL and give feedback
+    const onCopied = () => {
+        if (!btn) return;
+        const orig = t("lobby.share_btn");
+        btn.textContent = t("lobby.link_copied");
+        setTimeout(() => { btn.textContent = orig; }, 1300);
+    };
+    const fallback = () => {
         const input = document.createElement("input");
-        input.value = code;
+        input.value = shareUrl;
         document.body.appendChild(input);
         input.select();
         document.execCommand("copy");
         document.body.removeChild(input);
     };
-
-    const onCopied = () => {
-        if (!btn) return;
-        btn.textContent = copiedTxt;
-        setTimeout(() => {
-            btn.textContent = t("lobby.copy_code");
-        }, 1300);
-    };
-
     if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(code).then(onCopied).catch(() => {
-            fallbackCopy();
-            onCopied();
-        });
+        navigator.clipboard.writeText(shareUrl).then(onCopied).catch(() => { fallback(); onCopied(); });
         return;
     }
-
-    fallbackCopy();
+    fallback();
     onCopied();
 }
 
@@ -239,6 +249,7 @@ function showWaitingRoom(lobby) {
     document.getElementById("lobby-seat-picker").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
     document.getElementById("lobby-code").textContent = lobby.code;
+    setRoomUrl(lobby.code);
     updateLobbySeats(lobby);
 }
 
@@ -1036,6 +1047,11 @@ function initModalKeyboardAccessibility() {
     setLang(getLang());
     initModalKeyboardAccessibility();
     bindLobbyInputUx();
+    const urlCode = new URLSearchParams(window.location.search).get("room");
+    if (urlCode) {
+        const codeEl = document.getElementById("join-code");
+        if (codeEl) codeEl.value = cleanRoomCode(urlCode);
+    }
     const nameEl = document.getElementById("lobby-name");
     if (nameEl) {
         const savedName = loadPlayerName();
