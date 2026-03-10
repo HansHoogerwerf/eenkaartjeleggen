@@ -308,5 +308,10 @@
 <script defer src="/static/game_state.js"></script>
 <script defer src="/static/game_render.js"></script>
 <script defer src="/static/game_app.js"></script>
+<script>
+    if ('serviceWorker' in navigator) {
+        window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));
+    }
+</script>
 </body>
 </html>

@@ -6,7 +6,7 @@ from gevent import monkey
 
 monkey.patch_all()
 
-from flask import Flask, render_template, request
+from flask import Flask, render_template, request, send_from_directory
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from config import CONFIG
@@ -28,6 +28,11 @@ socketio = SocketIO(
 @app.route("/")
 def index():
     return render_template("index.html")
+
+
+@app.route("/sw.js")
+def service_worker():
+    return send_from_directory("static", "sw.js", mimetype="application/javascript")
 
 
 def _cleanup_rooms_task():
