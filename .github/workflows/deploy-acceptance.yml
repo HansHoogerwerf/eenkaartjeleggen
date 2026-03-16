@@ -1,9 +1,11 @@
 name: Deploy Acceptance Build
+
 on:
   push:
     branches:
       - develop
   workflow_dispatch:
+
 jobs:
   deploy-acceptance:
     runs-on: ubuntu-latest
@@ -11,16 +13,16 @@ jobs:
       - name: Check deploy configuration
         id: config
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_USER: ${{ secrets.VPS_USER }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          ACCEPTANCE_VPS_HOST: ${{ secrets.ACCEPTANCE_VPS_HOST }}
+          ACCEPTANCE_VPS_USER: ${{ secrets.ACCEPTANCE_VPS_USER }}
+          ACCEPTANCE_VPS_SSH_KEY: ${{ secrets.ACCEPTANCE_VPS_SSH_KEY }}
           ACCEPTANCE_VPS_APP_DIR: ${{ secrets.ACCEPTANCE_VPS_APP_DIR }}
         run: |
           set -Eeuo pipefail
           missing=()
-          [ -z "${VPS_HOST}" ] && missing+=("VPS_HOST")
-          [ -z "${VPS_USER}" ] && missing+=("VPS_USER")
-          [ -z "${VPS_SSH_KEY}" ] && missing+=("VPS_SSH_KEY")
+          [ -z "${ACCEPTANCE_VPS_HOST}" ] && missing+=("ACCEPTANCE_VPS_HOST")
+          [ -z "${ACCEPTANCE_VPS_USER}" ] && missing+=("ACCEPTANCE_VPS_USER")
+          [ -z "${ACCEPTANCE_VPS_SSH_KEY}" ] && missing+=("ACCEPTANCE_VPS_SSH_KEY")
           [ -z "${ACCEPTANCE_VPS_APP_DIR}" ] && missing+=("ACCEPTANCE_VPS_APP_DIR")
           if [ "${#missing[@]}" -gt 0 ]; then
             echo "enabled=false" >> "$GITHUB_OUTPUT"
@@ -36,39 +38,39 @@ jobs:
       - name: Configure SSH
         if: steps.config.outputs.enabled == 'true'
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
-          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
-          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          ACCEPTANCE_VPS_HOST: ${{ secrets.ACCEPTANCE_VPS_HOST }}
+          ACCEPTANCE_VPS_PORT: ${{ secrets.ACCEPTANCE_VPS_PORT }}
+          ACCEPTANCE_VPS_SSH_KEY: ${{ secrets.ACCEPTANCE_VPS_SSH_KEY }}
+          ACCEPTANCE_VPS_KNOWN_HOSTS: ${{ secrets.ACCEPTANCE_VPS_KNOWN_HOSTS }}
         run: |
           set -Eeuo pipefail
-          PORT="${VPS_PORT:-22}"
+          PORT="${ACCEPTANCE_VPS_PORT:-22}"
           mkdir -p ~/.ssh
           chmod 700 ~/.ssh
-          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/id_ed25519
+          printf '%s\n' "${ACCEPTANCE_VPS_SSH_KEY}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          if [ -n "${VPS_KNOWN_HOSTS}" ]; then
-            printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          if [ -n "${ACCEPTANCE_VPS_KNOWN_HOSTS}" ]; then
+            printf '%s\n' "${ACCEPTANCE_VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
           else
-            ssh-keyscan -p "${PORT}" "${VPS_HOST}" > ~/.ssh/known_hosts
+            ssh-keyscan -p "${PORT}" "${ACCEPTANCE_VPS_HOST}" > ~/.ssh/known_hosts
           fi
           chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy acceptance build
         if: steps.config.outputs.enabled == 'true'
         env:
-          VPS_HOST: ${{ secrets.VPS_HOST }}
-          VPS_PORT: ${{ secrets.VPS_PORT }}
-          VPS_USER: ${{ secrets.VPS_USER }}
+          ACCEPTANCE_VPS_HOST: ${{ secrets.ACCEPTANCE_VPS_HOST }}
+          ACCEPTANCE_VPS_PORT: ${{ secrets.ACCEPTANCE_VPS_PORT }}
+          ACCEPTANCE_VPS_USER: ${{ secrets.ACCEPTANCE_VPS_USER }}
           ACCEPTANCE_VPS_APP_DIR: ${{ secrets.ACCEPTANCE_VPS_APP_DIR }}
           ACCEPTANCE_VPS_COMPOSE_FILE: ${{ secrets.ACCEPTANCE_VPS_COMPOSE_FILE }}
           ACCEPTANCE_VPS_BRANCH: ${{ secrets.ACCEPTANCE_VPS_BRANCH }}
         run: |
           set -Eeuo pipefail
-          PORT="${VPS_PORT:-22}"
+          PORT="${ACCEPTANCE_VPS_PORT:-22}"
           DEPLOY_BRANCH="${ACCEPTANCE_VPS_BRANCH:-develop}"
           COMPOSE_FILE="${ACCEPTANCE_VPS_COMPOSE_FILE:-docker-compose.acceptance.yml}"
-          ssh -i ~/.ssh/id_ed25519 -p "${PORT}" "${VPS_USER}@${VPS_HOST}" /bin/bash -s -- "${ACCEPTANCE_VPS_APP_DIR}" "${DEPLOY_BRANCH}" "${COMPOSE_FILE}" <<'EOF'
+          ssh -i ~/.ssh/id_ed25519 -p "${PORT}" "${ACCEPTANCE_VPS_USER}@${ACCEPTANCE_VPS_HOST}" /bin/bash -s -- "${ACCEPTANCE_VPS_APP_DIR}" "${DEPLOY_BRANCH}" "${COMPOSE_FILE}" <<'EOF'
           set -Eeuo pipefail
           APP_DIR="$1"
           DEPLOY_BRANCH="$2"
