@@ -1,7 +1,9 @@
 import argparse
+import os
 import random
 import sys
 from dataclasses import dataclass
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -112,11 +114,36 @@ def _play_game(
     return winner, result
 
 
+def _play_game_pair(args: tuple) -> list[tuple[int, dict]]:
+    """Play one game seed for both candidate_team 0 and 1.
+
+    Top-level function so it can be pickled by multiprocessing.
+    Disables pacing delays in the worker process.
+    """
+    game_seed, candidate_strength, baseline_strength = args
+
+    main.AI_BID_DELAY = 0.0
+    main.AI_PLAY_DELAY = 0.0
+    main.TRICK_CLEAR_DELAY = 0.0
+
+    results = []
+    for candidate_team in (0, 1):
+        winner, result = _play_game(
+            candidate_team=candidate_team,
+            seed_base=game_seed,
+            candidate_strength=candidate_strength,
+            baseline_strength=baseline_strength,
+        )
+        results.append((winner, result))
+    return results
+
+
 def run_benchmark(
     target_rounds: int,
     seed: int,
     candidate_strength: str = "expert",
     baseline_strength: str = "advanced",
+    workers: int = 0,
 ) -> BenchStats:
     rng = random.Random(seed)
     stats = BenchStats()
@@ -126,26 +153,46 @@ def run_benchmark(
     main.AI_PLAY_DELAY = 0.0
     main.TRICK_CLEAR_DELAY = 0.0
 
-    while stats.rounds < target_rounds:
-        game_seed = rng.randint(1, 10_000_000)
-        for candidate_team in (0, 1):
-            winner, result = _play_game(
-                candidate_team=candidate_team,
-                seed_base=game_seed,
-                candidate_strength=candidate_strength,
-                baseline_strength=baseline_strength,
-            )
-            stats.games += 1
-            stats.rounds += result["rounds"]
-            stats.points_for += result["points_for"]
-            stats.points_against += result["points_against"]
-            stats.nat_for += result["nat_for"]
-            stats.nat_against += result["nat_against"]
-            stats.declares += result["declares"]
-            stats.successful_declares += result["successful_declares"]
-            stats.wins += winner
+    if workers <= 0:
+        workers = max(1, cpu_count() - 1)
+
+    # Pre-generate enough game seeds (each seed produces 2 games = ~32 rounds).
+    max_pairs = (target_rounds // 16) + 4  # generous estimate
+    game_seeds = [rng.randint(1, 10_000_000) for _ in range(max_pairs)]
+
+    if workers == 1:
+        # Sequential fallback.
+        for game_seed in game_seeds:
+            pair = _play_game_pair((game_seed, candidate_strength, baseline_strength))
+            for winner, result in pair:
+                stats.games += 1
+                stats.rounds += result["rounds"]
+                stats.points_for += result["points_for"]
+                stats.points_against += result["points_against"]
+                stats.nat_for += result["nat_for"]
+                stats.nat_against += result["nat_against"]
+                stats.declares += result["declares"]
+                stats.successful_declares += result["successful_declares"]
+                stats.wins += winner
             if stats.rounds >= target_rounds:
                 break
+    else:
+        tasks = [(gs, candidate_strength, baseline_strength) for gs in game_seeds]
+        with Pool(processes=workers) as pool:
+            for pair in pool.imap_unordered(_play_game_pair, tasks):
+                for winner, result in pair:
+                    stats.games += 1
+                    stats.rounds += result["rounds"]
+                    stats.points_for += result["points_for"]
+                    stats.points_against += result["points_against"]
+                    stats.nat_for += result["nat_for"]
+                    stats.nat_against += result["nat_against"]
+                    stats.declares += result["declares"]
+                    stats.successful_declares += result["successful_declares"]
+                    stats.wins += winner
+                if stats.rounds >= target_rounds:
+                    pool.terminate()
+                    break
 
     return stats
 
@@ -154,8 +201,9 @@ def main_cli() -> None:
     parser = argparse.ArgumentParser(description="Benchmark AI strengths against a baseline profile.")
     parser.add_argument("--rounds", type=int, default=10_000, help="Target number of played rounds.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--candidate-strength", default="expert", choices=["beginner", "advanced", "expert"])
-    parser.add_argument("--baseline-strength", default="advanced", choices=["beginner", "advanced", "expert"])
+    parser.add_argument("--candidate-strength", default="expert", choices=["beginner", "advanced", "expert", "expert_v2_base", "expert_v2"])
+    parser.add_argument("--baseline-strength", default="advanced", choices=["beginner", "advanced", "expert", "expert_v2_base", "expert_v2"])
+    parser.add_argument("--workers", type=int, default=0, help="Number of parallel workers (default: cpu_count-1).")
     args = parser.parse_args()
 
     stats = run_benchmark(
@@ -163,6 +211,7 @@ def main_cli() -> None:
         seed=args.seed,
         candidate_strength=args.candidate_strength,
         baseline_strength=args.baseline_strength,
+        workers=args.workers,
     )
     winrate = stats.wins / stats.games if stats.games else 0.0
     avg_diff = (stats.points_for - stats.points_against) / stats.games if stats.games else 0.0

@@ -91,6 +91,7 @@ const TRANSLATIONS = {
         "rules.amsterdam": "Amsterdam",
         "ai.advanced": "Advanced",
         "ai.expert": "Expert",
+        "ai.expert_v2": "Grandmaster",
 
         // ── Next Round modal ──
         "modal.round_finished": "Round Finished",
@@ -249,6 +250,7 @@ const TRANSLATIONS = {
         "rules.amsterdam": "Amsterdam",
         "ai.advanced": "Gevorderd",
         "ai.expert": "Expert",
+        "ai.expert_v2": "Grootmeester",
 
         // ── Volgende Ronde modal ──
         "modal.round_finished": "Ronde Afgelopen",
