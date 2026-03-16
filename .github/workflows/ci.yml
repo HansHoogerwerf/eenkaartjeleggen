@@ -7,6 +7,17 @@ on:
       - main
 
 jobs:
+  check-source-branch:
+    if: github.event_name == 'pull_request' && github.base_ref == 'main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Only allow merges from develop
+        run: |
+          if [ "${{ github.head_ref }}" != "develop" ]; then
+            echo "::error::PRs to main must come from develop, not '${{ github.head_ref }}'."
+            exit 1
+          fi
+
   tests-and-quality-gate:
     runs-on: ubuntu-latest
     env:
