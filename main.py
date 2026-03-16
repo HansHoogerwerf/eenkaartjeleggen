@@ -277,6 +277,7 @@ class AIPlayer(Player):
     TIE_BREAK_DELTA = 0.35
     SIGNAL_MAX_CONFIDENCE = 1.0
     TRICK_WIN_SIM_SAMPLES = 20
+    LOOKAHEAD_BRANCH_LIMIT = 3
 
     BID_WEIGHTS = {
         "trump_j": 1.85,
@@ -296,6 +297,10 @@ class AIPlayer(Player):
             "use_inference": False,
             "use_trick_prob": False,
             "use_endgame_solver": False,
+            "use_lookahead": False,
+            "lookahead_enhanced": False,
+            "lookahead_depth": 0,
+            "lookahead_samples": 0,
             "tie_break_delta": 0.95,
             "random_mistake_rate": 0.10,
             "declaration_bias": 0.65,
@@ -305,6 +310,10 @@ class AIPlayer(Player):
             "use_inference": True,
             "use_trick_prob": True,
             "use_endgame_solver": False,
+            "use_lookahead": False,
+            "lookahead_enhanced": False,
+            "lookahead_depth": 0,
+            "lookahead_samples": 0,
             "tie_break_delta": 0.55,
             "random_mistake_rate": 0.03,
             "declaration_bias": 0.25,
@@ -314,6 +323,36 @@ class AIPlayer(Player):
             "use_inference": True,
             "use_trick_prob": True,
             "use_endgame_solver": True,
+            "use_lookahead": False,
+            "lookahead_enhanced": False,
+            "lookahead_depth": 0,
+            "lookahead_samples": 0,
+            "tie_break_delta": 0.35,
+            "random_mistake_rate": 0.0,
+            "declaration_bias": 0.0,
+            "trick_win_sim_samples": 20,
+        },
+        "expert_v2_base": {
+            "use_inference": True,
+            "use_trick_prob": True,
+            "use_endgame_solver": True,
+            "use_lookahead": True,
+            "lookahead_enhanced": False,
+            "lookahead_depth": 3,
+            "lookahead_samples": 8,
+            "tie_break_delta": 0.35,
+            "random_mistake_rate": 0.0,
+            "declaration_bias": 0.0,
+            "trick_win_sim_samples": 20,
+        },
+        "expert_v2": {
+            "use_inference": True,
+            "use_trick_prob": True,
+            "use_endgame_solver": True,
+            "use_lookahead": True,
+            "lookahead_enhanced": True,
+            "lookahead_depth": 3,
+            "lookahead_samples": 8,
             "tie_break_delta": 0.35,
             "random_mistake_rate": 0.0,
             "declaration_bias": 0.0,
@@ -338,6 +377,10 @@ class AIPlayer(Player):
         self.use_inference = bool(profile["use_inference"])
         self.use_trick_prob = bool(profile["use_trick_prob"])
         self.use_endgame_solver = bool(profile["use_endgame_solver"])
+        self.use_lookahead = bool(profile["use_lookahead"])
+        self.lookahead_enhanced = bool(profile["lookahead_enhanced"])
+        self.lookahead_depth = int(profile["lookahead_depth"])
+        self.lookahead_samples = int(profile["lookahead_samples"])
         self.random_mistake_rate = float(profile["random_mistake_rate"])
         self.declaration_bias = float(profile["declaration_bias"])
         self.TIE_BREAK_DELTA = float(profile["tie_break_delta"])
@@ -423,6 +466,64 @@ class AIPlayer(Player):
             - pressure * 0.35
         )
         return score >= threshold
+
+    def _simulated_bid_score(self, trump: str) -> float:
+        """Simulate a few quick trick sequences to estimate expected points.
+
+        Plays 3 tricks with sampled opponent hands, 4 times, and returns
+        the average point differential for our team.
+        """
+        # Build a fake empty trick to pass to _sample_hands.
+        fake_trick: Trick = []
+        total_delta = 0.0
+        valid = 0
+
+        for _ in range(4):
+            hands = self._sample_hands(fake_trick)
+            if hands is None:
+                continue
+
+            # Simulate 3 tricks of play using simple greedy heuristic per seat.
+            delta = 0.0
+            leader = self.seat_idx
+            sim_hands = {seat: list(cards) for seat, cards in hands.items()}
+            for _ in range(3):
+                trick_cards: list[tuple[int, Card]] = []
+                for offset in range(4):
+                    seat = (leader + offset) % 4
+                    hand = sim_hands[seat]
+                    if not hand:
+                        break
+                    legal = self._legal_moves_for_cards(hand, trick_cards, trump)
+                    if not legal:
+                        break
+                    # Simple greedy: play highest strength card.
+                    card = max(legal, key=lambda c: c.strength(trump))
+                    trick_cards.append((seat, card))
+                    cs = str(card)
+                    for i, hc in enumerate(hand):
+                        if str(hc) == cs:
+                            del hand[i]
+                            break
+
+                if len(trick_cards) == 4:
+                    sim_trick = [
+                        (SimpleNamespace(seat_idx=s, team=SEAT_TEAMS[s]), c)
+                        for s, c in trick_cards
+                    ]
+                    wi = trick_winner_index(sim_trick, trump)
+                    winner_seat = trick_cards[wi][0]
+                    pts = sum(c.points(trump) for _, c in trick_cards)
+                    if SEAT_TEAMS[winner_seat] == self.team:
+                        delta += pts
+                    else:
+                        delta -= pts
+                    leader = winner_seat
+
+            total_delta += delta
+            valid += 1
+
+        return total_delta / valid if valid > 0 else 0.0
 
     def _declaration_score(self, trump: str) -> float:
         trumps = [c for c in self.hand if c.suit == trump]
@@ -590,6 +691,10 @@ class AIPlayer(Player):
             solved = self._endgame_exact_choice(legal, trick, trump)
             if solved is not None:
                 return solved
+        if self.use_lookahead and len(self.hand) > 3:
+            lookahead = self._lookahead_choice(legal, trick, trump)
+            if lookahead is not None:
+                return lookahead
         if not trick:
             return self._lead(legal, trump)
         wi = trick_winner_index(trick, trump)
@@ -1046,18 +1151,55 @@ class AIPlayer(Player):
         if self.signal_profile != "core" or trump is None:
             return
 
+        # Opening signal: partner's first lead tells us about their hand.
         if self.trick_num == 0 and lead_suit is None:
             if card.suit == trump and card.rank in ("J", "9", "A"):
                 self.partner_signals["trump_pull"] = {"confidence": 0.9, "source_trick": self.trick_num}
             elif card.suit != trump:
                 self.partner_signals["opening_suit"] = {"suit": card.suit, "confidence": 0.75, "source_trick": self.trick_num}
 
+        # Same-suit control signal: low card in a non-trump suit.
         if lead_suit is not None and card.suit != trump and card.rank in ("7", "8", "9"):
             cur = self.partner_signals.get(card.suit, {"confidence": 0.0, "meaning": "same_suit_control"})
             cur["confidence"] = min(self.SIGNAL_MAX_CONFIDENCE, cur.get("confidence", 0.0) + 0.35)
             cur["source_trick"] = self.trick_num
             cur["meaning"] = "same_suit_control"
             self.partner_signals[card.suit] = cur
+
+        # Enhanced signals (Grandmaster only): discard attitude and void tracking.
+        if not self.lookahead_enhanced:
+            return
+
+        # Discard signal: when partner can't follow suit and doesn't trump,
+        # the suit they discard FROM is one they're weak in (negative signal),
+        # and a high discard encourages the discarded suit, low discourages.
+        if lead_suit is not None and card.suit != lead_suit and card.suit != trump:
+            discard_suit = card.suit
+            key = f"discard_{discard_suit}"
+            if card.rank in ("A", "10", "K"):
+                # High discard = attitude signal: "I have strength in this suit"
+                cur = self.partner_signals.get(discard_suit, {"confidence": 0.0, "meaning": "same_suit_control"})
+                cur["confidence"] = min(self.SIGNAL_MAX_CONFIDENCE, cur.get("confidence", 0.0) + 0.25)
+                cur["source_trick"] = self.trick_num
+                cur["meaning"] = "same_suit_control"
+                self.partner_signals[discard_suit] = cur
+            elif card.rank in ("7", "8") and discard_suit not in self.partner_signals:
+                # Low discard from a new suit = "I don't care about this suit"
+                self.partner_signals[key] = {
+                    "confidence": 0.4,
+                    "source_trick": self.trick_num,
+                    "meaning": "weak_suit",
+                }
+
+        # Void signal: partner trumped in → they are void in led suit.
+        # Store as a negative signal so we avoid leading that suit to them.
+        if lead_suit is not None and card.suit == trump and lead_suit != trump:
+            void_key = f"partner_void_{lead_suit}"
+            self.partner_signals[void_key] = {
+                "confidence": 1.0,
+                "source_trick": self.trick_num,
+                "meaning": "partner_void",
+            }
 
     def _decay_signals(self) -> None:
         to_drop: list[str] = []
@@ -1070,10 +1212,30 @@ class AIPlayer(Player):
             self.partner_signals.pop(key, None)
 
     def _partner_signal_strength(self, suit: str) -> float:
+        """Net signal strength for a suit: positive = partner has strength,
+        negative = partner is weak or void."""
+        # Basic signal (all profiles).
         signal = self.partner_signals.get(suit)
-        if not signal:
-            return 0.0
-        return float(signal.get("confidence", 0.0))
+        if not self.lookahead_enhanced:
+            if not signal:
+                return 0.0
+            return float(signal.get("confidence", 0.0))
+
+        # Enhanced: combine positive, negative, and void signals.
+        strength = 0.0
+
+        if signal and signal.get("meaning") == "same_suit_control":
+            strength += float(signal.get("confidence", 0.0))
+
+        weak = self.partner_signals.get(f"discard_{suit}")
+        if weak and weak.get("meaning") == "weak_suit":
+            strength -= float(weak.get("confidence", 0.0)) * 0.6
+
+        void_sig = self.partner_signals.get(f"partner_void_{suit}")
+        if void_sig:
+            strength -= float(void_sig.get("confidence", 0.0)) * 0.8
+
+        return strength
 
     def _cards_left_by_seat(self, trick: Trick) -> dict[int, int]:
         base = 8 - self.trick_num
@@ -1082,6 +1244,302 @@ class AIPlayer(Player):
             seat: base - (1 if seat in already_played else 0)
             for seat in range(4)
         }
+
+    # ── Lookahead (3-trick depth-limited search) ────────────────────────────
+
+    def _prune_moves(self, legal: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:
+        """Keep only the top LOOKAHEAD_BRANCH_LIMIT moves by heuristic.
+
+        When lookahead_enhanced is True, uses context-aware scoring
+        (partner winning, schmear, safe discard).  Otherwise uses a
+        simple strength + suit heuristic.
+        """
+        if not self.lookahead_enhanced:
+            # Simple pruning (original behaviour).
+            scored: list[tuple[float, Card]] = []
+            for card in legal:
+                s = float(card.strength(trump))
+                if card.suit == trump:
+                    s += 2.0
+                if trick_cards:
+                    lead_suit = trick_cards[0][1].suit
+                    if card.suit == lead_suit:
+                        s += 1.0
+                s += card.points(trump) * 0.05
+                scored.append((s, card))
+            scored.sort(key=lambda x: x[0], reverse=True)
+            return [card for _, card in scored[: self.LOOKAHEAD_BRANCH_LIMIT]]
+
+        # Context-aware pruning (enhanced).
+        partner_winning = False
+        if trick_cards:
+            sim_trick = [
+                (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
+                for seat, card in trick_cards
+            ]
+            wi = trick_winner_index(sim_trick, trump)
+            partner_winning = SEAT_TEAMS[trick_cards[wi][0]] == self.team
+
+        scored: list[tuple[float, Card]] = []
+        for card in legal:
+            s = float(card.strength(trump))
+
+            if card.suit == trump:
+                s += 2.0
+            if trick_cards:
+                lead_suit = trick_cards[0][1].suit
+                if card.suit == lead_suit:
+                    s += 1.0
+                if partner_winning:
+                    s += card.points(trump) * 0.15
+                else:
+                    s -= card.points(trump) * 0.08
+            else:
+                s += card.points(trump) * 0.05
+
+            if card.points(trump) == 0 and card.suit != trump:
+                s += 0.5
+
+            scored.append((s, card))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        return [card for _, card in scored[: self.LOOKAHEAD_BRANCH_LIMIT]]
+
+    def _sample_hands(self, trick: Trick) -> dict[int, list[Card]] | None:
+        """Randomly sample a consistent hand distribution for all seats.
+
+        Unlike _determinize_endgame_hands (which uses backtracking for an exact
+        solution with few cards), this shuffles the available pool and deals
+        cards respecting the possible-cards constraints.  Returns None if a
+        consistent deal cannot be found.
+        """
+        counts = self._cards_left_by_seat(trick)
+        my_cards = {str(c) for c in self.hand}
+        available = self._all_card_strings() - self.played_cards - my_cards
+
+        hands: dict[int, list[Card]] = {self.seat_idx: list(self.hand)}
+        targets = [seat for seat in range(4) if seat != self.seat_idx]
+
+        # Build constrained pools per seat.
+        pools: dict[int, list[str]] = {}
+        for seat in targets:
+            poss = self.possible_cards_by_seat.get(seat, set())
+            pool = sorted(poss & available)
+            if len(pool) < counts[seat]:
+                pool = sorted(available)
+            pools[seat] = pool
+
+        # Greedy assignment: most-constrained seat first, shuffle to randomise.
+        assigned: set[str] = set()
+        order = sorted(targets, key=lambda s: len(pools[s]))
+        for seat in order:
+            pool = [cs for cs in pools[seat] if cs not in assigned]
+            need = counts[seat]
+            if len(pool) < need:
+                return None
+            self.rng.shuffle(pool)
+            picked = pool[:need]
+            hands[seat] = [self._card_from_str(cs) for cs in picked]
+            assigned.update(picked)
+
+        return hands
+
+    def _leaf_eval(self, hands: dict[int, list[Card]], trump: str) -> float:
+        """Positional heuristic for unsearched tricks beyond the lookahead.
+
+        Returns a score from our team's perspective: positive is good for us.
+        Kept cheap — called once per leaf node.
+        """
+        if all(len(h) == 0 for h in hands.values()):
+            return 0.0
+
+        my_team_strength = 0.0
+        opp_team_strength = 0.0
+        for seat in range(4):
+            val = 0.0
+            for c in hands.get(seat, []):
+                # High cards are worth roughly their point value in expectation.
+                val += c.points(trump) * 0.3
+                # Trump cards are more valuable (control).
+                if c.suit == trump:
+                    val += c.strength(trump) * 0.5
+                else:
+                    val += c.strength(trump) * 0.15
+            # Voids are advantageous (can trump in).
+            suits_in_hand = {c.suit for c in hands.get(seat, [])}
+            non_trump_suits = {s for s in SUITS if s != trump}
+            voids = len(non_trump_suits - suits_in_hand)
+            val += voids * 1.5
+
+            if SEAT_TEAMS[seat] == self.team:
+                my_team_strength += val
+            else:
+                opp_team_strength += val
+
+        return (my_team_strength - opp_team_strength) * 0.15
+
+    def _lookahead_minimax(
+        self,
+        hands: dict[int, list[Card]],
+        trick_cards: list[tuple[int, Card]],
+        next_seat: int,
+        trump: str,
+        tricks_remaining: int,
+        memo: dict,
+        alpha: float = float("-inf"),
+        beta: float = float("inf"),
+    ) -> float:
+        """Depth-limited minimax with alpha-beta pruning.
+
+        Searches up to *tricks_remaining* full tricks (4 cards each).  At the
+        depth boundary a leaf evaluation is returned combining accumulated
+        points with a positional heuristic for the remaining hand.
+        """
+        # A trick is complete — resolve it and start the next trick.
+        if len(trick_cards) == 4:
+            sim_trick = [
+                (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
+                for seat, card in trick_cards
+            ]
+            wi = trick_winner_index(sim_trick, trump)
+            winner_seat = trick_cards[wi][0]
+            trick_pts = sum(card.points(trump) for _, card in trick_cards)
+            last_bonus = 10 if sum(len(h) for h in hands.values()) == 0 else 0
+            gain = trick_pts + last_bonus
+            delta = gain if SEAT_TEAMS[winner_seat] == self.team else -gain
+
+            if tricks_remaining <= 1 or all(len(h) == 0 for h in hands.values()):
+                return delta
+            return delta + self._lookahead_minimax(
+                hands, [], winner_seat, trump, tricks_remaining - 1, memo,
+                alpha, beta,
+            )
+
+        # All hands empty — nothing left.
+        if all(len(h) == 0 for h in hands.values()):
+            return 0.0
+
+        key = self._endgame_state_key(hands, trick_cards, next_seat)
+        if key in memo:
+            return memo[key]
+
+        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump)
+        if not legal:
+            memo[key] = 0.0
+            return 0.0
+
+        # Prune to top-K moves to keep the search tractable.
+        if len(legal) > self.LOOKAHEAD_BRANCH_LIMIT:
+            # Always use simple pruning inside minimax — context-aware pruning
+            # is too speculative and can exclude the optimal move.
+            scored_p: list[tuple[float, Card]] = []
+            for card in legal:
+                s = float(card.strength(trump))
+                if card.suit == trump:
+                    s += 2.0
+                if trick_cards:
+                    lead_suit = trick_cards[0][1].suit
+                    if card.suit == lead_suit:
+                        s += 1.0
+                s += card.points(trump) * 0.05
+                scored_p.append((s, card))
+            scored_p.sort(key=lambda x: x[0], reverse=True)
+            legal = [card for _, card in scored_p[: self.LOOKAHEAD_BRANCH_LIMIT]]
+
+        is_max = SEAT_TEAMS[next_seat] == self.team
+        best = float("-inf") if is_max else float("inf")
+        cutoff = False
+
+        for card in legal:
+            new_hands = {seat: list(cards) for seat, cards in hands.items()}
+            cs = str(card)
+            for i, c in enumerate(new_hands[next_seat]):
+                if str(c) == cs:
+                    del new_hands[next_seat][i]
+                    break
+
+            new_trick = trick_cards + [(next_seat, card)]
+            nxt = (next_seat + 1) % 4
+            val = self._lookahead_minimax(
+                new_hands, new_trick, nxt, trump, tricks_remaining, memo,
+                alpha, beta,
+            )
+            if is_max:
+                best = max(best, val)
+                if self.lookahead_enhanced:
+                    alpha = max(alpha, best)
+            else:
+                best = min(best, val)
+                if self.lookahead_enhanced:
+                    beta = min(beta, best)
+            if self.lookahead_enhanced and beta <= alpha:
+                cutoff = True
+                break
+
+        # Only memo exact values; pruned results depend on the alpha-beta window.
+        if not cutoff:
+            memo[key] = best
+        return best
+
+    def _adaptive_lookahead_depth(self) -> int:
+        """Return search depth (in tricks) based on hand size.
+
+        Fewer cards → less branching → can search deeper.
+        Never goes below the configured base depth.
+        """
+        n = len(self.hand)
+        if n <= 4:
+            return max(self.lookahead_depth, 4)
+        if n <= 5:
+            return max(self.lookahead_depth, 3)
+        return self.lookahead_depth
+
+    def _lookahead_choice(self, legal: list[Card], trick: Trick, trump: str) -> Card | None:
+        """Pick a card by averaging depth-limited minimax over sampled hands.
+
+        Returns None if sampling fails consistently (caller falls through to
+        heuristic play).
+        """
+        trick_cards_prefix = [(p.seat_idx, c) for p, c in trick]
+        next_after_me = (self.seat_idx + 1) % 4
+        depth = self.lookahead_depth
+
+        totals: dict[str, float] = {str(c): 0.0 for c in legal}
+        counts: dict[str, int] = {str(c): 0 for c in legal}
+
+        for _ in range(self.lookahead_samples):
+            hands = self._sample_hands(trick)
+            if hands is None:
+                continue
+
+            for card in legal:
+                test_hands = {seat: list(cards) for seat, cards in hands.items()}
+                cs = str(card)
+                removed = False
+                for i, c in enumerate(test_hands[self.seat_idx]):
+                    if str(c) == cs:
+                        del test_hands[self.seat_idx][i]
+                        removed = True
+                        break
+                if not removed:
+                    continue
+
+                tc = trick_cards_prefix + [(self.seat_idx, card)]
+                score = self._lookahead_minimax(
+                    test_hands, tc, next_after_me, trump,
+                    depth, memo={},
+                )
+                totals[cs] += score
+                counts[cs] += 1
+
+        scores: list[tuple[Card, float]] = []
+        for card in legal:
+            cs = str(card)
+            if counts[cs] > 0:
+                scores.append((card, totals[cs] / counts[cs]))
+
+        if not scores:
+            return None
+        return self._pick_card(scores)
 
     def _determinize_endgame_hands(self, trick: Trick) -> dict[int, list[Card]] | None:
         counts = self._cards_left_by_seat(trick)
@@ -1410,7 +1868,9 @@ class KlaverjasGame:
                 bidder_idx = (first_bidder + i) % 4
                 player = self.players[bidder_idx]
 
+                t_start = time.monotonic()
                 declared = player.choose_trump(suit, False)
+                elapsed = time.monotonic() - t_start
                 if self._current_round_replay is not None:
                     self._current_round_replay["bids"].append({
                         "round_num": round_num,
@@ -1426,13 +1886,17 @@ class KlaverjasGame:
                     )
                     self.notify("bid", {"player_idx": bidder_idx, "trump": suit})
                     if not isinstance(player, HumanPlayer):
-                        time.sleep(AI_BID_DELAY)
+                        remaining_delay = AI_BID_DELAY - elapsed
+                        if remaining_delay > 0:
+                            time.sleep(remaining_delay)
                     return bidder_idx, suit
                 else:
                     self.log(f"  {player.name} passes")
                     self.notify("bid", {"player_idx": bidder_idx, "trump": None})
                     if not isinstance(player, HumanPlayer):
-                        time.sleep(AI_BID_DELAY)
+                        remaining_delay = AI_BID_DELAY - elapsed
+                        if remaining_delay > 0:
+                            time.sleep(remaining_delay)
 
         # All 8 players passed both rounds — force first bidder on round-2 suit
         forced_suit = suits[1]
@@ -1637,7 +2101,9 @@ class KlaverjasGame:
         for offset in range(4):
             idx = (leader + offset) % 4
             player = self.players[idx]
+            t_start = time.monotonic()
             card = player.choose_card(trick, trump)
+            elapsed = time.monotonic() - t_start
             trick.append((player, card))
             trick_cards.append((player.name, str(card)))
             cards_played.append(card)
@@ -1651,7 +2117,9 @@ class KlaverjasGame:
             self.notify("trick_played", {"player_idx": idx, "card": card})
             if not isinstance(player, HumanPlayer):
                 self.log(f"  {player.name} plays: {card}")
-                time.sleep(AI_PLAY_DELAY)
+                remaining_delay = AI_PLAY_DELAY - elapsed
+                if remaining_delay > 0:
+                    time.sleep(remaining_delay)
 
         wi = trick_winner_index(trick, trump)
         winner_global = self.players.index(trick[wi][0])
