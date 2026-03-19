@@ -127,6 +127,7 @@
                     <button type="button" class="btn-pass ai-btn" data-strength="advanced" onclick="selectAiStrength('advanced')" data-i18n="ai.advanced" aria-pressed="false">Advanced</button>
                     <button type="button" class="btn-declare ai-btn active" data-strength="expert" onclick="selectAiStrength('expert')" data-i18n="ai.expert" aria-pressed="true">Expert</button>
                     <button type="button" class="btn-pass ai-btn" data-strength="expert_v2" onclick="selectAiStrength('expert_v2')" data-i18n="ai.expert_v2" aria-pressed="false">Grandmaster</button>
+                    <button type="button" class="btn-pass ai-btn" data-strength="expert_v3" onclick="selectAiStrength('expert_v3')" data-i18n="ai.expert_v3" aria-pressed="false">Grandmaster+</button>
                 </div>
             </div>
             <!-- AI strength display for non-host -->
@@ -249,20 +250,12 @@
     </div>
 </div>
 
-<!-- ── Game over modal ──────────────────────────────────────────────── -->
-<div class="modal-overlay" id="gameover-overlay">
-    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
-        <h2 id="gameover-title" data-i18n="modal.game_over">Game Over</h2>
-        <p id="gameover-msg" role="status" aria-live="polite"></p>
-        <div id="gameover-actions">
-            <button type="button" class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.new_game">
-                New Game
-            </button>
-            <button type="button" class="btn-pass" onclick="document.getElementById('gameover-overlay').classList.remove('active');" data-i18n="btn.close" data-modal-close>
-                Close
-            </button>
-        </div>
-    </div>
+<!-- ── Game over banner (non-blocking, bottom of screen) ───────────── -->
+<div id="gameover-banner" role="status" aria-live="polite">
+    <span id="gameover-msg"></span>
+    <button type="button" class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); document.getElementById('gameover-banner').classList.remove('active');" data-i18n="btn.new_game">
+        New Game
+    </button>
 </div>
 
 <!-- ── Leave confirm modal ──────────────────────────────────────────── -->

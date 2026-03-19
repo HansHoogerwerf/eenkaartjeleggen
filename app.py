@@ -6,13 +6,19 @@ from gevent import monkey
 
 monkey.patch_all()
 
+import gevent
 from flask import Flask, render_template, request, send_from_directory
 from flask_socketio import SocketIO, emit, join_room, leave_room
 
 from config import CONFIG
+import main
 from main import HumanPlayer
 from server.game_flow import leave_current_room, reconnect_player, start_room_game
 from server.room_state import Room, cleanup_expired_rooms, generate_code, rooms, sid_to_room
+
+# Offload CPU-intensive AI computation to real native OS threads so that
+# multiple games can run in parallel without blocking the gevent event loop.
+main._thread_offload = lambda fn: gevent.get_hub().threadpool.apply(fn)
 
 app = Flask(__name__)
 app.config["SECRET_KEY"] = CONFIG.server.secret_key
