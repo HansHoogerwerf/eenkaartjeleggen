@@ -780,6 +780,8 @@ class AIPlayer(Player):
         This is intentionally generic (not tied to specific ranks):
         any point card is penalized when stronger same-suit cards are unaccounted
         for, including trump point cards like 9 under an unseen trump Jack.
+        Extra-heavy penalty for non-trump 10 when the Ace is outstanding
+        (the classic "leading 10 into Ace" mistake).
         """
         pts = card.points(trump)
         if pts <= 0:
@@ -790,7 +792,17 @@ class AIPlayer(Player):
             return 0.0
 
         suit_risk_weight = 0.75 if card.suit == trump else 0.60
-        return pts * suit_risk_weight + (higher_count - 1) * 0.8
+        penalty = pts * suit_risk_weight + (higher_count - 1) * 0.8
+
+        # Extra penalty: non-trump 10 under an outstanding Ace is especially
+        # costly (10 points lost for free).
+        if card.suit != trump and card.rank == "10":
+            ace_str = f"A{card.suit}"
+            ace_in_hand = any(c.suit == card.suit and c.rank == "A" for c in self.hand)
+            if not ace_in_hand and ace_str not in self.played_cards:
+                penalty += 4.0
+
+        return penalty
 
     @staticmethod
     def _legal_moves_for_cards(hand_cards: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:
