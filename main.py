@@ -52,6 +52,17 @@ from klaverjas.constants import (
 from klaverjas.core import Card, Deck, Trick, find_roem, trick_winner_index
 
 
+# ─── Thread offloading ────────────────────────────────────────────────────────
+# When running under gevent (web server), the game loop runs as a greenlet so
+# that socketio.emit works. CPU-intensive AI computation is offloaded to real
+# native OS threads via this hook, preventing one game's AI from blocking the
+# event loop and all other games.
+#
+# Set by the web server (app.py) at startup; left as None for standalone use
+# (benchmarks, tests) where no event loop exists.
+_thread_offload = None   # fn(callable) -> result; runs callable in a native thread
+
+
 # ─── Exceptions ───────────────────────────────────────────────────────────────
 
 class GameInterrupt(Exception):
@@ -132,7 +143,7 @@ class Player(ABC):
 
 # ─── Human player ─────────────────────────────────────────────────────────────
 
-DISCONNECT_TIMEOUT = 120   # seconds to wait for a disconnected player
+DISCONNECT_TIMEOUT = 300   # seconds to wait for a disconnected player
 
 
 class HumanPlayer(Player):
@@ -445,14 +456,20 @@ class AIPlayer(Player):
 
     def choose_card(self, trick: Trick, trump: str) -> Card:
         legal = self.legal_moves(trick, trump)
-        card = self._strategy(legal, trick, trump)
+        if _thread_offload:
+            card = _thread_offload(lambda: self._strategy(legal, trick, trump))
+        else:
+            card = self._strategy(legal, trick, trump)
         self.hand.remove(card)
         return card
 
     def choose_trump(self, suit: str, forced: bool) -> bool:
         if forced:
             return True
-        score = self._declaration_score(suit)
+        if _thread_offload:
+            score = _thread_offload(lambda: self._declaration_score(suit))
+        else:
+            score = self._declaration_score(suit)
         roem_total = sum(p for _, p in find_roem(self.hand, suit))
         nat_risk = 0.0
         if self.declaring_team not in (-1, self.team):
@@ -763,6 +780,8 @@ class AIPlayer(Player):
         This is intentionally generic (not tied to specific ranks):
         any point card is penalized when stronger same-suit cards are unaccounted
         for, including trump point cards like 9 under an unseen trump Jack.
+        Extra-heavy penalty for non-trump 10 when the Ace is outstanding
+        (the classic "leading 10 into Ace" mistake).
         """
         pts = card.points(trump)
         if pts <= 0:
@@ -773,7 +792,17 @@ class AIPlayer(Player):
             return 0.0
 
         suit_risk_weight = 0.75 if card.suit == trump else 0.60
-        return pts * suit_risk_weight + (higher_count - 1) * 0.8
+        penalty = pts * suit_risk_weight + (higher_count - 1) * 0.8
+
+        # Extra penalty: non-trump 10 under an outstanding Ace is especially
+        # costly (10 points lost for free).
+        if card.suit != trump and card.rank == "10":
+            ace_str = f"A{card.suit}"
+            ace_in_hand = any(c.suit == card.suit and c.rank == "A" for c in self.hand)
+            if not ace_in_hand and ace_str not in self.played_cards:
+                penalty += 4.0
+
+        return penalty
 
     @staticmethod
     def _legal_moves_for_cards(hand_cards: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:

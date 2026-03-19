@@ -46,6 +46,17 @@ class TestRoomStateUnit(unittest.TestCase):
         room.disconnected_at[0] = time.time() - 2
         self.assertTrue(room.is_expired(time.time(), lobby_ttl=100, started_ttl=100))
 
+    def test_room_not_expired_when_only_one_player_disconnected(self):
+        """A started game should stay alive if at least one player is still connected."""
+        room = Room("ABCD", "sid-1", "Alice")
+        room.add_seat(1, "sid-2", "Bob")
+        room.started = True
+        room.reconnect_timeout_seconds = 1
+        room.mark_disconnected(0)
+        room.disconnected_at[0] = time.time() - 10  # well past timeout
+        # Bob is still connected, so the room should NOT expire
+        self.assertFalse(room.is_expired(time.time(), lobby_ttl=3600, started_ttl=21600))
+
 
 if __name__ == "__main__":
     unittest.main()

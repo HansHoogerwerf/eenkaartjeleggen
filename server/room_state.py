@@ -41,7 +41,7 @@ class Room:
         self.cur_declaring_team: int | None = None
         self.created_at = time.time()
         self.last_activity_at = self.created_at
-        self.reconnect_timeout_seconds = int(os.environ.get("ROOM_RECONNECT_TIMEOUT_SECONDS", "120"))
+        self.reconnect_timeout_seconds = int(os.environ.get("ROOM_RECONNECT_TIMEOUT_SECONDS", "300"))
         self.disconnected_at: dict[int, float] = {}
 
     def touch(self) -> None:
@@ -117,8 +117,15 @@ class Room:
         ttl = started_ttl if self.started else lobby_ttl
         if now - self.last_activity_at > ttl:
             return True
-        for seat, disconnected_at in self.disconnected_at.items():
-            if seat in self.seats and now - disconnected_at > self.reconnect_timeout_seconds:
+        # Only expire on disconnect if ALL human players are disconnected
+        # beyond the reconnect timeout (don't kill a game because one player dropped)
+        if self.started and self.disconnected_at:
+            all_humans_disconnected = all(
+                seat in self.disconnected_at
+                and now - self.disconnected_at[seat] > self.reconnect_timeout_seconds
+                for seat in self.seats
+            )
+            if all_humans_disconnected:
                 return True
         return False
 

@@ -825,12 +825,25 @@ input:focus-visible {
 .close-btn:hover { color: white; }
 
 .modal-wrapper { position: relative; }
-#gameover-msg {
+
+/* ─── Game over banner ──────────────────────────────────────────────── */
+#gameover-banner {
+    display: none;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    background: var(--win-bg);
+    border-top: 2px solid var(--accent);
+    padding: 10px 16px;
     text-align: center;
-    font-size: 16px;
-    margin: 12px 0;
+    z-index: 90;
+    gap: 12px;
+    justify-content: center;
+    align-items: center;
 }
-#gameover-actions { text-align: center; }
+#gameover-banner.active { display: flex; }
+#gameover-msg { color: #ccc; font-size: 14px; font-weight: bold; }
+#gameover-banner .btn-declare { padding: 6px 18px; font-size: 13px; }
 #gameover-newgame-btn { display: none; }
 
 #leave-overlay .modal { max-width: 320px; }
