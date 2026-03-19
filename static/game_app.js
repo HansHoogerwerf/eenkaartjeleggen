@@ -264,7 +264,7 @@ function cancelLobby() {
 
 function updateLobbySeats(lobby) {
     if (lobby && typeof lobby.ai_strength === "string") {
-        if (["beginner", "advanced", "expert", "expert_v2"].includes(lobby.ai_strength)) {
+        if (["beginner", "advanced", "expert", "expert_v2", "expert_v3"].includes(lobby.ai_strength)) {
             selectedAiStrength = lobby.ai_strength;
         }
     }
@@ -423,6 +423,7 @@ socket.on("game_starting", data => {
 
 socket.on("deal_done", data => {
     document.getElementById("nextround-banner").classList.remove("active");
+    document.getElementById("gameover-banner").classList.remove("active");
     clearDeclaringHighlight();
     const trumpInd = document.getElementById("trump-card-indicator");
     if (trumpInd) trumpInd.classList.remove("active");
@@ -536,7 +537,7 @@ socket.on("game_over", data => {
     const s = data.scores;
     document.getElementById("gameover-msg").textContent =
         t("modal.game_over_msg", {winner: teamNames[data.winner], team0: teamNames[0], team1: teamNames[1], s0: s[0], s1: s[1]});
-    document.getElementById("gameover-overlay").classList.add("active");
+    document.getElementById("gameover-banner").classList.add("active");
 });
 
 socket.on("log", data => {
@@ -817,7 +818,7 @@ socket.on("game_left", data => {
     history.replaceState(null, "", window.location.pathname);
     document.getElementById("leave-game-btn").style.display = "none";
     document.getElementById("nextround-banner").classList.remove("active");
-    document.getElementById("gameover-overlay").classList.remove("active");
+    document.getElementById("gameover-banner").classList.remove("active");
     document.getElementById("paused-overlay").classList.remove("active");
     document.getElementById("lobby-waiting").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "block";
