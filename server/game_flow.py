@@ -73,6 +73,7 @@ def reconnect_player(socketio, emit, join_room, room: Room, seat: int, new_sid: 
 
 def start_room_game(socketio, room: Room) -> None:
     room.started = True
+    room._game_abort_handled = False
     room.round_history.clear()
     room.cur_round_tricks.clear()
     room.cur_trick_cards.clear()
@@ -111,7 +112,16 @@ def start_room_game(socketio, room: Room) -> None:
         try:
             room.game.play()
         except GameInterrupt:
-            pass
+            # If nobody else handled the abort (e.g. player timeout, not
+            # an intentional interrupt from new_game/leave_game), reset
+            # the room back to lobby so remaining players aren't stuck.
+            if not room._game_abort_handled and room.code in rooms and room.started:
+                room.started = False
+                room.game = None
+                room.game_thread = None
+                room.disconnected_at.clear()
+                socketio.emit("game_aborted", {"key": "msg.game_aborted"}, room=room.code)
+                socketio.emit("lobby_update", room.lobby_state(), room=room.code)
 
     room.game_thread = threading.Thread(target=run, daemon=True)
     room.game_thread.start()

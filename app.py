@@ -242,6 +242,7 @@ def handle_new_game(_data=None):
         return
 
     if room.game:
+        room._game_abort_handled = True
         room.game.signal_next_round()
         for p in room.game.players:
             if isinstance(p, HumanPlayer):
@@ -309,6 +310,7 @@ def handle_leave_game():
 
     room.touch()
     if room.game:
+        room._game_abort_handled = True
         room.game.signal_next_round()
         for p in room.game.players:
             if isinstance(p, HumanPlayer):
