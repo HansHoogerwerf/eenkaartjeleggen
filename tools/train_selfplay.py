@@ -428,11 +428,19 @@ def train_selfplay(
     if stats:
         print(f"  win_rate={stats.get('win_rate', '?')}, avg_point_diff={stats.get('avg_point_diff', '?')}")
 
+    import shutil
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     rng = random.Random(seed)
 
-    best_avg_reward = -float("inf")
     reward_history = []
+
+    # Tracking for benchmark-based model selection
+    best_benchmark_diff = -float("inf")
+    best_reward_in_window = -float("inf")
+    best_reward_epoch = 0
+    window_path = output_path.replace(".pt", "_window_best.pt")
+    current_path = output_path.replace(".pt", "_current.pt")
 
     for epoch in range(1, num_epochs + 1):
         model.eval()
@@ -477,28 +485,61 @@ def train_selfplay(
             f"trans={len(transitions)}"
         )
 
-        # Save best model
-        if epoch >= 20 and recent_avg > best_avg_reward:
-            best_avg_reward = recent_avg
+        # Track best reward epoch within the current 25-epoch window
+        if recent_avg > best_reward_in_window:
+            best_reward_in_window = recent_avg
+            best_reward_epoch = epoch
             export_net = model.export_policy_net()
-            torch.save(export_net.state_dict(), output_path)
-            print(f"  -> Saved best (recent_20={recent_avg:+.4f})")
+            torch.save(export_net.state_dict(), window_path)
+            print(f"  -> Window best (epoch {epoch}, recent_20={recent_avg:+.4f})")
 
         # Periodic benchmark against expert_v2
         if epoch % benchmark_interval == 0:
-            # Save current model temporarily for benchmarking
-            tmp_path = output_path.replace(".pt", "_tmp.pt")
+            # Save current epoch model
             export_net = model.export_policy_net()
-            torch.save(export_net.state_dict(), tmp_path)
-            # Copy to neural_v1.pt so benchmark uses it
-            import shutil
-            shutil.copy(tmp_path, str(ROOT / "models" / "neural_v1.pt"))
+            torch.save(export_net.state_dict(), current_path)
 
+            # Benchmark current epoch
+            shutil.copy(current_path, str(ROOT / "models" / "neural_v1.pt"))
             print(f"\n--- Benchmark vs expert_v2 (epoch {epoch}) ---")
-            bench = benchmark_vs_expert_v2(tmp_path, rounds=256)
-            if bench:
-                print(f"  win_rate={bench.get('win_rate', '?')}, "
-                      f"avg_point_diff={bench.get('avg_point_diff', '?')}")
+            bench_current = benchmark_vs_expert_v2(current_path, rounds=256)
+            current_diff = float(bench_current.get("avg_point_diff", -9999)) if bench_current else -9999
+            if bench_current:
+                print(f"  win_rate={bench_current.get('win_rate', '?')}, "
+                      f"avg_point_diff={current_diff}")
+
+            # Benchmark best-reward epoch from this window
+            best_diff = current_diff
+            chosen = "current"
+            chosen_path = current_path
+            if best_reward_epoch != epoch and Path(window_path).exists():
+                shutil.copy(window_path, str(ROOT / "models" / "neural_v1.pt"))
+                print(f"--- Benchmark window best (epoch {best_reward_epoch}) ---")
+                bench_window = benchmark_vs_expert_v2(window_path, rounds=256)
+                window_diff = float(bench_window.get("avg_point_diff", -9999)) if bench_window else -9999
+                if bench_window:
+                    print(f"  win_rate={bench_window.get('win_rate', '?')}, "
+                          f"avg_point_diff={window_diff}")
+                if window_diff > current_diff:
+                    best_diff = window_diff
+                    chosen = f"window (epoch {best_reward_epoch})"
+                    chosen_path = window_path
+
+            # Save if this is the best benchmark so far
+            if best_diff > best_benchmark_diff:
+                best_benchmark_diff = best_diff
+                shutil.copy(chosen_path, output_path)
+                shutil.copy(chosen_path, str(ROOT / "models" / "neural_v1.pt"))
+                print(f"  => NEW BEST model saved from {chosen} "
+                      f"(avg_point_diff={best_diff:+.2f})")
+            else:
+                # Restore previous best to neural_v1.pt
+                shutil.copy(output_path, str(ROOT / "models" / "neural_v1.pt"))
+                print(f"  => Kept previous best (avg_point_diff={best_benchmark_diff:+.2f})")
+
+            # Reset window tracking
+            best_reward_in_window = -float("inf")
+            best_reward_epoch = epoch
             print()
 
         # Decay temperature slowly
@@ -506,20 +547,26 @@ def train_selfplay(
             temperature = max(1.0, temperature - 0.05)
             print(f"  -> Temperature: {temperature:.2f}")
 
-    # Save final
-    final_net = model.export_policy_net()
-    final_path = output_path.replace(".pt", "_final.pt")
-    torch.save(final_net.state_dict(), final_path)
-
     # Final benchmark
-    import shutil
+    export_net = model.export_policy_net()
+    final_path = output_path.replace(".pt", "_final.pt")
+    torch.save(export_net.state_dict(), final_path)
+
     shutil.copy(final_path, str(ROOT / "models" / "neural_v1.pt"))
     print(f"\n--- Final benchmark vs expert_v2 ---")
     bench = benchmark_vs_expert_v2(final_path, rounds=512)
+    final_diff = float(bench.get("avg_point_diff", -9999)) if bench else -9999
     if bench:
-        print(f"  win_rate={bench.get('win_rate', '?')}, avg_point_diff={bench.get('avg_point_diff', '?')}")
+        print(f"  win_rate={bench.get('win_rate', '?')}, avg_point_diff={final_diff}")
 
-    print(f"\nDone. Best model: {output_path}")
+    if final_diff > best_benchmark_diff:
+        shutil.copy(final_path, output_path)
+        print(f"  => Final model is new best!")
+    else:
+        shutil.copy(output_path, str(ROOT / "models" / "neural_v1.pt"))
+        print(f"  => Keeping previous best (avg_point_diff={best_benchmark_diff:+.2f})")
+
+    print(f"\nDone. Best model: {output_path} (benchmark diff={best_benchmark_diff:+.2f})")
     print(f"Final model: {final_path}")
 
 
