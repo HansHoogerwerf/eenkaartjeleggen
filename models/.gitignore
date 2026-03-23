@@ -1,0 +1,6 @@
+# Ignore training data and intermediate models
+*.npz
+*.pt
+
+# Include only the production model
+!neural_v1.pt
