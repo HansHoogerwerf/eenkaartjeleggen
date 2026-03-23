@@ -20,6 +20,13 @@ from server.room_state import Room, cleanup_expired_rooms, generate_code, rooms,
 # multiple games can run in parallel without blocking the gevent event loop.
 main._thread_offload = lambda fn: gevent.get_hub().threadpool.apply(fn)
 
+# Eagerly load the neural model so it's cached before any gevent thread needs it
+try:
+    from neural.player import _get_model, DEFAULT_MODEL_PATH
+    _get_model(DEFAULT_MODEL_PATH)
+except Exception:
+    pass
+
 app = Flask(__name__)
 app.config["SECRET_KEY"] = CONFIG.server.secret_key
 socketio = SocketIO(
