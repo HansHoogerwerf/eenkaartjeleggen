@@ -369,6 +369,20 @@ class AIPlayer(Player):
             "declaration_bias": 0.0,
             "trick_win_sim_samples": 20,
         },
+        "neural": {
+            "use_inference": True,
+            "use_trick_prob": True,
+            "use_endgame_solver": True,
+            "use_lookahead": False,
+            "lookahead_enhanced": False,
+            "lookahead_depth": 0,
+            "lookahead_samples": 0,
+            "tie_break_delta": 0.35,
+            "random_mistake_rate": 0.0,
+            "declaration_bias": 0.0,
+            "trick_win_sim_samples": 20,
+            "use_neural": True,
+        },
     }
 
     def __init__(
@@ -396,6 +410,7 @@ class AIPlayer(Player):
         self.declaration_bias = float(profile["declaration_bias"])
         self.TIE_BREAK_DELTA = float(profile["tie_break_delta"])
         self.TRICK_WIN_SIM_SAMPLES = int(profile["trick_win_sim_samples"])
+        self.use_neural = bool(profile.get("use_neural", False))
 
         # Updated by KlaverjasGame before each trick so AI can adapt its strategy
         self.trick_pts: list[int] = [0, 0]
@@ -708,6 +723,12 @@ class AIPlayer(Player):
             solved = self._endgame_exact_choice(legal, trick, trump)
             if solved is not None:
                 return solved
+        if self.use_neural:
+            from neural.player import neural_choose_card
+            card = neural_choose_card(self, legal, trick, trump)
+            if card is not None:
+                return card
+            # Fall through to heuristic if model not available
         if self.use_lookahead and len(self.hand) > 3:
             lookahead = self._lookahead_choice(legal, trick, trump)
             if lookahead is not None:

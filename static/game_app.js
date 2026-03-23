@@ -812,6 +812,20 @@ function confirmLeave() {
     socket.emit("leave_game");
 }
 
+socket.on("game_aborted", data => {
+    // Game was interrupted (e.g. player disconnect timeout) — return to lobby
+    document.getElementById("leave-game-btn").style.display = "none";
+    document.getElementById("nextround-banner").classList.remove("active");
+    document.getElementById("gameover-banner").classList.remove("active");
+    document.getElementById("paused-overlay").classList.remove("active");
+    document.getElementById("lobby-name-section").style.display = "none";
+    document.getElementById("lobby-actions").style.display = "none";
+    document.getElementById("lobby-waiting").style.display = "block";
+    document.getElementById("lobby-overlay").classList.add("active");
+    const msg = data.key ? t(data.key) : "The game was aborted.";
+    showLobbyError(msg);
+});
+
 socket.on("game_left", data => {
     // Return everyone to the lobby
     clearSession();
