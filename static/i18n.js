@@ -92,6 +92,7 @@ const TRANSLATIONS = {
         "ai.advanced": "Advanced",
         "ai.expert": "Expert",
         "ai.expert_v2": "Grandmaster",
+        "ai.neural": "Prodigy",
 
         // ── Next Round modal ──
         "modal.round_finished": "Round Finished",
@@ -251,6 +252,7 @@ const TRANSLATIONS = {
         "ai.advanced": "Gevorderd",
         "ai.expert": "Expert",
         "ai.expert_v2": "Grootmeester",
+        "ai.neural": "Wonderkind",
 
         // ── Volgende Ronde modal ──
         "modal.round_finished": "Ronde Afgelopen",
