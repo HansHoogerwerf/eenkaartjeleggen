@@ -72,6 +72,7 @@ const TRANSLATIONS = {
         "modal.leave_msg": "This will end the game for all players.",
         "btn.leave_confirm": "Yes, leave",
         "msg.game_left": "{name} left — the game has ended.",
+        "msg.game_aborted": "A player disconnected — the game was aborted.",
 
         // ── Chat ──
         "chat.title": "Chat",
@@ -231,6 +232,7 @@ const TRANSLATIONS = {
         "modal.leave_msg": "Dit beëindigt het spel voor alle spelers.",
         "btn.leave_confirm": "Ja, verlaten",
         "msg.game_left": "{name} is vertrokken — het spel is beëindigd.",
+        "msg.game_aborted": "Een speler is losgekoppeld — het spel is afgebroken.",
 
         // ── Chat ──
         "chat.title": "Chat",
