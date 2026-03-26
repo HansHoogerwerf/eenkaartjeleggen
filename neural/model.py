@@ -1,8 +1,9 @@
-"""Neural network model for Klaverjassen card play."""
+"""Neural network models for Klaverjassen card play and bidding."""
 
 import torch
 import torch.nn as nn
 
+from neural.bid_features import NUM_BID_FEATURES
 from neural.features import NUM_CARDS, NUM_FEATURES
 
 
@@ -97,6 +98,37 @@ class KlaverjasActorCritic(nn.Module):
         logits = self.policy_only(x)
         logits = logits.masked_fill(legal_mask == 0, float("-inf"))
         return logits.argmax(dim=-1)
+
+class KlaverjassBidNet(nn.Module):
+    """Small MLP for bidding (trump declaration) decisions.
+
+    Input:  bidding state vector (NUM_BID_FEATURES = 86)
+    Output: single logit — positive means declare, negative means pass
+    """
+
+    def __init__(self, hidden_sizes: tuple[int, ...] = (128, 64)):
+        super().__init__()
+        layers: list[nn.Module] = []
+        in_size = NUM_BID_FEATURES
+        for i, h in enumerate(hidden_sizes):
+            layers.append(nn.Linear(in_size, h))
+            layers.append(nn.ReLU())
+            dropout = 0.1 if i == len(hidden_sizes) - 1 else 0.2
+            layers.append(nn.Dropout(dropout))
+            in_size = h
+        layers.append(nn.Linear(in_size, 1))
+        self.net = nn.Sequential(*layers)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """Return raw logit of shape (batch, 1)."""
+        return self.net(x)
+
+    def predict(self, x: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+        """Return boolean declare decisions (batch,)."""
+        logits = self.forward(x).squeeze(-1)
+        probs = torch.sigmoid(logits)
+        return probs >= threshold
+
 
     @staticmethod
     def from_policy_net(policy_net: KlaverjasNet) -> "KlaverjasActorCritic":

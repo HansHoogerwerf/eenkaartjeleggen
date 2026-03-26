@@ -250,10 +250,27 @@
     </div>
 </div>
 
+<!-- ── Game over modal (full-screen overlay) ──────────────────────── -->
+<div class="modal-overlay" id="gameover-overlay">
+    <div class="modal modal-wrapper gameover-modal" role="dialog" aria-modal="true" aria-labelledby="gameover-title">
+        <h2 id="gameover-title" data-i18n="modal.game_over">Game Over</h2>
+        <div id="gameover-winner"></div>
+        <div id="gameover-scores"></div>
+        <div id="gameover-actions">
+            <button type="button" class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); dismissGameover();" data-i18n="btn.new_game">
+                New Game
+            </button>
+            <button type="button" class="btn-pass" id="gameover-close-btn" onclick="dismissGameover(); showGameoverBanner();" data-i18n="btn.close">
+                Close
+            </button>
+        </div>
+    </div>
+</div>
+
 <!-- ── Game over banner (non-blocking, bottom of screen) ───────────── -->
 <div id="gameover-banner" role="status" aria-live="polite">
-    <span id="gameover-msg"></span>
-    <button type="button" class="btn-declare" id="gameover-newgame-btn" onclick="newGame(); document.getElementById('gameover-banner').classList.remove('active');" data-i18n="btn.new_game">
+    <span id="gameover-banner-msg"></span>
+    <button type="button" class="btn-declare" id="gameover-banner-newgame-btn" onclick="newGame(); dismissGameover();" data-i18n="btn.new_game">
         New Game
     </button>
 </div>
