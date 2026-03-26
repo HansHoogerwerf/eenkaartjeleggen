@@ -7,3 +7,12 @@ __pycache__
 .dockerignore
 Dockerfile
 docker-compose*.yml
+
+# Training data and tools (not needed at runtime)
+models/*.npz
+tools/
+
+# Exclude all models, then whitelist only the ones needed at runtime
+models/*.pt
+!models/neural_v1.pt
+!models/bid_rl_v4.pt

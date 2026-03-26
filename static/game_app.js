@@ -414,8 +414,11 @@ socket.on("game_starting", data => {
     updateSeatLabels();
     updateScores([0, 0]);
 
-    // Show gameover New Game button only for creator; Leave button for everyone
-    document.getElementById("gameover-newgame-btn").style.display = isCreator ? "inline-block" : "none";
+    // Show gameover New Game button only for creator; Leave/Close button for everyone
+    const creatorDisplay = isCreator ? "inline-block" : "none";
+    document.getElementById("gameover-newgame-btn").style.display = creatorDisplay;
+    document.getElementById("gameover-close-btn").style.display = "inline-block";
+    document.getElementById("gameover-banner-newgame-btn").style.display = creatorDisplay;
     document.getElementById("leave-game-btn").style.display = "inline-block";
 });
 
@@ -423,7 +426,7 @@ socket.on("game_starting", data => {
 
 socket.on("deal_done", data => {
     document.getElementById("nextround-banner").classList.remove("active");
-    document.getElementById("gameover-banner").classList.remove("active");
+    dismissGameover();
     clearDeclaringHighlight();
     const trumpInd = document.getElementById("trump-card-indicator");
     if (trumpInd) trumpInd.classList.remove("active");
@@ -498,9 +501,13 @@ socket.on("trick_played", data => {
 socket.on("trick_won", data => {
     if (data.cur_tricks && data.cur_roem)
         updateRoundScores(data.cur_tricks, data.cur_roem);
+    // Start slide animation toward the winner during the backend pause
+    if (data.winner_idx !== undefined)
+        clearTrickArea(data.winner_idx);
 });
 
 socket.on("trick_cleared", data => {
+    // Instant cleanup — the slide animation already ran on trick_won
     clearTrickArea();
     currentLegal = [];
     trickPlayCount = 0;
@@ -535,10 +542,24 @@ socket.on("waiting_for_host", () => {
 socket.on("game_over", data => {
     clearSession();
     const s = data.scores;
-    document.getElementById("gameover-msg").textContent =
-        t("modal.game_over_msg", {winner: teamNames[data.winner], team0: teamNames[0], team1: teamNames[1], s0: s[0], s1: s[1]});
-    document.getElementById("gameover-banner").classList.add("active");
+    const winner = teamNames[data.winner];
+    document.getElementById("gameover-winner").textContent =
+        t("modal.game_over_winner", {winner});
+    document.getElementById("gameover-scores").textContent =
+        t("modal.game_over_scores", {team0: teamNames[0], s0: s[0], team1: teamNames[1], s1: s[1]});
+    document.getElementById("gameover-banner-msg").textContent =
+        t("modal.game_over_winner", {winner});
+    document.getElementById("gameover-overlay").classList.add("active");
 });
+
+function dismissGameover() {
+    document.getElementById("gameover-overlay").classList.remove("active");
+    document.getElementById("gameover-banner").classList.remove("active");
+}
+
+function showGameoverBanner() {
+    document.getElementById("gameover-banner").classList.add("active");
+}
 
 socket.on("log", data => {
     appendLog(data.msg, data.tag);
@@ -596,6 +617,32 @@ socket.on("request_bid", data => {
     overlay.classList.add("active");
 });
 
+socket.on("request_forced_suit", () => {
+    const overlay = document.getElementById("bid-overlay");
+    const suitDiv = document.getElementById("bid-suit");
+    const msgDiv = document.getElementById("bid-msg");
+    const btnsDiv = document.getElementById("bid-buttons");
+
+    suitDiv.className = "bid-suit";
+    suitDiv.textContent = "";
+
+    msgDiv.textContent = t("bid.pick_suit");
+
+    btnsDiv.innerHTML = "";
+    for (const suit of ["♣", "♦", "♥", "♠"]) {
+        const btn = document.createElement("button");
+        btn.className = `btn-suit-pick ${isRed(suit) ? "red" : "black"}`;
+        btn.textContent = `${suit} ${tSuit(suit)}`;
+        btn.onclick = () => {
+            socket.emit("forced_suit_response", {suit});
+            overlay.classList.remove("active");
+        };
+        btnsDiv.appendChild(btn);
+    }
+
+    overlay.classList.add("active");
+});
+
 /* ─── Disconnect / Reconnect ──────────────────────────────────────────── */
 
 socket.on("player_disconnected", data => {
@@ -625,7 +672,10 @@ socket.on("reconnected", data => {
     document.getElementById("lobby-overlay").classList.remove("active");
     document.getElementById("paused-overlay").classList.remove("active");
     document.getElementById("leave-game-btn").style.display = "inline-block";
-    document.getElementById("gameover-newgame-btn").style.display = isCreator ? "inline-block" : "none";
+    const creatorDisplay = isCreator ? "inline-block" : "none";
+    document.getElementById("gameover-newgame-btn").style.display = creatorDisplay;
+    document.getElementById("gameover-close-btn").style.display = "inline-block";
+    document.getElementById("gameover-banner-newgame-btn").style.display = creatorDisplay;
     updateSeatLabels();
     updateScores(data.scores);
     updateRoundScores(data.cur_tricks, data.cur_roem);
@@ -832,7 +882,7 @@ socket.on("game_left", data => {
     history.replaceState(null, "", window.location.pathname);
     document.getElementById("leave-game-btn").style.display = "none";
     document.getElementById("nextround-banner").classList.remove("active");
-    document.getElementById("gameover-banner").classList.remove("active");
+    dismissGameover();
     document.getElementById("paused-overlay").classList.remove("active");
     document.getElementById("lobby-waiting").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "block";

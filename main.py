@@ -172,9 +172,15 @@ class HumanPlayer(Player):
         self._pending_bid_suit: str | None = None
         self._pending_bid_forced: bool = False
 
+        # Forced suit selection (player picks trump when forced to declare)
+        self._forced_suit_event = threading.Event()
+        self._forced_suit_result: str | None = None
+        self._pending_forced_suit = False
+
         # Callbacks set by the web server
         self._on_move_request = None   # fn(seat_idx, legal_cards)
         self._on_bid_request = None    # fn(seat_idx, suit, forced)
+        self._on_forced_suit_request = None  # fn(seat_idx)
         self._on_disconnect_pause = None  # fn(seat_idx) — notify others of pause
 
     def interrupt(self) -> None:
@@ -182,6 +188,7 @@ class HumanPlayer(Player):
         self._interrupted = True
         self._move_event.set()
         self._bid_event.set()
+        self._forced_suit_event.set()
 
     def reset_interrupt(self) -> None:
         self._interrupted = False
@@ -203,6 +210,9 @@ class HumanPlayer(Player):
             suit, forced = self._pending_bid_suit, self._pending_bid_forced
             self._pending_bid_suit = None
             self._on_bid_request(self.seat_idx, suit, forced)
+        elif self._pending_forced_suit and self._on_forced_suit_request:
+            self._pending_forced_suit = False
+            self._on_forced_suit_request(self.seat_idx)
 
     def choose_card(self, trick: Trick, trump: str) -> Card:
         legal = self.legal_moves(trick, trump)
@@ -279,6 +289,41 @@ class HumanPlayer(Player):
         """Called by the web layer when the human bids."""
         self._bid_result = declare
         self._bid_event.set()
+
+    def choose_forced_suit(self) -> str:
+        """Let the human pick any trump suit when forced to declare."""
+        self._forced_suit_result = None
+        self._forced_suit_event.clear()
+        self._pending_forced_suit = True
+
+        if self.connected and self._on_forced_suit_request:
+            self._on_forced_suit_request(self.seat_idx)
+
+        if not self.connected:
+            if self._on_disconnect_pause:
+                self._on_disconnect_pause(self.seat_idx)
+            while not self.connected and not self._interrupted:
+                self._forced_suit_event.wait(timeout=1.0)
+                self._forced_suit_event.clear()
+            if self._interrupted:
+                self._pending_forced_suit = False
+                raise GameInterrupt()
+            if self._pending_forced_suit and self._on_forced_suit_request:
+                self._on_forced_suit_request(self.seat_idx)
+
+        self._forced_suit_event.wait(timeout=self.disconnect_timeout)
+        self._pending_forced_suit = False
+        if self._interrupted or self._forced_suit_result is None:
+            if not self._interrupted:
+                self._interrupted = True
+            raise GameInterrupt()
+        return self._forced_suit_result
+
+    def supply_forced_suit(self, suit: str) -> None:
+        """Called by the web layer when the human picks a forced trump suit."""
+        if suit in SUITS:
+            self._forced_suit_result = suit
+            self._forced_suit_event.set()
 
 
 # ─── AI player ────────────────────────────────────────────────────────────────
@@ -382,6 +427,8 @@ class AIPlayer(Player):
             "declaration_bias": 0.0,
             "trick_win_sim_samples": 20,
             "use_neural": True,
+            "bid_threshold": 0.5,
+            "bid_model_path": "models/bid_rl_v4.pt",
         },
     }
 
@@ -411,6 +458,13 @@ class AIPlayer(Player):
         self.TIE_BREAK_DELTA = float(profile["tie_break_delta"])
         self.TRICK_WIN_SIM_SAMPLES = int(profile["trick_win_sim_samples"])
         self.use_neural = bool(profile.get("use_neural", False))
+        self.bid_threshold = float(profile.get("bid_threshold", 0.5))
+        self.bid_model_path: str | None = profile.get("bid_model_path", None)
+
+        # Updated by KlaverjasGame._bidding before each choose_trump call
+        self.bid_position: int = 0   # 0-3, position in current bidding round
+        self.bid_round: int = 1      # 1 or 2
+        self.round_1_suit: str | None = None  # suit offered in round 1 (set in round 2)
 
         # Updated by KlaverjasGame before each trick so AI can adapt its strategy
         self.trick_pts: list[int] = [0, 0]
@@ -437,6 +491,9 @@ class AIPlayer(Player):
         self.declaring_team = -1
         self.trick_num = 0
         self.current_trump = None
+        self.bid_position = 0
+        self.bid_round = 1
+        self.round_1_suit = None
         self.opponent_voids = {i: set() for i in range(4)}
         self.partner_signals = {}
         self.possible_cards_by_seat = {}
@@ -478,9 +535,30 @@ class AIPlayer(Player):
         self.hand.remove(card)
         return card
 
+    def choose_forced_suit(self) -> str:
+        """Pick the best trump suit when forced to declare."""
+        best_suit, best_score = SUITS[0], -1.0
+        for suit in SUITS:
+            score = self._declaration_score(suit)
+            if score > best_score:
+                best_suit, best_score = suit, score
+        return best_suit
+
     def choose_trump(self, suit: str, forced: bool) -> bool:
         if forced:
             return True
+        if self.use_neural:
+            from neural.player import neural_choose_trump
+            kwargs = {"threshold": self.bid_threshold}
+            if self.bid_model_path:
+                from pathlib import Path as _Path
+                _bid_path = _Path(self.bid_model_path)
+                if not _bid_path.is_absolute():
+                    _bid_path = _Path(__file__).resolve().parent / self.bid_model_path
+                kwargs["model_path"] = _bid_path
+            result = neural_choose_trump(self, suit, forced, **kwargs)
+            if result is not None:
+                return result
         if _thread_offload:
             score = _thread_offload(lambda: self._declaration_score(suit))
         else:
@@ -1917,6 +1995,10 @@ class KlaverjasGame:
             for i in range(4):
                 bidder_idx = (first_bidder + i) % 4
                 player = self.players[bidder_idx]
+                if isinstance(player, AIPlayer):
+                    player.bid_position = i
+                    player.bid_round = round_num
+                    player.round_1_suit = suits[0] if round_num == 2 else None
 
                 t_start = time.monotonic()
                 declared = player.choose_trump(suit, False)
@@ -1948,10 +2030,10 @@ class KlaverjasGame:
                         if remaining_delay > 0:
                             time.sleep(remaining_delay)
 
-        # All 8 players passed both rounds — force first bidder on round-2 suit
-        forced_suit = suits[1]
+        # All 8 players passed both rounds — force first bidder, let them pick suit
         player = self.players[first_bidder]
-        player.choose_trump(forced_suit, True)
+        self.notify("forced_pick", {"player_idx": first_bidder})
+        forced_suit = player.choose_forced_suit()
         self.log(
             f"  {player.name} is forced to declare: {forced_suit} ({SUIT_NAMES[forced_suit]})",
             "trump",
@@ -1959,7 +2041,7 @@ class KlaverjasGame:
         self.notify("bid", {"player_idx": first_bidder, "trump": forced_suit})
         if self._current_round_replay is not None:
             self._current_round_replay["bids"].append({
-                "round_num": 2,
+                "round_num": 3,
                 "player_idx": first_bidder,
                 "suit": forced_suit,
                 "declare": True,
@@ -2100,6 +2182,24 @@ class KlaverjasGame:
             time.sleep(TRICK_CLEAR_DELAY)
             self.notify("trick_cleared", {"next_leader": winner_idx})
             leader = winner_idx
+
+        # Pit bonus: +100 roem if a team wins all trick points
+        for team in (0, 1):
+            if trick_pts[team] == TRICK_CARD_TOTAL:
+                roem_pts[team] += 100
+                roem_records.append({
+                    "team": team,
+                    "trick_num": 8,
+                    "items": [("Pit", 100)],
+                    "total": 100,
+                })
+                self.notify("roem", {
+                    "team": team,
+                    "items": [("Pit", 100)],
+                    "pts": 100,
+                    "roem_pts": list(roem_pts),
+                })
+                self.log(f"  Pit – Team {team}: all tricks won  [+100]", "roem")
 
         opposing_team = 1 - declaring_team
         total_points = trick_pts[0] + roem_pts[0] + trick_pts[1] + roem_pts[1]

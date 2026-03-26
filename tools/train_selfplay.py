@@ -422,13 +422,19 @@ def train_selfplay(
     print(f"Settings: lr={lr}, temp={temperature}, clip={clip_eps}, "
           f"entropy={entropy_coeff}, kl={kl_coeff}, games/epoch={games_per_epoch}")
 
-    # Initial benchmark
-    print("\n--- Initial benchmark vs expert_v2 ---")
-    stats = benchmark_vs_expert_v2(model_path, rounds=256)
-    if stats:
-        print(f"  win_rate={stats.get('win_rate', '?')}, avg_point_diff={stats.get('avg_point_diff', '?')}")
-
     import shutil
+
+    # Initial benchmark — this sets the bar to beat
+    print("\n--- Initial benchmark vs expert_v2 ---")
+    stats = benchmark_vs_expert_v2(model_path, rounds=1024)
+    initial_diff = float(stats.get("avg_point_diff", -9999)) if stats else -9999
+    if stats:
+        print(f"  win_rate={stats.get('win_rate', '?')}, avg_point_diff={initial_diff}")
+
+    # Save initial model as the starting best
+    shutil.copy(model_path, output_path)
+    shutil.copy(model_path, str(ROOT / "models" / "neural_v1.pt"))
+    print(f"  => Initial model saved as baseline (avg_point_diff={initial_diff:+.2f})")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     rng = random.Random(seed)
@@ -436,7 +442,7 @@ def train_selfplay(
     reward_history = []
 
     # Tracking for benchmark-based model selection
-    best_benchmark_diff = -float("inf")
+    best_benchmark_diff = initial_diff
     best_reward_in_window = -float("inf")
     best_reward_epoch = 0
     window_path = output_path.replace(".pt", "_window_best.pt")
@@ -502,7 +508,7 @@ def train_selfplay(
             # Benchmark current epoch
             shutil.copy(current_path, str(ROOT / "models" / "neural_v1.pt"))
             print(f"\n--- Benchmark vs expert_v2 (epoch {epoch}) ---")
-            bench_current = benchmark_vs_expert_v2(current_path, rounds=256)
+            bench_current = benchmark_vs_expert_v2(current_path, rounds=1024)
             current_diff = float(bench_current.get("avg_point_diff", -9999)) if bench_current else -9999
             if bench_current:
                 print(f"  win_rate={bench_current.get('win_rate', '?')}, "
@@ -515,7 +521,7 @@ def train_selfplay(
             if best_reward_epoch != epoch and Path(window_path).exists():
                 shutil.copy(window_path, str(ROOT / "models" / "neural_v1.pt"))
                 print(f"--- Benchmark window best (epoch {best_reward_epoch}) ---")
-                bench_window = benchmark_vs_expert_v2(window_path, rounds=256)
+                bench_window = benchmark_vs_expert_v2(window_path, rounds=1024)
                 window_diff = float(bench_window.get("avg_point_diff", -9999)) if bench_window else -9999
                 if bench_window:
                     print(f"  win_rate={bench_window.get('win_rate', '?')}, "

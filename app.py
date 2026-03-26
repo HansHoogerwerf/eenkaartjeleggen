@@ -237,6 +237,24 @@ def handle_bid_response(data):
         player.supply_bid(data["declare"])
 
 
+@socketio.on("forced_suit_response")
+def handle_forced_suit_response(data):
+    sid = request.sid
+    code = sid_to_room.get(sid)
+    if not code or code not in rooms:
+        return
+    room = rooms[code]
+    room.touch()
+    if not room.game:
+        return
+    seat = room.seat_for_sid(sid)
+    if seat is None:
+        return
+    player = room.game.players[seat]
+    if isinstance(player, HumanPlayer):
+        player.supply_forced_suit(data["suit"])
+
+
 @socketio.on("new_game")
 def handle_new_game(_data=None):
     sid = request.sid
