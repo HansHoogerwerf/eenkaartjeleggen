@@ -143,13 +143,37 @@ function showBidBadge(absSeat, declared) {
     setTimeout(() => badge.remove(), 2600);
 }
 
-function clearTrickArea() {
-    for (const id of VISUAL_TRICK_SLOTS) {
-        const slot = document.getElementById(id);
-        slot.className = "trick-slot empty";
-        slot.innerHTML = "";
-        slot.style.color = "";
+function clearTrickArea(winnerIdx) {
+    const slideClasses = ["slide-to-s", "slide-to-w", "slide-to-n", "slide-to-e"];
+
+    if (winnerIdx === undefined) {
+        // Instant clear (no winner info)
+        for (const id of VISUAL_TRICK_SLOTS) {
+            const slot = document.getElementById(id);
+            slot.className = "trick-slot empty";
+            slot.innerHTML = "";
+            slot.style.color = "";
+        }
+        return;
     }
+
+    const slideClass = slideClasses[visualPos(winnerIdx)];
+    const slots = VISUAL_TRICK_SLOTS.map(id => document.getElementById(id));
+    const filled = slots.filter(s => s.classList.contains("filled"));
+
+    if (filled.length === 0) return;
+
+    // Brief pause so the player can see the completed trick, then slide
+    setTimeout(() => {
+        for (const slot of filled) {
+            slot.classList.add(slideClass);
+            slot.addEventListener("animationend", () => {
+                slot.className = "trick-slot empty";
+                slot.innerHTML = "";
+                slot.style.color = "";
+            }, {once: true});
+        }
+    }, 600);
 }
 
 function clearDeclaringHighlight() {

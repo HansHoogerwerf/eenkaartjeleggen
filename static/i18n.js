@@ -106,10 +106,12 @@ const TRANSLATIONS = {
         "bid.pass": "Pass",
         "bid.badge_declared": "Declares!",
         "bid.badge_passed": "Pass",
+        "bid.pick_suit": "You must declare — pick your trump suit!",
 
         // ── Game Over modal ──
         "modal.game_over": "Game Over",
-        "modal.game_over_msg": "{winner} wins!\n\nFinal scores:\n  {team0}: {s0}    {team1}: {s1}",
+        "modal.game_over_winner": "{winner} wins!",
+        "modal.game_over_scores": "{team0}: {s0}\n{team1}: {s1}",
 
         // ── Paused modal ──
         "modal.paused": "Game Paused",
@@ -266,10 +268,12 @@ const TRANSLATIONS = {
         "bid.pass": "Passen",
         "bid.badge_declared": "Ga!",
         "bid.badge_passed": "Pas",
+        "bid.pick_suit": "Je moet gaan — kies je troefkleur!",
 
         // ── Spel Afgelopen modal ──
         "modal.game_over": "Spel Afgelopen",
-        "modal.game_over_msg": "{winner} wint!\n\nEindstand:\n  {team0}: {s0}    {team1}: {s1}",
+        "modal.game_over_winner": "{winner} wint!",
+        "modal.game_over_scores": "{team0}: {s0}\n{team1}: {s1}",
 
         // ── Gepauzeerd modal ──
         "modal.paused": "Spel Gepauzeerd",

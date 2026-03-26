@@ -97,6 +97,7 @@ def start_room_game(socketio, room: Room) -> None:
             player.disconnect_timeout = room.reconnect_timeout_seconds
             player._on_move_request = lambda seat_idx, legal, r=room: on_move_request(socketio, r, seat_idx, legal)
             player._on_bid_request = lambda seat_idx, suit, forced, r=room: on_bid_request(socketio, r, seat_idx, suit, forced)
+            player._on_forced_suit_request = lambda seat_idx, r=room: on_forced_suit_request(socketio, r, seat_idx)
             player._on_disconnect_pause = lambda seat_idx, r=room: on_disconnect_pause(socketio, r, seat_idx)
             player.reset_interrupt()
 
@@ -224,6 +225,12 @@ def on_bid_request(socketio, room: Room, seat_idx: int, suit: str, forced: bool)
             "suit_name": SUIT_NAMES[suit],
             "forced": forced,
         }, to=info["sid"])
+
+
+def on_forced_suit_request(socketio, room: Room, seat_idx: int) -> None:
+    info = room.seats.get(seat_idx)
+    if info and info["connected"]:
+        socketio.emit("request_forced_suit", {}, to=info["sid"])
 
 
 def on_disconnect_pause(socketio, room: Room, seat_idx: int) -> None:

@@ -15,5 +15,4 @@ tools/
 # Exclude all models, then whitelist only the ones needed at runtime
 models/*.pt
 !models/neural_v1.pt
-!models/bid_neural_v1.pt
 !models/bid_rl_v4.pt

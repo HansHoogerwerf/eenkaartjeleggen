@@ -16,7 +16,7 @@ IDX_TO_CARD_STR: dict[int, str] = {v: k for k, v in CARD_INDEX.items()}
 
 # Default model paths
 DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "neural_v1.pt"
-DEFAULT_BID_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "bid_neural_v1.pt"
+DEFAULT_BID_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "bid_rl_v4.pt"
 
 # Global model cache so we load the weights only once
 _model_cache: dict[str, object] = {}
