@@ -32,6 +32,7 @@ def _make_players(
     seed_base: int,
     candidate_strength: str,
     baseline_strength: str,
+    candidate_model: str | None = None,
 ) -> list[AIPlayer]:
     players: list[AIPlayer] = []
     for seat in range(4):
@@ -45,6 +46,8 @@ def _make_players(
             signal_profile="core",
             ai_strength=strength,
         )
+        if team == candidate_team and candidate_model and p.use_neural_play:
+            p.neural_model_path = candidate_model
         players.append(p)
     return players
 
@@ -54,6 +57,7 @@ def _play_game(
     seed_base: int,
     candidate_strength: str,
     baseline_strength: str,
+    candidate_model: str | None = None,
 ) -> tuple[int, dict]:
     event_state = {
         "rounds": 0,
@@ -96,6 +100,7 @@ def _play_game(
         seed_base=seed_base * 43 + 5,
         candidate_strength=candidate_strength,
         baseline_strength=baseline_strength,
+        candidate_model=candidate_model,
     )
     game.play()
 
@@ -120,7 +125,7 @@ def _play_game_pair(args: tuple) -> list[tuple[int, dict]]:
     Top-level function so it can be pickled by multiprocessing.
     Disables pacing delays in the worker process.
     """
-    game_seed, candidate_strength, baseline_strength = args
+    game_seed, candidate_strength, baseline_strength, candidate_model = args
 
     main.AI_BID_DELAY = 0.0
     main.AI_PLAY_DELAY = 0.0
@@ -133,6 +138,7 @@ def _play_game_pair(args: tuple) -> list[tuple[int, dict]]:
             seed_base=game_seed,
             candidate_strength=candidate_strength,
             baseline_strength=baseline_strength,
+            candidate_model=candidate_model,
         )
         results.append((winner, result))
     return results
@@ -144,6 +150,7 @@ def run_benchmark(
     candidate_strength: str = "expert",
     baseline_strength: str = "advanced",
     workers: int = 0,
+    candidate_model: str | None = None,
 ) -> BenchStats:
     rng = random.Random(seed)
     stats = BenchStats()
@@ -163,7 +170,7 @@ def run_benchmark(
     if workers == 1:
         # Sequential fallback.
         for game_seed in game_seeds:
-            pair = _play_game_pair((game_seed, candidate_strength, baseline_strength))
+            pair = _play_game_pair((game_seed, candidate_strength, baseline_strength, candidate_model))
             for winner, result in pair:
                 stats.games += 1
                 stats.rounds += result["rounds"]
@@ -177,7 +184,7 @@ def run_benchmark(
             if stats.rounds >= target_rounds:
                 break
     else:
-        tasks = [(gs, candidate_strength, baseline_strength) for gs in game_seeds]
+        tasks = [(gs, candidate_strength, baseline_strength, candidate_model) for gs in game_seeds]
         with Pool(processes=workers) as pool:
             for pair in pool.imap_unordered(_play_game_pair, tasks):
                 for winner, result in pair:
@@ -204,7 +211,11 @@ def main_cli() -> None:
     parser.add_argument("--candidate-strength", default="expert", choices=["beginner", "advanced", "expert", "expert_v2_base", "expert_v2", "neural"])
     parser.add_argument("--baseline-strength", default="advanced", choices=["beginner", "advanced", "expert", "expert_v2_base", "expert_v2", "neural"])
     parser.add_argument("--workers", type=int, default=0, help="Number of parallel workers (default: cpu_count-1).")
+    parser.add_argument("--model", default=None, help="Path to neural model .pt file (overrides neural_best.pt).")
     args = parser.parse_args()
+
+    print(f"Running benchmark: candidate_strength={args.candidate_strength}, baseline_strength={args.baseline_strength}, target_rounds={args.rounds}, workers={args.workers}"
+          + (f", model={args.model}" if args.model else ""))
 
     stats = run_benchmark(
         target_rounds=args.rounds,
@@ -212,6 +223,7 @@ def main_cli() -> None:
         candidate_strength=args.candidate_strength,
         baseline_strength=args.baseline_strength,
         workers=args.workers,
+        candidate_model=args.model,
     )
     winrate = stats.wins / stats.games if stats.games else 0.0
     avg_diff = (stats.points_for - stats.points_against) / stats.games if stats.games else 0.0

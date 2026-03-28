@@ -1,0 +1,40 @@
+[00:46:46] Logging to models/neural_shaped_v2.log
+[00:46:46] Device: cuda
+[00:46:46] Reward rules: 5 active
+[00:46:46]   - last_trick_bonus (weight=1.0)
+[00:46:46]   - wasted_points_penalty (weight=1.0)
+[00:46:46]   - waste_trump_penalty (weight=1.0)
+[00:46:46]   - schmear_reward (weight=1.0)
+[00:46:46]   - win_valuable_trick_bonus (weight=1.0)
+[00:46:46] Loaded pretrained policy from models/neural_v2_imitation.pt (architecture: (1024, 512, 256))
+[00:47:40] Logging to models/neural_shaped_v2.log
+[00:47:40] Device: cuda
+[00:47:40] Reward rules: 5 active
+[00:47:40]   - last_trick_bonus (weight=1.0)
+[00:47:40]   - wasted_points_penalty (weight=1.0)
+[00:47:40]   - waste_trump_penalty (weight=1.0)
+[00:47:40]   - schmear_reward (weight=1.0)
+[00:47:40]   - win_valuable_trick_bonus (weight=1.0)
+[00:47:40] Loaded pretrained policy from models/neural_v2_imitation.pt (architecture: (1024, 512, 256))
+[00:47:40] Actor-Critic parameters: 1,070,369
+[00:47:40] Settings: lr=0.0001, temp=1.15, shaping_weight=0.5, clip=0.15, entropy=0.02, kl=0.1, games/epoch=256
+[00:47:40] 
+--- Initial benchmark vs expert_v2 ---
+[00:52:36]   win_rate=0.5156, avg_point_diff=53.75
+[00:52:36] 
+--- Finished initial benchmark vs expert_v2 ---
+[00:52:36]   => Initial model saved as baseline (avg_point_diff=+53.75)
+[00:54:22] Epoch   1/300  reward=-0.0037  recent_20=-0.0037  p_loss=-0.0066  v_loss=27.2424  entropy=0.5268  kl=0.0095  trans=81920
+[00:57:19] Logging to models/neural_shaped_v2.log
+[00:57:19] Device: cuda
+[00:57:19] Reward rules: 5 active
+[00:57:19]   - last_trick_bonus (weight=1.0)
+[00:57:19]   - wasted_points_penalty (weight=1.0)
+[00:57:19]   - waste_trump_penalty (weight=1.0)
+[00:57:19]   - schmear_reward (weight=1.0)
+[00:57:19]   - win_valuable_trick_bonus (weight=1.0)
+[00:57:19] Loaded pretrained policy from models/neural_v2_imitation.pt (architecture: (1024, 512, 256))
+[00:57:19] Actor-Critic parameters: 1,070,369
+[00:57:19] Settings: lr=0.0001, temp=1.15, shaping_weight=0.5, clip=0.15, entropy=0.02, kl=0.1, games/epoch=256
+[00:57:19] 
+--- Initial benchmark vs expert_v2 ---

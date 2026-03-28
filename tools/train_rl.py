@@ -347,7 +347,7 @@ def train_rl(
 
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description="RL training for neural Klaverjassen AI.")
-    parser.add_argument("--model", default=str(ROOT / "models" / "neural_v1.pt"), help="Pretrained model path.")
+    parser.add_argument("--model", default=str(ROOT / "models" / "neural_best.pt"), help="Pretrained model path.")
     parser.add_argument("--output", default=str(ROOT / "models" / "neural_rl.pt"), help="Output model path.")
     parser.add_argument("--epochs", type=int, default=100, help="Number of training epochs.")
     parser.add_argument("--games-per-epoch", type=int, default=8, help="Games per epoch.")

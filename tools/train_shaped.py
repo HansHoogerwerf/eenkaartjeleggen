@@ -1,24 +1,35 @@
-"""Self-play PPO training for the Klaverjassen neural AI.
+"""Self-play PPO training with configurable shaped rewards.
 
-All 4 players use the same neural policy. The model learns by playing against
-itself, discovering strategies beyond what expert_v2 taught it.
-
-Key differences from standard PPO:
-- All players are PPO players (true self-play)
-- KL penalty against initial policy prevents catastrophic forgetting
-- Periodic benchmarking against expert_v2 tracks real progress
-- Higher entropy bonus encourages exploration
+Based on train_selfplay.py but adds per-trick reward shaping from reward_rules.py.
+Edit reward_rules.py to add/modify/weight reward signals.
 """
 
 import argparse
+import builtins
 import random
+import shutil
 import subprocess
 import sys
+import time
 from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 
-print = partial(print, flush=True)
+print = partial(builtins.print, flush=True)
+
+
+def _make_logger(log_path: str):
+    """Return a timestamped print function that writes to stdout and a log file."""
+    log_file = open(log_path, "a", buffering=1, encoding="utf-8")
+
+    def log(*args):
+        ts = time.strftime("%H:%M:%S")
+        msg = " ".join(str(a) for a in args)
+        line = f"[{ts}] {msg}"
+        builtins.print(line, flush=True)
+        builtins.print(line, file=log_file, flush=True)
+
+    return log, log_file
 
 import numpy as np
 import torch
@@ -32,10 +43,11 @@ if str(ROOT) not in sys.path:
 
 import main
 from klaverjas.constants import SEAT_DEFAULTS, SEAT_TEAMS
-from klaverjas.core import Card, Trick
+from klaverjas.core import Card, Trick, trick_winner_index
 from main import AIPlayer, KlaverjasGame
 from neural.features import CARD_INDEX, NUM_FEATURES, encode_state
 from neural.model import KlaverjasActorCritic, KlaverjasNet
+from tools.reward_rules import RULES
 
 IDX_TO_CARD_STR: dict[int, str] = {v: k for k, v in CARD_INDEX.items()}
 PY = sys.executable
@@ -52,33 +64,23 @@ class Transition:
 
 
 class PPOPlayer(AIPlayer):
-    """AIPlayer that uses the actor-critic policy with sampling."""
-
-    def __init__(
-        self,
-        name: str,
-        team: int,
-        seat_idx: int,
-        model: KlaverjasActorCritic,
-        device: torch.device,
-        temperature: float = 1.0,
-        rng_seed: int | None = None,
-        signal_profile: str = "core",
-        ai_strength: str = "expert",
-    ):
+    def __init__(self, name, team, seat_idx, model, device, temperature=1.0,
+                 rng_seed=None, signal_profile="core", ai_strength="expert"):
         super().__init__(name, team, seat_idx, rng_seed, signal_profile, ai_strength)
         self.model = model
         self.device = device
         self.temperature = temperature
         self.transitions: list[Transition] = []
+        # Track which card was played per transition for shaped rewards
+        self.transition_cards: list[Card] = []
 
-    def clear_transitions(self) -> None:
+    def clear_transitions(self):
         self.transitions.clear()
+        self.transition_cards.clear()
 
     def choose_card(self, trick: Trick, trump: str) -> Card:
         legal = self.legal_moves(trick, trump)
 
-        # Endgame solver for last 3 tricks
         if self.use_endgame_solver and len(self.hand) <= 3:
             self.current_trump = trump
             solved = self._endgame_exact_choice(legal, trick, trump)
@@ -113,7 +115,6 @@ class PPOPlayer(AIPlayer):
             logits, value = self.model(x)
             logits = logits.masked_fill(legal_mask == 0, float("-inf"))
             logits = logits / self.temperature
-
             probs = F.softmax(logits, dim=-1)
             dist = Categorical(probs)
             action = dist.sample()
@@ -137,18 +138,59 @@ class PPOPlayer(AIPlayer):
         if chosen_card is None:
             chosen_card = legal[0]
 
+        self.transition_cards.append(chosen_card)
         self.hand.remove(chosen_card)
         return chosen_card
 
 
-def collect_selfplay_games(
-    model: KlaverjasActorCritic,
-    device: torch.device,
+def apply_shaped_rewards(
+    trick: Trick,
+    trick_num: int,
+    trump: str,
+    winner_idx: int,
+    winning_team: int,
+    trick_points: int,
+    players: list[PPOPlayer],
+    play_order: list[int],
+    cards_by_seat: dict[int, list[str]] | None = None,
+) -> dict[int, float]:
+    """Apply all reward rules to each player's card in this trick.
+    Returns {seat_idx: shaped_reward}."""
+    rewards: dict[int, float] = {}
+    for i, (player, card) in enumerate(trick):
+        seat = play_order[i]
+        partner_seat = (seat + 2) % 4
+        ctx = {
+            "card": card,
+            "player_idx": seat,
+            "team": SEAT_TEAMS[seat],
+            "trick": trick,
+            "trick_num": trick_num,
+            "trump": trump,
+            "winner_idx": winner_idx,
+            "winning_team": winning_team,
+            "trick_points": trick_points,
+            "played_cards": set(player.played_cards),
+            "cards_by_seat": {s: list(cs) for s, cs in cards_by_seat.items()} if cards_by_seat else {},
+            "partner_seat": partner_seat,
+            "voids": {s: set(v) for s, v in player.opponent_voids.items()},
+            "declaring_team": player.declaring_team,
+            "team_trick_pts": list(player.trick_pts),
+        }
+        shaped = sum(rule(ctx) * weight for rule, weight in RULES)
+        rewards[seat] = shaped
+    return rewards
+
+
+def collect_games(
+    inference_model: KlaverjasActorCritic,
+    inference_device: torch.device,
     num_games: int,
     rng: random.Random,
     temperature: float,
+    shaping_weight: float = 0.5,
 ) -> tuple[list[Transition], list[float]]:
-    """Play self-play games — all 4 players use the same neural policy."""
+    """Play self-play games with per-trick shaped rewards."""
     main.AI_BID_DELAY = 0.0
     main.AI_PLAY_DELAY = 0.0
     main.TRICK_CLEAR_DELAY = 0.0
@@ -159,21 +201,57 @@ def collect_selfplay_games(
     for g in range(num_games):
         game_seed = rng.randint(1, 10_000_000)
 
-        # Track per-round rewards for each team
         round_rewards_t0: list[float] = []
         round_rewards_t1: list[float] = []
-        round_boundaries: list[list[int]] = [[] for _ in range(4)]  # per-player
+        round_boundaries: list[list[int]] = [[] for _ in range(4)]
+
+        # Per-trick shaped rewards: {seat_idx: [reward_per_trick]}
+        shaped_rewards: dict[int, list[float]] = {s: [] for s in range(4)}
+        # Track transition index at each trick boundary per player
+        trick_boundaries: dict[int, list[int]] = {s: [] for s in range(4)}
 
         game_ref: dict = {"game": None}
+        trick_state: dict = {"trick_num": 0, "trump": None}
+        # Accumulate cards played per seat across tricks within a round
+        cards_by_seat: dict[int, list[str]] = {s: [] for s in range(4)}
 
         def on_event(event: str, data: dict,
                      _rr0=round_rewards_t0, _rr1=round_rewards_t1,
-                     _rb=round_boundaries, _gr=game_ref) -> None:
-            if event == "round_done":
+                     _rb=round_boundaries, _gr=game_ref,
+                     _sr=shaped_rewards, _tb=trick_boundaries,
+                     _ts=trick_state, _cbs=cards_by_seat) -> None:
+            if event == "trick_done":
+                # Custom event we'll fire — see monkey-patch below
+                trick = data["trick"]
+                trump = data["trump"]
+                trick_num = data["trick_num"]
+                winner_idx = data["winner_idx"]
+                winning_team = data["winning_team"]
+                trick_points = data["trick_points"]
+                play_order = data["play_order"]
+
+                # Record cards played per seat in this trick
+                for seat_idx, card in data["trick_cards_by_seat"]:
+                    _cbs[seat_idx].append(card)
+
+                rewards = apply_shaped_rewards(
+                    trick, trick_num, trump, winner_idx, winning_team,
+                    trick_points, _gr["game"].players, play_order,
+                    cards_by_seat=_cbs,
+                )
+                for seat, r in rewards.items():
+                    _sr[seat].append(r)
+                    p = _gr["game"].players[seat]
+                    if isinstance(p, PPOPlayer):
+                        _tb[seat].append(len(p.transitions))
+
+            elif event == "round_done":
                 t0, t1 = data["t0"], data["t1"]
                 _rr0.append((t0 - t1) / 162.0)
                 _rr1.append((t1 - t0) / 162.0)
-                # Record boundary for each player
+                # Reset per-round tracking
+                for s in range(4):
+                    _cbs[s].clear()
                 for seat in range(4):
                     p = _gr["game"].players[seat]
                     if isinstance(p, PPOPlayer):
@@ -193,7 +271,49 @@ def collect_selfplay_games(
         game_ref["game"] = game
         game.boom_rounds = 16
 
-        # All 4 players use the neural policy
+        # Monkey-patch _play_trick to fire trick_done events
+        original_play_trick = game._play_trick
+
+        def patched_play_trick(leader: int, trump: str,
+                               _orig=original_play_trick, _game=game) -> tuple:
+            # Track play order
+            play_order = [(leader + offset) % 4 for offset in range(4)]
+
+            result = _orig(leader, trump)
+            winner_global, total_pts, trick_cards, cards_played, trick_cards_by_seat = result
+
+            # Find current trick_num from players
+            trick_num = 0
+            for p in _game.players:
+                if isinstance(p, PPOPlayer):
+                    trick_num = p.trick_num
+                    break
+
+            # Reconstruct trick for reward rules
+            trick: Trick = []
+            for seat_idx, card_str in trick_cards_by_seat:
+                for c in cards_played:
+                    if str(c) == card_str:
+                        trick.append((_game.players[seat_idx], c))
+                        break
+
+            winning_team = _game.players[winner_global].team
+
+            _game.notify("trick_done", {
+                "trick": trick,
+                "trump": trump,
+                "trick_num": trick_num,
+                "winner_idx": winner_global,
+                "winning_team": winning_team,
+                "trick_points": total_pts,
+                "play_order": play_order,
+                "trick_cards_by_seat": trick_cards_by_seat,
+            })
+
+            return result
+
+        game._play_trick = patched_play_trick
+
         players = []
         for seat in range(4):
             team = SEAT_TEAMS[seat]
@@ -201,8 +321,8 @@ def collect_selfplay_games(
                 name=f"SP {SEAT_DEFAULTS[seat]}",
                 team=team,
                 seat_idx=seat,
-                model=model,
-                device=device,
+                model=inference_model,
+                device=inference_device,
                 temperature=temperature,
                 rng_seed=game_seed * 31 + 7 + seat,
                 signal_profile="core",
@@ -212,19 +332,32 @@ def collect_selfplay_games(
         game.players = players
         game.play()
 
-        # Assign per-round rewards from each player's team perspective
+        # Assign rewards: base (round point diff) + shaped (per-trick)
         for seat in range(4):
             p = players[seat]
             team = SEAT_TEAMS[seat]
-            rewards = round_rewards_t0 if team == 0 else round_rewards_t1
+            base_rewards = round_rewards_t0 if team == 0 else round_rewards_t1
             boundaries = [0] + round_boundaries[seat]
 
-            for rnd_idx, reward in enumerate(rewards):
+            # Assign base round rewards
+            for rnd_idx, reward in enumerate(base_rewards):
                 start = boundaries[rnd_idx] if rnd_idx < len(boundaries) else 0
                 end = boundaries[rnd_idx + 1] if rnd_idx + 1 < len(boundaries) else len(p.transitions)
                 for t_idx in range(start, end):
                     if t_idx < len(p.transitions):
                         p.transitions[t_idx].reward = reward
+
+            # Add shaped rewards per-trick
+            t_bounds = trick_boundaries[seat]
+            for trick_idx in range(len(t_bounds)):
+                t_start = t_bounds[trick_idx - 1] if trick_idx > 0 else 0
+                t_end = t_bounds[trick_idx]
+                if trick_idx < len(shaped_rewards[seat]):
+                    shaped_r = shaped_rewards[seat][trick_idx] * shaping_weight
+                    # Apply to the transition that produced the card for this trick
+                    # That's the last transition before t_end
+                    if t_end > 0 and (t_end - 1) < len(p.transitions):
+                        p.transitions[t_end - 1].reward += shaped_r
 
             all_transitions.extend(p.transitions)
             p.clear_transitions()
@@ -271,7 +404,6 @@ def ppo_update(
     mini_batch_size: int = 256,
     ppo_epochs: int = 4,
 ) -> dict:
-    """PPO update with KL penalty against reference (initial) policy."""
     advantages, returns = compute_gae(transitions)
 
     adv_mean = advantages.mean()
@@ -286,10 +418,11 @@ def ppo_update(
     ret_tensor = torch.from_numpy(returns).to(device)
 
     n = len(transitions)
-    total_policy_loss = 0.0
-    total_value_loss = 0.0
-    total_entropy = 0.0
-    total_kl = 0.0
+    # Accumulate losses on GPU — sync to CPU only once at the end
+    total_policy_loss = torch.tensor(0.0, device=device)
+    total_value_loss = torch.tensor(0.0, device=device)
+    total_entropy = torch.tensor(0.0, device=device)
+    total_kl = torch.tensor(0.0, device=device)
     num_updates = 0
 
     for _ in range(ppo_epochs):
@@ -306,7 +439,6 @@ def ppo_update(
             mb_advantages = adv_tensor[mb_idx]
             mb_returns = ret_tensor[mb_idx]
 
-            # Current policy
             logits, values = model(mb_states)
             logits = logits.masked_fill(mb_legal_masks == 0, float("-inf"))
             probs = F.softmax(logits, dim=-1)
@@ -314,20 +446,16 @@ def ppo_update(
             new_log_probs = dist.log_prob(mb_actions)
             entropy = dist.entropy().mean()
 
-            # Reference policy (frozen) for KL penalty
             with torch.no_grad():
                 ref_logits, _ = ref_model(mb_states)
                 ref_logits = ref_logits.masked_fill(mb_legal_masks == 0, float("-inf"))
                 ref_log_probs = F.log_softmax(ref_logits, dim=-1)
 
-            # KL(current || reference) only over legal actions
             cur_log_probs = F.log_softmax(logits, dim=-1)
             log_ratio = cur_log_probs - ref_log_probs
-            # Replace NaN (from -inf - (-inf) on illegal moves) with 0
             log_ratio = log_ratio.nan_to_num(0.0)
             kl_div = (probs * log_ratio).sum(dim=-1).mean()
 
-            # PPO clipped surrogate
             ratio = (new_log_probs - mb_old_log_probs).exp()
             surr1 = ratio * mb_advantages
             surr2 = torch.clamp(ratio, 1.0 - clip_eps, 1.0 + clip_eps) * mb_advantages
@@ -342,28 +470,28 @@ def ppo_update(
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)
             optimizer.step()
 
-            total_policy_loss += policy_loss.item()
-            total_value_loss += value_loss.item()
-            total_entropy += entropy.item()
-            total_kl += kl_div.item()
+            total_policy_loss += policy_loss.detach()
+            total_value_loss += value_loss.detach()
+            total_entropy += entropy.detach()
+            total_kl += kl_div.detach()
             num_updates += 1
 
+    n_upd = max(num_updates, 1)
     return {
-        "policy_loss": total_policy_loss / max(num_updates, 1),
-        "value_loss": total_value_loss / max(num_updates, 1),
-        "entropy": total_entropy / max(num_updates, 1),
-        "kl_div": total_kl / max(num_updates, 1),
+        "policy_loss": (total_policy_loss / n_upd).item(),
+        "value_loss": (total_value_loss / n_upd).item(),
+        "entropy": (total_entropy / n_upd).item(),
+        "kl_div": (total_kl / n_upd).item(),
     }
 
 
 def benchmark_vs_expert_v2(model_path: str, rounds: int = 256) -> dict | None:
-    """Quick benchmark against expert_v2."""
     result = subprocess.run(
         [PY, "tools/ai_benchmark.py",
          "--candidate-strength", "neural",
          "--baseline-strength", "expert_v2",
          "--rounds", str(rounds),
-         "--workers", "16"],
+         "--workers", "14"],
         cwd=str(ROOT),
         capture_output=True, text=True,
     )
@@ -383,13 +511,14 @@ def benchmark_vs_expert_v2(model_path: str, rounds: int = 256) -> dict | None:
     return stats
 
 
-def train_selfplay(
+def train(
     model_path: str,
     output_path: str,
     num_epochs: int = 300,
-    games_per_epoch: int = 64,
+    games_per_epoch: int = 256,
     lr: float = 1e-4,
     temperature: float = 1.15,
+    shaping_weight: float = 0.25,
     clip_eps: float = 0.15,
     entropy_coeff: float = 0.02,
     kl_coeff: float = 0.1,
@@ -398,50 +527,62 @@ def train_selfplay(
     benchmark_interval: int = 25,
     seed: int = 42,
 ) -> None:
+    log_path = output_path.replace(".pt", ".log")
+    print, _log_file = _make_logger(log_path)
+    print(f"Logging to {log_path}")
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
+    print(f"Reward rules: {len(RULES)} active")
+    for rule_fn, weight in RULES:
+        print(f"  - {rule_fn.__name__} (weight={weight})")
 
-    # Load pretrained policy
-    policy_net = KlaverjasNet()
-    policy_net.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
-    print(f"Loaded pretrained policy from {model_path}")
+    state_dict = torch.load(model_path, map_location=device, weights_only=True)
+    linear_keys = sorted(k for k in state_dict if k.endswith(".weight") and "net." in k)
+    hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
+    policy_net = KlaverjasNet(hidden_sizes=hidden_sizes)
+    policy_net.load_state_dict(state_dict)
+    print(f"Loaded pretrained policy from {model_path} (architecture: {hidden_sizes})")
 
-    # Create actor-critic for training
     model = KlaverjasActorCritic.from_policy_net(policy_net)
     model.to(device)
 
-    # Frozen reference model for KL penalty
     ref_model = KlaverjasActorCritic.from_policy_net(policy_net)
     ref_model.to(device)
     ref_model.eval()
     for p in ref_model.parameters():
         p.requires_grad = False
 
+    # CPU model for game inference — batch size 1 is faster on CPU than GPU
+    inference_device = torch.device("cpu")
+    cpu_model = KlaverjasActorCritic.from_policy_net(policy_net)
+    cpu_model.cpu()
+    cpu_model.eval()
+    for p in cpu_model.parameters():
+        p.requires_grad = False
+
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Actor-Critic parameters: {total_params:,}")
-    print(f"Settings: lr={lr}, temp={temperature}, clip={clip_eps}, "
-          f"entropy={entropy_coeff}, kl={kl_coeff}, games/epoch={games_per_epoch}")
+    print(f"Settings: lr={lr}, temp={temperature}, shaping_weight={shaping_weight}, "
+          f"clip={clip_eps}, entropy={entropy_coeff}, kl={kl_coeff}, games/epoch={games_per_epoch}")
 
-    import shutil
-
-    # Initial benchmark — this sets the bar to beat
     print("\n--- Initial benchmark vs expert_v2 ---")
     stats = benchmark_vs_expert_v2(model_path, rounds=1024)
     initial_diff = float(stats.get("avg_point_diff", -9999)) if stats else -9999
     if stats:
         print(f"  win_rate={stats.get('win_rate', '?')}, avg_point_diff={initial_diff}")
-
-    # Save initial model as the starting best
-    shutil.copy(model_path, output_path)
-    shutil.copy(model_path, str(ROOT / "models" / "neural_best.pt"))
+    print("\n--- Finished initial benchmark vs expert_v2 ---")
+    best_pt = str(ROOT / "models" / "neural_best.pt")
+    if str(Path(model_path).resolve()) != str(Path(output_path).resolve()):
+        shutil.copy(model_path, output_path)
+    if str(Path(model_path).resolve()) != str(Path(best_pt).resolve()):
+        shutil.copy(model_path, best_pt)
     print(f"  => Initial model saved as baseline (avg_point_diff={initial_diff:+.2f})")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     rng = random.Random(seed)
 
     reward_history = []
-
-    # Tracking for benchmark-based model selection
     best_benchmark_diff = initial_diff
     best_reward_in_window = -float("inf")
     best_reward_epoch = 0
@@ -450,12 +591,13 @@ def train_selfplay(
 
     for epoch in range(1, num_epochs + 1):
         model.eval()
-        transitions, game_rewards = collect_selfplay_games(
-            model=model,
-            device=device,
+        transitions, game_rewards = collect_games(
+            inference_model=cpu_model,
+            inference_device=inference_device,
             num_games=games_per_epoch,
             rng=rng,
             temperature=temperature,
+            shaping_weight=shaping_weight,
         )
         model.train()
 
@@ -479,6 +621,8 @@ def train_selfplay(
             kl_coeff=kl_coeff,
             ppo_epochs=ppo_epochs,
         )
+        # Sync updated GPU weights to CPU inference model
+        cpu_model.load_state_dict({k: v.cpu() for k, v in model.state_dict().items()})
 
         print(
             f"Epoch {epoch:3d}/{num_epochs}  "
@@ -491,7 +635,6 @@ def train_selfplay(
             f"trans={len(transitions)}"
         )
 
-        # Track best reward epoch within the current 25-epoch window
         if recent_avg > best_reward_in_window:
             best_reward_in_window = recent_avg
             best_reward_epoch = epoch
@@ -499,13 +642,10 @@ def train_selfplay(
             torch.save(export_net.state_dict(), window_path)
             print(f"  -> Window best (epoch {epoch}, recent_20={recent_avg:+.4f})")
 
-        # Periodic benchmark against expert_v2
         if epoch % benchmark_interval == 0:
-            # Save current epoch model
             export_net = model.export_policy_net()
             torch.save(export_net.state_dict(), current_path)
 
-            # Benchmark current epoch
             shutil.copy(current_path, str(ROOT / "models" / "neural_best.pt"))
             print(f"\n--- Benchmark vs expert_v2 (epoch {epoch}) ---")
             bench_current = benchmark_vs_expert_v2(current_path, rounds=1024)
@@ -514,7 +654,6 @@ def train_selfplay(
                 print(f"  win_rate={bench_current.get('win_rate', '?')}, "
                       f"avg_point_diff={current_diff}")
 
-            # Benchmark best-reward epoch from this window
             best_diff = current_diff
             chosen = "current"
             chosen_path = current_path
@@ -531,7 +670,6 @@ def train_selfplay(
                     chosen = f"window (epoch {best_reward_epoch})"
                     chosen_path = window_path
 
-            # Save if this is the best benchmark so far
             if best_diff > best_benchmark_diff:
                 best_benchmark_diff = best_diff
                 shutil.copy(chosen_path, output_path)
@@ -539,21 +677,17 @@ def train_selfplay(
                 print(f"  => NEW BEST model saved from {chosen} "
                       f"(avg_point_diff={best_diff:+.2f})")
             else:
-                # Restore previous best to neural_best.pt
                 shutil.copy(output_path, str(ROOT / "models" / "neural_best.pt"))
                 print(f"  => Kept previous best (avg_point_diff={best_benchmark_diff:+.2f})")
 
-            # Reset window tracking
             best_reward_in_window = -float("inf")
             best_reward_epoch = epoch
             print()
 
-        # Decay temperature slowly
         if epoch % 75 == 0 and temperature > 1.0:
             temperature = max(1.0, temperature - 0.05)
             print(f"  -> Temperature: {temperature:.2f}")
 
-    # Final benchmark
     export_net = model.export_policy_net()
     final_path = output_path.replace(".pt", "_final.pt")
     torch.save(export_net.state_dict(), final_path)
@@ -573,37 +707,37 @@ def train_selfplay(
         print(f"  => Keeping previous best (avg_point_diff={best_benchmark_diff:+.2f})")
 
     print(f"\nDone. Best model: {output_path} (benchmark diff={best_benchmark_diff:+.2f})")
-    print(f"Final model: {final_path}")
+    _log_file.close()
 
 
 def main_cli() -> None:
-    parser = argparse.ArgumentParser(description="Self-play PPO training for neural Klaverjassen AI.")
-    parser.add_argument("--model", default=str(ROOT / "models" / "neural_v2_100k.pt"), help="Pretrained policy model.")
-    parser.add_argument("--output", default=str(ROOT / "models" / "neural_selfplay.pt"), help="Output model path.")
+    parser = argparse.ArgumentParser(description="Shaped-reward PPO training for neural Klaverjassen AI.")
+    parser.add_argument("--model", default=str(ROOT / "models" / "neural_best.pt"), help="Pretrained policy model.")
+    parser.add_argument("--output", default=str(ROOT / "models" / "neural_shaped_v1.pt"), help="Output model path.")
     parser.add_argument("--epochs", type=int, default=300)
-    parser.add_argument("--games-per-epoch", type=int, default=64)
+    parser.add_argument("--games-per-epoch", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--temperature", type=float, default=1.15)
+    parser.add_argument("--shaping-weight", type=float, default=0.5,
+                        help="Weight of shaped rewards relative to base game rewards.")
     parser.add_argument("--clip-eps", type=float, default=0.15)
     parser.add_argument("--entropy-coeff", type=float, default=0.02)
     parser.add_argument("--kl-coeff", type=float, default=0.1)
-    parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--benchmark-interval", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-    train_selfplay(
+    train(
         model_path=args.model,
         output_path=args.output,
         num_epochs=args.epochs,
         games_per_epoch=args.games_per_epoch,
         lr=args.lr,
         temperature=args.temperature,
+        shaping_weight=args.shaping_weight,
         clip_eps=args.clip_eps,
         entropy_coeff=args.entropy_coeff,
         kl_coeff=args.kl_coeff,
-        ppo_epochs=args.ppo_epochs,
         benchmark_interval=args.benchmark_interval,
         seed=args.seed,
     )
