@@ -462,7 +462,7 @@ def train_ppo(
 
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description="PPO training for neural Klaverjassen AI.")
-    parser.add_argument("--model", default=str(ROOT / "models" / "neural_v1.pt"), help="Pretrained policy model.")
+    parser.add_argument("--model", default=str(ROOT / "models" / "neural_best.pt"), help="Pretrained policy model.")
     parser.add_argument("--output", default=str(ROOT / "models" / "neural_ppo.pt"), help="Output model path.")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--games-per-epoch", type=int, default=32)

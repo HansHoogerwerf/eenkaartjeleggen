@@ -21,7 +21,7 @@ class KlaverjasNet(nn.Module):
         for i, h in enumerate(hidden_sizes):
             layers.append(nn.Linear(in_size, h))
             layers.append(nn.ReLU())
-            dropout = 0.1 if i == len(hidden_sizes) - 1 else 0.2
+            dropout = 0.05 if i == len(hidden_sizes) - 1 else 0.1
             layers.append(nn.Dropout(dropout))
             in_size = h
         layers.append(nn.Linear(in_size, NUM_CARDS))
@@ -99,6 +99,54 @@ class KlaverjasActorCritic(nn.Module):
         logits = logits.masked_fill(legal_mask == 0, float("-inf"))
         return logits.argmax(dim=-1)
 
+    @staticmethod
+    def from_policy_net(policy_net: KlaverjasNet) -> "KlaverjasActorCritic":
+        """Initialize actor-critic from a pretrained policy-only network.
+
+        Copies the backbone and policy head weights from the pretrained model.
+        The value head is initialized randomly.
+        """
+        src_layers = [m for m in policy_net.net if isinstance(m, nn.Linear)]
+        hidden_sizes = tuple(l.out_features for l in src_layers[:-1])
+        ac = KlaverjasActorCritic(hidden_sizes=hidden_sizes)
+
+        src_layers = [m for m in policy_net.net if isinstance(m, nn.Linear)]
+        dst_backbone = [m for m in ac.backbone if isinstance(m, nn.Linear)]
+        dst_policy = [m for m in ac.policy_head if isinstance(m, nn.Linear)]
+
+        for dst, src in zip(dst_backbone, src_layers[:2]):
+            dst.weight.data.copy_(src.weight.data)
+            dst.bias.data.copy_(src.bias.data)
+
+        for dst, src in zip(dst_policy, src_layers[2:]):
+            dst.weight.data.copy_(src.weight.data)
+            dst.bias.data.copy_(src.bias.data)
+
+        return ac
+
+    def export_policy_net(self) -> KlaverjasNet:
+        """Export the policy head as a standalone KlaverjasNet for inference."""
+        src_backbone = [m for m in self.backbone if isinstance(m, nn.Linear)]
+        src_policy = [m for m in self.policy_head if isinstance(m, nn.Linear)]
+
+        # Infer hidden_sizes: backbone output sizes + first policy head output size
+        hidden_sizes = tuple(l.out_features for l in src_backbone) + (src_policy[0].out_features,)
+        net = KlaverjasNet(hidden_sizes=hidden_sizes)
+
+        dst_layers = [m for m in net.net if isinstance(m, nn.Linear)]
+        n_backbone = len(src_backbone)
+
+        for dst, src in zip(dst_layers[:n_backbone], src_backbone):
+            dst.weight.data.copy_(src.weight.data)
+            dst.bias.data.copy_(src.bias.data)
+
+        for dst, src in zip(dst_layers[n_backbone:], src_policy):
+            dst.weight.data.copy_(src.weight.data)
+            dst.bias.data.copy_(src.bias.data)
+
+        return net
+
+
 class KlaverjassBidNet(nn.Module):
     """Small MLP for bidding (trump declaration) decisions.
 
@@ -113,7 +161,7 @@ class KlaverjassBidNet(nn.Module):
         for i, h in enumerate(hidden_sizes):
             layers.append(nn.Linear(in_size, h))
             layers.append(nn.ReLU())
-            dropout = 0.1 if i == len(hidden_sizes) - 1 else 0.2
+            dropout = 0.05 if i == len(hidden_sizes) - 1 else 0.1
             layers.append(nn.Dropout(dropout))
             in_size = h
         layers.append(nn.Linear(in_size, 1))
@@ -128,54 +176,3 @@ class KlaverjassBidNet(nn.Module):
         logits = self.forward(x).squeeze(-1)
         probs = torch.sigmoid(logits)
         return probs >= threshold
-
-
-    @staticmethod
-    def from_policy_net(policy_net: KlaverjasNet) -> "KlaverjasActorCritic":
-        """Initialize actor-critic from a pretrained policy-only network.
-
-        Copies the backbone and policy head weights from the pretrained model.
-        The value head is initialized randomly.
-        """
-        ac = KlaverjasActorCritic()
-
-        # The pretrained net has: Linear(267,512) ReLU Drop Linear(512,256) ReLU Drop Linear(256,128) ReLU Drop Linear(128,32)
-        # Backbone = first 2 layer pairs: Linear(267,512) ReLU, Linear(512,256) ReLU
-        # Policy head = last layer pair + output: Linear(256,128) ReLU, Linear(128,32)
-
-        src_layers = [m for m in policy_net.net if isinstance(m, nn.Linear)]
-        # src_layers: [Linear(267,512), Linear(512,256), Linear(256,128), Linear(128,32)]
-
-        dst_backbone = [m for m in ac.backbone if isinstance(m, nn.Linear)]
-        # dst_backbone: [Linear(267,512), Linear(512,256)]
-
-        dst_policy = [m for m in ac.policy_head if isinstance(m, nn.Linear)]
-        # dst_policy: [Linear(256,128), Linear(128,32)]
-
-        for dst, src in zip(dst_backbone, src_layers[:2]):
-            dst.weight.data.copy_(src.weight.data)
-            dst.bias.data.copy_(src.bias.data)
-
-        for dst, src in zip(dst_policy, src_layers[2:]):
-            dst.weight.data.copy_(src.weight.data)
-            dst.bias.data.copy_(src.bias.data)
-
-        return ac
-
-    def export_policy_net(self) -> KlaverjasNet:
-        """Export the policy head as a standalone KlaverjasNet for inference."""
-        net = KlaverjasNet()
-
-        src_backbone = [m for m in self.backbone if isinstance(m, nn.Linear)]
-        src_policy = [m for m in self.policy_head if isinstance(m, nn.Linear)]
-        dst_layers = [m for m in net.net if isinstance(m, nn.Linear)]
-
-        for dst, src in zip(dst_layers[:2], src_backbone):
-            dst.weight.data.copy_(src.weight.data)
-            dst.bias.data.copy_(src.bias.data)
-
-        for dst, src in zip(dst_layers[2:], src_policy):
-            dst.weight.data.copy_(src.weight.data)
-            dst.bias.data.copy_(src.bias.data)
-
-        return net

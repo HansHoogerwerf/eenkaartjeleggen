@@ -426,9 +426,7 @@ class AIPlayer(Player):
             "random_mistake_rate": 0.0,
             "declaration_bias": 0.0,
             "trick_win_sim_samples": 20,
-            "use_neural": True,
-            "bid_threshold": 0.5,
-            "bid_model_path": "models/bid_rl_v4.pt",
+            "use_neural_play": True,
         },
     }
 
@@ -457,9 +455,8 @@ class AIPlayer(Player):
         self.declaration_bias = float(profile["declaration_bias"])
         self.TIE_BREAK_DELTA = float(profile["tie_break_delta"])
         self.TRICK_WIN_SIM_SAMPLES = int(profile["trick_win_sim_samples"])
-        self.use_neural = bool(profile.get("use_neural", False))
-        self.bid_threshold = float(profile.get("bid_threshold", 0.5))
-        self.bid_model_path: str | None = profile.get("bid_model_path", None)
+        self.use_neural_play = bool(profile.get("use_neural_play", profile.get("use_neural", False)))
+        self.neural_model_path: str | None = None  # override via benchmark/training tools
 
         # Updated by KlaverjasGame._bidding before each choose_trump call
         self.bid_position: int = 0   # 0-3, position in current bidding round
@@ -547,18 +544,6 @@ class AIPlayer(Player):
     def choose_trump(self, suit: str, forced: bool) -> bool:
         if forced:
             return True
-        if self.use_neural:
-            from neural.player import neural_choose_trump
-            kwargs = {"threshold": self.bid_threshold}
-            if self.bid_model_path:
-                from pathlib import Path as _Path
-                _bid_path = _Path(self.bid_model_path)
-                if not _bid_path.is_absolute():
-                    _bid_path = _Path(__file__).resolve().parent / self.bid_model_path
-                kwargs["model_path"] = _bid_path
-            result = neural_choose_trump(self, suit, forced, **kwargs)
-            if result is not None:
-                return result
         if _thread_offload:
             score = _thread_offload(lambda: self._declaration_score(suit))
         else:
@@ -801,9 +786,11 @@ class AIPlayer(Player):
             solved = self._endgame_exact_choice(legal, trick, trump)
             if solved is not None:
                 return solved
-        if self.use_neural:
+        if self.use_neural_play:
             from neural.player import neural_choose_card
-            card = neural_choose_card(self, legal, trick, trump)
+            card = neural_choose_card(self, legal, trick, trump,
+                                      **({'model_path': self.neural_model_path}
+                                         if self.neural_model_path else {}))
             if card is not None:
                 return card
             # Fall through to heuristic if model not available

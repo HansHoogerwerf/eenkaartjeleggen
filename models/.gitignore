@@ -3,4 +3,4 @@
 *.pt
 
 # Include only the production model
-!neural_v1.pt
+!neural_best.pt
