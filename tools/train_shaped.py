@@ -13,6 +13,7 @@ import sys
 import time
 from dataclasses import dataclass, field
 from functools import partial
+from multiprocessing import Pool, cpu_count
 from pathlib import Path
 
 print = partial(builtins.print, flush=True)
@@ -182,6 +183,185 @@ def apply_shaped_rewards(
     return rewards
 
 
+def _play_ppo_game(model, device, game_seed, temperature, shaping_weight):
+    """Play one self-play game, return (transitions, avg_round_reward)."""
+    round_rewards_t0: list[float] = []
+    round_rewards_t1: list[float] = []
+    round_boundaries: list[list[int]] = [[] for _ in range(4)]
+    shaped_rewards: dict[int, list[float]] = {s: [] for s in range(4)}
+    trick_boundaries: dict[int, list[int]] = {s: [] for s in range(4)}
+    game_ref: dict = {"game": None}
+    cards_by_seat: dict[int, list[str]] = {s: [] for s in range(4)}
+
+    def on_event(event: str, data: dict,
+                 _rr0=round_rewards_t0, _rr1=round_rewards_t1,
+                 _rb=round_boundaries, _gr=game_ref,
+                 _sr=shaped_rewards, _tb=trick_boundaries,
+                 _cbs=cards_by_seat) -> None:
+        if event == "trick_done":
+            trick = data["trick"]
+            trump = data["trump"]
+            trick_num = data["trick_num"]
+            winner_idx = data["winner_idx"]
+            winning_team = data["winning_team"]
+            trick_points = data["trick_points"]
+            play_order = data["play_order"]
+
+            for seat_idx, card in data["trick_cards_by_seat"]:
+                _cbs[seat_idx].append(card)
+
+            rewards = apply_shaped_rewards(
+                trick, trick_num, trump, winner_idx, winning_team,
+                trick_points, _gr["game"].players, play_order,
+                cards_by_seat=_cbs,
+            )
+            for seat, r in rewards.items():
+                _sr[seat].append(r)
+                p = _gr["game"].players[seat]
+                if isinstance(p, PPOPlayer):
+                    _tb[seat].append(len(p.transitions))
+
+        elif event == "round_done":
+            t0, t1 = data["t0"], data["t1"]
+            _rr0.append((t0 - t1) / 162.0)
+            _rr1.append((t1 - t0) / 162.0)
+            for s in range(4):
+                _cbs[s].clear()
+            for seat in range(4):
+                p = _gr["game"].players[seat]
+                if isinstance(p, PPOPlayer):
+                    _rb[seat].append(len(p.transitions))
+        elif event == "waiting_for_host" and _gr["game"] is not None:
+            _gr["game"].signal_next_round()
+
+    game = KlaverjasGame(
+        human_seats={},
+        log_fn=lambda *_args, **_kwargs: None,
+        state_fn=on_event,
+        game_mode="boom",
+        game_seed=game_seed,
+        ai_seed_base=game_seed * 31 + 7,
+        ai_strength="expert",
+    )
+    game_ref["game"] = game
+    game.boom_rounds = 16
+
+    original_play_trick = game._play_trick
+
+    def patched_play_trick(leader: int, trump: str,
+                           _orig=original_play_trick, _game=game) -> tuple:
+        play_order = [(leader + offset) % 4 for offset in range(4)]
+        result = _orig(leader, trump)
+        winner_global, total_pts, trick_cards, cards_played, trick_cards_by_seat = result
+
+        trick_num = 0
+        for p in _game.players:
+            if isinstance(p, PPOPlayer):
+                trick_num = p.trick_num
+                break
+
+        trick: Trick = []
+        for seat_idx, card_str in trick_cards_by_seat:
+            for c in cards_played:
+                if str(c) == card_str:
+                    trick.append((_game.players[seat_idx], c))
+                    break
+
+        winning_team = _game.players[winner_global].team
+
+        _game.notify("trick_done", {
+            "trick": trick,
+            "trump": trump,
+            "trick_num": trick_num,
+            "winner_idx": winner_global,
+            "winning_team": winning_team,
+            "trick_points": total_pts,
+            "play_order": play_order,
+            "trick_cards_by_seat": trick_cards_by_seat,
+        })
+
+        return result
+
+    game._play_trick = patched_play_trick
+
+    players = []
+    for seat in range(4):
+        team = SEAT_TEAMS[seat]
+        p = PPOPlayer(
+            name=f"SP {SEAT_DEFAULTS[seat]}",
+            team=team,
+            seat_idx=seat,
+            model=model,
+            device=device,
+            temperature=temperature,
+            rng_seed=game_seed * 31 + 7 + seat,
+            signal_profile="core",
+            ai_strength="expert",
+        )
+        players.append(p)
+    game.players = players
+    game.play()
+
+    # Assign rewards: base (round point diff) + shaped (per-trick)
+    all_transitions: list[Transition] = []
+    for seat in range(4):
+        p = players[seat]
+        team = SEAT_TEAMS[seat]
+        base_rewards = round_rewards_t0 if team == 0 else round_rewards_t1
+        boundaries = [0] + round_boundaries[seat]
+
+        for rnd_idx, reward in enumerate(base_rewards):
+            start = boundaries[rnd_idx] if rnd_idx < len(boundaries) else 0
+            end = boundaries[rnd_idx + 1] if rnd_idx + 1 < len(boundaries) else len(p.transitions)
+            for t_idx in range(start, end):
+                if t_idx < len(p.transitions):
+                    p.transitions[t_idx].reward = reward
+
+        t_bounds = trick_boundaries[seat]
+        for trick_idx in range(len(t_bounds)):
+            t_start = t_bounds[trick_idx - 1] if trick_idx > 0 else 0
+            t_end = t_bounds[trick_idx]
+            if t_end <= t_start:
+                # No transition recorded for this trick (endgame solver bypassed choose_card)
+                continue
+            if trick_idx < len(shaped_rewards[seat]):
+                shaped_r = shaped_rewards[seat][trick_idx] * shaping_weight
+                if t_end > 0 and (t_end - 1) < len(p.transitions):
+                    p.transitions[t_end - 1].reward += shaped_r
+
+        all_transitions.extend(p.transitions)
+        p.clear_transitions()
+
+    avg_reward = float(np.mean(round_rewards_t0)) if round_rewards_t0 else 0.0
+    return all_transitions, avg_reward
+
+
+def _collect_game_batch_worker(args):
+    """Multiprocessing worker: reconstruct model, play a batch of games."""
+    state_dict, hidden_sizes, game_seeds, temperature, shaping_weight = args
+
+    main.AI_BID_DELAY = 0.0
+    main.AI_PLAY_DELAY = 0.0
+    main.TRICK_CLEAR_DELAY = 0.0
+
+    device = torch.device("cpu")
+    policy_net = KlaverjasNet(hidden_sizes=hidden_sizes)
+    policy_net.load_state_dict(state_dict)
+    model = KlaverjasActorCritic.from_policy_net(policy_net)
+    model.eval()
+    for p in model.parameters():
+        p.requires_grad = False
+
+    batch_transitions = []
+    batch_rewards = []
+    for seed in game_seeds:
+        transitions, avg_reward = _play_ppo_game(model, device, seed, temperature, shaping_weight)
+        for t in transitions:
+            batch_transitions.append((t.state, t.action, t.log_prob, t.value, t.reward, t.legal_mask))
+        batch_rewards.append(avg_reward)
+    return batch_transitions, batch_rewards
+
+
 def collect_games(
     inference_model: KlaverjasActorCritic,
     inference_device: torch.device,
@@ -189,181 +369,49 @@ def collect_games(
     rng: random.Random,
     temperature: float,
     shaping_weight: float = 0.5,
+    workers: int = 1,
 ) -> tuple[list[Transition], list[float]]:
     """Play self-play games with per-trick shaped rewards."""
     main.AI_BID_DELAY = 0.0
     main.AI_PLAY_DELAY = 0.0
     main.TRICK_CLEAR_DELAY = 0.0
 
+    game_seeds = [rng.randint(1, 10_000_000) for _ in range(num_games)]
+
+    if workers <= 1:
+        # Sequential: use provided model directly
+        all_transitions: list[Transition] = []
+        game_rewards: list[float] = []
+        for seed in game_seeds:
+            transitions, avg_reward = _play_ppo_game(
+                inference_model, inference_device, seed, temperature, shaping_weight
+            )
+            all_transitions.extend(transitions)
+            game_rewards.append(avg_reward)
+        return all_transitions, game_rewards
+
+    # Parallel: export model weights, distribute to worker processes
+    export_net = inference_model.export_policy_net()
+    state_dict = {k: v.cpu() for k, v in export_net.state_dict().items()}
+    src_layers = [m for m in export_net.net if isinstance(m, nn.Linear)]
+    hidden_sizes = tuple(l.out_features for l in src_layers[:-1])
+
+    # Split seeds into chunks (one per worker)
+    chunk_size = max(1, (num_games + workers - 1) // workers)
+    tasks = []
+    for i in range(0, num_games, chunk_size):
+        chunk_seeds = game_seeds[i:i + chunk_size]
+        tasks.append((state_dict, hidden_sizes, chunk_seeds, temperature, shaping_weight))
+
     all_transitions: list[Transition] = []
     game_rewards: list[float] = []
-
-    for g in range(num_games):
-        game_seed = rng.randint(1, 10_000_000)
-
-        round_rewards_t0: list[float] = []
-        round_rewards_t1: list[float] = []
-        round_boundaries: list[list[int]] = [[] for _ in range(4)]
-
-        # Per-trick shaped rewards: {seat_idx: [reward_per_trick]}
-        shaped_rewards: dict[int, list[float]] = {s: [] for s in range(4)}
-        # Track transition index at each trick boundary per player
-        trick_boundaries: dict[int, list[int]] = {s: [] for s in range(4)}
-
-        game_ref: dict = {"game": None}
-        trick_state: dict = {"trick_num": 0, "trump": None}
-        # Accumulate cards played per seat across tricks within a round
-        cards_by_seat: dict[int, list[str]] = {s: [] for s in range(4)}
-
-        def on_event(event: str, data: dict,
-                     _rr0=round_rewards_t0, _rr1=round_rewards_t1,
-                     _rb=round_boundaries, _gr=game_ref,
-                     _sr=shaped_rewards, _tb=trick_boundaries,
-                     _ts=trick_state, _cbs=cards_by_seat) -> None:
-            if event == "trick_done":
-                # Custom event we'll fire — see monkey-patch below
-                trick = data["trick"]
-                trump = data["trump"]
-                trick_num = data["trick_num"]
-                winner_idx = data["winner_idx"]
-                winning_team = data["winning_team"]
-                trick_points = data["trick_points"]
-                play_order = data["play_order"]
-
-                # Record cards played per seat in this trick
-                for seat_idx, card in data["trick_cards_by_seat"]:
-                    _cbs[seat_idx].append(card)
-
-                rewards = apply_shaped_rewards(
-                    trick, trick_num, trump, winner_idx, winning_team,
-                    trick_points, _gr["game"].players, play_order,
-                    cards_by_seat=_cbs,
+    with Pool(processes=min(workers, len(tasks))) as pool:
+        for batch_trans, batch_rew in pool.imap_unordered(_collect_game_batch_worker, tasks):
+            for state, action, log_prob, value, reward, legal_mask in batch_trans:
+                all_transitions.append(
+                    Transition(state, action, log_prob, value, reward, legal_mask)
                 )
-                for seat, r in rewards.items():
-                    _sr[seat].append(r)
-                    p = _gr["game"].players[seat]
-                    if isinstance(p, PPOPlayer):
-                        _tb[seat].append(len(p.transitions))
-
-            elif event == "round_done":
-                t0, t1 = data["t0"], data["t1"]
-                _rr0.append((t0 - t1) / 162.0)
-                _rr1.append((t1 - t0) / 162.0)
-                # Reset per-round tracking
-                for s in range(4):
-                    _cbs[s].clear()
-                for seat in range(4):
-                    p = _gr["game"].players[seat]
-                    if isinstance(p, PPOPlayer):
-                        _rb[seat].append(len(p.transitions))
-            elif event == "waiting_for_host" and _gr["game"] is not None:
-                _gr["game"].signal_next_round()
-
-        game = KlaverjasGame(
-            human_seats={},
-            log_fn=lambda *_args, **_kwargs: None,
-            state_fn=on_event,
-            game_mode="boom",
-            game_seed=game_seed,
-            ai_seed_base=game_seed * 31 + 7,
-            ai_strength="expert",
-        )
-        game_ref["game"] = game
-        game.boom_rounds = 16
-
-        # Monkey-patch _play_trick to fire trick_done events
-        original_play_trick = game._play_trick
-
-        def patched_play_trick(leader: int, trump: str,
-                               _orig=original_play_trick, _game=game) -> tuple:
-            # Track play order
-            play_order = [(leader + offset) % 4 for offset in range(4)]
-
-            result = _orig(leader, trump)
-            winner_global, total_pts, trick_cards, cards_played, trick_cards_by_seat = result
-
-            # Find current trick_num from players
-            trick_num = 0
-            for p in _game.players:
-                if isinstance(p, PPOPlayer):
-                    trick_num = p.trick_num
-                    break
-
-            # Reconstruct trick for reward rules
-            trick: Trick = []
-            for seat_idx, card_str in trick_cards_by_seat:
-                for c in cards_played:
-                    if str(c) == card_str:
-                        trick.append((_game.players[seat_idx], c))
-                        break
-
-            winning_team = _game.players[winner_global].team
-
-            _game.notify("trick_done", {
-                "trick": trick,
-                "trump": trump,
-                "trick_num": trick_num,
-                "winner_idx": winner_global,
-                "winning_team": winning_team,
-                "trick_points": total_pts,
-                "play_order": play_order,
-                "trick_cards_by_seat": trick_cards_by_seat,
-            })
-
-            return result
-
-        game._play_trick = patched_play_trick
-
-        players = []
-        for seat in range(4):
-            team = SEAT_TEAMS[seat]
-            p = PPOPlayer(
-                name=f"SP {SEAT_DEFAULTS[seat]}",
-                team=team,
-                seat_idx=seat,
-                model=inference_model,
-                device=inference_device,
-                temperature=temperature,
-                rng_seed=game_seed * 31 + 7 + seat,
-                signal_profile="core",
-                ai_strength="expert",
-            )
-            players.append(p)
-        game.players = players
-        game.play()
-
-        # Assign rewards: base (round point diff) + shaped (per-trick)
-        for seat in range(4):
-            p = players[seat]
-            team = SEAT_TEAMS[seat]
-            base_rewards = round_rewards_t0 if team == 0 else round_rewards_t1
-            boundaries = [0] + round_boundaries[seat]
-
-            # Assign base round rewards
-            for rnd_idx, reward in enumerate(base_rewards):
-                start = boundaries[rnd_idx] if rnd_idx < len(boundaries) else 0
-                end = boundaries[rnd_idx + 1] if rnd_idx + 1 < len(boundaries) else len(p.transitions)
-                for t_idx in range(start, end):
-                    if t_idx < len(p.transitions):
-                        p.transitions[t_idx].reward = reward
-
-            # Add shaped rewards per-trick
-            t_bounds = trick_boundaries[seat]
-            for trick_idx in range(len(t_bounds)):
-                t_start = t_bounds[trick_idx - 1] if trick_idx > 0 else 0
-                t_end = t_bounds[trick_idx]
-                if trick_idx < len(shaped_rewards[seat]):
-                    shaped_r = shaped_rewards[seat][trick_idx] * shaping_weight
-                    # Apply to the transition that produced the card for this trick
-                    # That's the last transition before t_end
-                    if t_end > 0 and (t_end - 1) < len(p.transitions):
-                        p.transitions[t_end - 1].reward += shaped_r
-
-            all_transitions.extend(p.transitions)
-            p.clear_transitions()
-
-        avg_reward = np.mean(round_rewards_t0) if round_rewards_t0 else 0.0
-        game_rewards.append(avg_reward)
+            game_rewards.extend(batch_rew)
 
     return all_transitions, game_rewards
 
@@ -491,7 +539,8 @@ def benchmark_vs_expert_v2(model_path: str, rounds: int = 256) -> dict | None:
          "--candidate-strength", "neural",
          "--baseline-strength", "expert_v2",
          "--rounds", str(rounds),
-         "--workers", "14"],
+         "--workers", "14",
+         "--model", model_path],
         cwd=str(ROOT),
         capture_output=True, text=True,
     )
@@ -526,6 +575,7 @@ def train(
     ppo_epochs: int = 4,
     benchmark_interval: int = 25,
     seed: int = 42,
+    workers: int = 0,
 ) -> None:
     log_path = output_path.replace(".pt", ".log")
     print, _log_file = _make_logger(log_path)
@@ -538,7 +588,10 @@ def train(
         print(f"  - {rule_fn.__name__} (weight={weight})")
 
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
-    linear_keys = sorted(k for k in state_dict if k.endswith(".weight") and "net." in k)
+    linear_keys = sorted(
+        (k for k in state_dict if k.endswith(".weight") and "net." in k),
+        key=lambda k: int(k.split(".")[1]),
+    )
     hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
     policy_net = KlaverjasNet(hidden_sizes=hidden_sizes)
     policy_net.load_state_dict(state_dict)
@@ -563,8 +616,11 @@ def train(
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Actor-Critic parameters: {total_params:,}")
+    if workers <= 0:
+        workers = max(1, cpu_count() - 1)
     print(f"Settings: lr={lr}, temp={temperature}, shaping_weight={shaping_weight}, "
-          f"clip={clip_eps}, entropy={entropy_coeff}, kl={kl_coeff}, games/epoch={games_per_epoch}")
+          f"clip={clip_eps}, entropy={entropy_coeff}, kl={kl_coeff}, games/epoch={games_per_epoch}, "
+          f"workers={workers}")
 
     print("\n--- Initial benchmark vs expert_v2 ---")
     stats = benchmark_vs_expert_v2(model_path, rounds=1024)
@@ -598,6 +654,7 @@ def train(
             rng=rng,
             temperature=temperature,
             shaping_weight=shaping_weight,
+            workers=workers,
         )
         model.train()
 
@@ -725,6 +782,7 @@ def main_cli() -> None:
     parser.add_argument("--kl-coeff", type=float, default=0.1)
     parser.add_argument("--benchmark-interval", type=int, default=25)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--workers", type=int, default=0, help="Parallel game collection workers (default: cpu_count-1).")
     args = parser.parse_args()
 
     train(
@@ -740,6 +798,7 @@ def main_cli() -> None:
         kl_coeff=args.kl_coeff,
         benchmark_interval=args.benchmark_interval,
         seed=args.seed,
+        workers=args.workers,
     )
 
 

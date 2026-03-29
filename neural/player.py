@@ -52,7 +52,10 @@ def _get_model(model_path: str | Path):
     # Infer hidden sizes from the weight shapes so any architecture loads correctly.
     # The net is: Linear(in, h0), ReLU, Dropout, Linear(h0, h1), ..., Linear(hN, 32)
     # Linear layer weights are at keys net.0.weight, net.3.weight, net.6.weight, ...
-    linear_keys = sorted(k for k in state_dict if k.endswith(".weight") and "net." in k)
+    linear_keys = sorted(
+        (k for k in state_dict if k.endswith(".weight") and "net." in k),
+        key=lambda k: int(k.split(".")[1]),
+    )
     # All except the last linear are hidden layers
     hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
 
