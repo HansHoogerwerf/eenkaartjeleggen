@@ -98,12 +98,7 @@ class HeuristicBidNeuralPlayer(AIPlayer):
     def choose_trump(self, suit: str, forced: bool) -> bool:
         if forced:
             return True
-        # Temporarily disable neural bidding so the heuristic path runs
-        saved = self.use_neural
-        self.use_neural = False
-        result = super().choose_trump(suit, forced)
-        self.use_neural = saved
-        return result
+        return super().choose_trump(suit, forced)
 
 
 class BidRLPlayer(AIPlayer):

@@ -1,4 +1,4 @@
-"""NeuralAIPlayer — uses trained neural networks for card play and bidding."""
+"""NeuralAIPlayer — uses trained neural networks for card play."""
 
 from pathlib import Path
 
@@ -14,9 +14,8 @@ from neural.features import CARD_INDEX, encode_state
 # Reverse mapping: index -> card string
 IDX_TO_CARD_STR: dict[int, str] = {v: k for k, v in CARD_INDEX.items()}
 
-# Default model paths
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "neural_v1.pt"
-DEFAULT_BID_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "bid_rl_v4.pt"
+# Default model path
+DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "neural_best.pt"
 
 # Global model cache so we load the weights only once
 _model_cache: dict[str, object] = {}
@@ -48,8 +47,20 @@ def _get_model(model_path: str | Path):
         return None
 
     device = _get_device()
-    model = KlaverjasNet()
-    model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
+    state_dict = torch.load(path, map_location=device, weights_only=True)
+
+    # Infer hidden sizes from the weight shapes so any architecture loads correctly.
+    # The net is: Linear(in, h0), ReLU, Dropout, Linear(h0, h1), ..., Linear(hN, 32)
+    # Linear layer weights are at keys net.0.weight, net.3.weight, net.6.weight, ...
+    linear_keys = sorted(
+        (k for k in state_dict if k.endswith(".weight") and "net." in k),
+        key=lambda k: int(k.split(".")[1]),
+    )
+    # All except the last linear are hidden layers
+    hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
+
+    model = KlaverjasNet(hidden_sizes=hidden_sizes)
+    model.load_state_dict(state_dict)
     model.to(device)
     model.eval()
     _model_cache[key] = model
@@ -110,70 +121,3 @@ def neural_choose_card(
 
     # Safety fallback: if somehow the chosen card isn't in legal moves, pick first legal
     return legal[0] if legal else None
-
-
-def _get_bid_model(model_path: str | Path):
-    """Load and cache the bidding neural network model."""
-    if not _TORCH_AVAILABLE:
-        return None
-
-    from neural.model import KlaverjassBidNet
-
-    key = str(model_path)
-    if key in _model_cache:
-        return _model_cache[key]
-
-    path = Path(model_path)
-    if not path.exists():
-        return None
-
-    device = _get_device()
-    model = KlaverjassBidNet()
-    model.load_state_dict(torch.load(path, map_location=device, weights_only=True))
-    model.to(device)
-    model.eval()
-    _model_cache[key] = model
-    return model
-
-
-def neural_choose_trump(
-    player,  # AIPlayer instance
-    suit: str,
-    forced: bool,
-    model_path: str | Path = DEFAULT_BID_MODEL_PATH,
-    threshold: float = 0.5,
-) -> bool | None:
-    """Use neural network to decide whether to declare trump.
-
-    Returns None if the model is not available (caller should fall back to heuristic).
-    """
-    if forced:
-        return True
-
-    model = _get_bid_model(model_path)
-    if model is None:
-        return None
-
-    device = _get_device()
-
-    from neural.bid_features import encode_bid_state
-
-    features = encode_bid_state(
-        hand=list(player.hand),
-        trump_suit=suit,
-        bid_position=player.bid_position,
-        bid_round=player.bid_round,
-        seat_idx=player.seat_idx,
-        team=player.team,
-        game_scores=list(player.game_scores),
-        round_num=player.round_num,
-        round_1_suit=getattr(player, "round_1_suit", None),
-    )
-
-    x = torch.from_numpy(features).unsqueeze(0).to(device)
-
-    with torch.no_grad():
-        logit = model(x).squeeze(-1).item()
-        prob = torch.sigmoid(torch.tensor(logit)).item()
-
-    return prob >= threshold

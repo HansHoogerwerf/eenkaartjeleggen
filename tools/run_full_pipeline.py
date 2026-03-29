@@ -52,7 +52,7 @@ if rc != 0:
     sys.exit(1)
 
 # Step 3: Copy model and benchmark
-shutil.copy(str(ROOT / "models" / "neural_v2_100k.pt"), str(ROOT / "models" / "neural_v1.pt"))
+shutil.copy(str(ROOT / "models" / "neural_v2_100k.pt"), str(ROOT / "models" / "neural_best.pt"))
 
 rc = run("STEP 3: Benchmark neural (expert_v2 100K) vs expert - 1024 rounds", [
     PY, "tools/ai_benchmark.py",
