@@ -427,6 +427,7 @@ socket.on("game_starting", data => {
 socket.on("deal_done", data => {
     document.getElementById("nextround-banner").classList.remove("active");
     dismissGameover();
+    clearBidBadges();
     clearDeclaringHighlight();
     const trumpInd = document.getElementById("trump-card-indicator");
     if (trumpInd) trumpInd.classList.remove("active");
@@ -459,10 +460,13 @@ socket.on("bid", data => {
 
 socket.on("trump_set", data => {
 
+    // Bidding is complete — remove all pass/declare badges
+    clearBidBadges();
+
     // Highlight declaring player's seat label
     clearDeclaringHighlight();
     if (data.declaring_player_idx !== undefined) {
-        document.getElementById(labelId(data.declaring_player_idx)).classList.add("declaring");
+        showDeclaringHighlight(data.declaring_player_idx, data.trump);
     }
 
     // Show trump card on table
@@ -588,9 +592,16 @@ socket.on("request_bid", data => {
     suitDiv.className = `bid-suit ${isRed(data.suit) ? "red" : "black"}`;
     suitDiv.textContent = `${data.suit}  ${tSuit(data.suit)}`;
 
-    msgDiv.textContent = data.forced
-        ? t("bid.forced")
-        : t("bid.optional");
+    msgDiv.innerHTML = "";
+    const mainMsg = document.createElement("div");
+    mainMsg.textContent = data.forced ? t("bid.forced") : t("bid.optional");
+    msgDiv.appendChild(mainMsg);
+    if (data.leader_name) {
+        const leaderMsg = document.createElement("div");
+        leaderMsg.className = "bid-leader-note";
+        leaderMsg.textContent = t("bid.leader", {name: data.leader_name});
+        msgDiv.appendChild(leaderMsg);
+    }
 
     btnsDiv.innerHTML = "";
 
@@ -688,7 +699,7 @@ socket.on("reconnected", data => {
 
         clearDeclaringHighlight();
         if (data.declaring_player_idx !== null && data.declaring_player_idx !== undefined) {
-            document.getElementById(labelId(data.declaring_player_idx)).classList.add("declaring");
+            showDeclaringHighlight(data.declaring_player_idx, data.trump);
         }
         const indicator = document.getElementById("trump-card-indicator");
         const card = document.getElementById("trump-card");
