@@ -1838,6 +1838,7 @@ class KlaverjasGame:
         self.rules_variant = rules_variant if rules_variant in {"rotterdam", "amsterdam"} else "rotterdam"
         self.replay_output_path = replay_output_path
         self._current_round_replay: dict | None = None
+        self._current_leader_idx: int | None = None
 
         self.players: list[Player] = []
         for seat in range(4):
@@ -2074,6 +2075,7 @@ class KlaverjasGame:
             p.receive_hand(hands[i])
         round_replay["hands"] = {str(i): [str(c) for c in hands[i]] for i in range(4)}
 
+        self._current_leader_idx = first_leader
         self.notify("deal_done", {})
         declaring_player_idx, trump = self._bidding(first_leader, round_rng)
         declaring_team = self.players[declaring_player_idx].team

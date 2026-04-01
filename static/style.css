@@ -145,6 +145,21 @@ body {
     font-weight: bold;
     text-shadow: 0 0 6px var(--accent);
 }
+.trump-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    margin-top: 3px;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: bold;
+    background: #1a1a1a;
+    border: 1px solid var(--accent);
+    color: var(--accent);
+}
+.trump-pill .trump-pill-suit.red   { color: #e74c3c; }
+.trump-pill .trump-pill-suit.black { color: #eee; }
 
 /* Bid result badges */
 .bid-badge {
@@ -155,15 +170,10 @@ body {
     border-radius: 4px;
     margin-left: 6px;
     vertical-align: middle;
-    animation: bidBadgeFade 2.5s ease forwards;
 }
 .bid-badge.bid-declared { background: var(--felt); color: #fff; border: 1px solid var(--green-txt); }
 .bid-badge.bid-passed   { background: #333; color: #aaa; border: 1px solid #555; }
-@keyframes bidBadgeFade {
-    0%   { opacity: 1; }
-    60%  { opacity: 1; }
-    100% { opacity: 0; }
-}
+.bid-leader-note { margin-top: 6px; font-size: 0.85em; color: #aaa; }
 
 #north-seat { grid-area: north; }
 #west-seat  { grid-area: west; }
