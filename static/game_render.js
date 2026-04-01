@@ -140,7 +140,10 @@ function showBidBadge(absSeat, declared) {
     badge.className = `bid-badge ${declared ? "bid-declared" : "bid-passed"}`;
     badge.textContent = declared ? t("bid.badge_declared") : t("bid.badge_passed");
     labelEl.appendChild(badge);
-    setTimeout(() => badge.remove(), 2600);
+}
+
+function clearBidBadges() {
+    document.querySelectorAll(".bid-badge").forEach(b => b.remove());
 }
 
 function clearTrickArea(winnerIdx) {
@@ -178,8 +181,28 @@ function clearTrickArea(winnerIdx) {
 
 function clearDeclaringHighlight() {
     for (const id of SEAT_LABEL_IDS) {
-        document.getElementById(id).classList.remove("declaring");
+        const label = document.getElementById(id);
+        label.classList.remove("declaring");
+        const seat = label.parentElement;
+        seat.querySelectorAll(".trump-pill").forEach(b => b.remove());
     }
+}
+
+function showDeclaringHighlight(absSeat, trump) {
+    const label = document.getElementById(labelId(absSeat));
+    label.classList.add("declaring");
+
+    const pill = document.createElement("div");
+    pill.className = "trump-pill";
+    const suitSpan = document.createElement("span");
+    suitSpan.className = `trump-pill-suit ${isRed(trump) ? "red" : "black"}`;
+    suitSpan.textContent = trump;
+    const textSpan = document.createElement("span");
+    textSpan.setAttribute("data-i18n", "bid.badge_declared");
+    textSpan.textContent = t("bid.badge_declared");
+    pill.appendChild(suitSpan);
+    pill.appendChild(textSpan);
+    label.parentElement.appendChild(pill);
 }
 
 function updateScores(scores) {

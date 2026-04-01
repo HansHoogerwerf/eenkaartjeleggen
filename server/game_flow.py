@@ -230,10 +230,14 @@ def on_move_request(socketio, room: Room, seat_idx: int, legal_cards) -> None:
 def on_bid_request(socketio, room: Room, seat_idx: int, suit: str, forced: bool) -> None:
     info = room.seats.get(seat_idx)
     if info and info["connected"]:
+        leader_idx = room.game._current_leader_idx if room.game else None
+        leader_name = room.game.players[leader_idx].name if leader_idx is not None else None
         socketio.emit("request_bid", {
             "suit": suit,
             "suit_name": SUIT_NAMES[suit],
             "forced": forced,
+            "leader_idx": leader_idx,
+            "leader_name": leader_name,
         }, to=info["sid"])
 
 
