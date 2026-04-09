@@ -35,6 +35,9 @@ class RoomConfig:
     max_score_limit: int
     default_team_names: tuple[str, str]
     max_team_name_len: int
+    seat_reconnect_timeout_seconds: int
+    lobby_ttl_seconds: int
+    started_ttl_seconds: int
 
 
 @dataclass(frozen=True)
@@ -70,5 +73,8 @@ CONFIG = AppConfig(
         max_score_limit=5000,
         default_team_names=("Team A", "Team N"),
         max_team_name_len=16,
+        seat_reconnect_timeout_seconds=int(os.environ.get("SEAT_RECONNECT_TIMEOUT_SECONDS", "60")),
+        lobby_ttl_seconds=int(os.environ.get("ROOM_LOBBY_TTL_SECONDS", "3600")),
+        started_ttl_seconds=int(os.environ.get("ROOM_STARTED_TTL_SECONDS", "21600")),
     ),
 )

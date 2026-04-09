@@ -2,13 +2,13 @@ import unittest
 from unittest.mock import patch
 
 import app
-from server.room_state import rooms, sid_to_room
+from server.room_state import rooms, sid_to_seat
 
 
 class TestAppIntegration(unittest.TestCase):
     def setUp(self):
         rooms.clear()
-        sid_to_room.clear()
+        sid_to_seat.clear()
         self.http = app.app.test_client()
         self.c1 = app.socketio.test_client(app.app, flask_test_client=self.http)
         self.c2 = app.socketio.test_client(app.app, flask_test_client=self.http)
@@ -23,7 +23,7 @@ class TestAppIntegration(unittest.TestCase):
         except Exception:
             pass
         rooms.clear()
-        sid_to_room.clear()
+        sid_to_seat.clear()
 
     def _create_room(self, name="Alice"):
         self.c1.emit("create_room", {"name": name})
@@ -87,7 +87,7 @@ class TestAppIntegration(unittest.TestCase):
         evt = next(e for e in rec if e["name"] == "history_data")
         self.assertEqual(len(evt["args"][0]["rounds"]), 1)
 
-    def test_start_game_creator_only(self):
+    def test_start_game_host_only(self):
         code = self._create_room()
         self.c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
         self.c1.get_received()
@@ -123,14 +123,6 @@ class TestAppIntegration(unittest.TestCase):
         self.c2.emit("leave_room")
         self.assertNotIn(1, rooms[code].seats)
 
-    def test_create_room_accepts_reconnect_timeout(self):
-        self.c1.emit("create_room", {"name": "Alice", "reconnect_timeout_seconds": 45})
-        events = self.c1.get_received()
-        created = next(e for e in events if e["name"] == "room_created")
-        code = created["args"][0]["code"]
-        self.assertEqual(rooms[code].reconnect_timeout_seconds, 45)
-
-
     def test_lobby_creator_disconnect_keeps_room_for_reconnect(self):
         code = self._create_room()
         self.c1.disconnect()
@@ -148,10 +140,8 @@ class TestAppIntegration(unittest.TestCase):
         finally:
             c3.disconnect()
 
-
     def test_lobby_creator_reconnect_can_start_game(self):
         code = self._create_room()
-        old_creator_sid = rooms[code].creator_sid
         self.c1.disconnect()
 
         c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
@@ -159,8 +149,8 @@ class TestAppIntegration(unittest.TestCase):
             c3.emit("join_room", {"code": code, "name": "Alice"})
             c3.get_received()
 
-            self.assertEqual(rooms[code].creator_sid, rooms[code].seats[0]["sid"])
-            self.assertNotEqual(rooms[code].creator_sid, old_creator_sid)
+            self.assertEqual(rooms[code].host_seat, 0)
+            self.assertTrue(rooms[code].seats[0]["connected"])
 
             with patch("app.start_room_game") as start_game:
                 c3.emit("start_game", {"mode": "boom"})
@@ -183,7 +173,38 @@ class TestAppIntegration(unittest.TestCase):
         rec2 = self.c2.get_received()
         migrated = next(e for e in rec2 if e["name"] == "host_migrated")
         self.assertEqual(migrated["args"][0]["seat"], 1)
-        self.assertEqual(migrated["args"][0]["creator_sid"], room.creator_sid)
+
+    def test_rejoin_game_with_wrong_name_fails(self):
+        code = self._create_room()
+        room = rooms[code]
+        room.started = True
+
+        c3 = app.socketio.test_client(app.app, flask_test_client=self.http)
+        try:
+            c3.emit("rejoin_game", {"code": code, "name": "NotAlice"})
+            rec = c3.get_received()
+            err = next(e for e in rec if e["name"] == "rejoin_error")
+            self.assertEqual(err["args"][0]["key"], "error.name_not_in_room")
+        finally:
+            c3.disconnect()
+
+    def test_host_abort_game_host_only(self):
+        code = self._create_room()
+        self.c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
+        self.c1.get_received()
+        self.c2.get_received()
+        room = rooms[code]
+        room.started = True
+        # Non-host can't abort the game
+        with patch("app.abort_game") as abort:
+            self.c2.emit("host_abort_game")
+            rec = self.c2.get_received()
+            self.assertTrue(any(e["name"] == "error" for e in rec))
+            self.assertEqual(abort.call_count, 0)
+        # Host can abort
+        with patch("app.abort_game") as abort:
+            self.c1.emit("host_abort_game")
+            self.assertEqual(abort.call_count, 1)
 
 
 if __name__ == "__main__":
