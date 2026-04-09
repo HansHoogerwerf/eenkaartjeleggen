@@ -151,6 +151,7 @@ const TRANSLATIONS = {
         // ── Disconnect / Reconnect ──
         "log.disconnected": "{name} disconnected.",
         "log.reconnected": "{name} reconnected.",
+        "log.host_migrated": "{name} is now the host.",
 
         // ── Error messages (from server keys) ──
         "error.room_not_found": "Room not found.",
@@ -159,10 +160,16 @@ const TRANSLATIONS = {
         "error.seat_taken": "That seat is already taken.",
         "error.room_full": "Room is full.",
         "error.only_creator": "Only the room creator can start the game.",
+        "error.only_host": "Only the host can do that.",
         "error.enter_code": "Enter a 4-character room code.",
         "error.enter_name_join": "Choose a name before joining a room.",
-        "error.waiting_reconnect": "Waiting for {name} to reconnect...",
+        "error.waiting_reconnect": "Waiting for {name} to reconnect — the game will end if they don't return.",
+        "error.waiting_reconnect_countdown": "Waiting for {name} to reconnect — game ends in {seconds}s.",
         "error.reconnecting": "Lost connection — reconnecting…",
+        "error.missing_credentials": "Missing room code or name.",
+        "error.name_not_in_room": "You are not in this room.",
+        "error.seat_already_connected": "That seat is already taken by another connection.",
+        "btn.end_game": "End game now",
     },
 
     nl: {
@@ -315,6 +322,7 @@ const TRANSLATIONS = {
         // ── Verbinding verbroken / hersteld ──
         "log.disconnected": "{name} heeft de verbinding verbroken.",
         "log.reconnected": "{name} is opnieuw verbonden.",
+        "log.host_migrated": "{name} is nu de host.",
 
         // ── Foutmeldingen (van serversleutels) ──
         "error.room_not_found": "Kamer niet gevonden.",
@@ -323,10 +331,16 @@ const TRANSLATIONS = {
         "error.seat_taken": "Die stoel is al bezet.",
         "error.room_full": "Kamer is vol.",
         "error.only_creator": "Alleen de maker van de kamer kan het spel starten.",
+        "error.only_host": "Alleen de host kan dat doen.",
         "error.enter_code": "Voer een 4-karakter kamercode in.",
         "error.enter_name_join": "Kies een naam voordat je deelneemt aan een kamer.",
-        "error.waiting_reconnect": "Wachten tot {name} opnieuw verbindt...",
+        "error.waiting_reconnect": "Wachten tot {name} opnieuw verbindt — het spel eindigt als {name} niet terugkomt.",
+        "error.waiting_reconnect_countdown": "Wachten tot {name} opnieuw verbindt — spel eindigt over {seconds}s.",
         "error.reconnecting": "Verbinding verloren — opnieuw verbinden…",
+        "error.missing_credentials": "Kamercode of naam ontbreekt.",
+        "error.name_not_in_room": "Je zit niet in deze kamer.",
+        "error.seat_already_connected": "Die stoel is al door een andere verbinding ingenomen.",
+        "btn.end_game": "Spel nu beëindigen",
     },
 };
 
