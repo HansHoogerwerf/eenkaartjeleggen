@@ -444,6 +444,8 @@ socket.on("deal_done", data => {
 });
 
 socket.on("trump_offered", data => {
+    // New bidding round starting — clear any pass/declare badges from the previous round
+    clearBidBadges();
 
     const indicator = document.getElementById("trump-card-indicator");
     const card = document.getElementById("trump-card");
