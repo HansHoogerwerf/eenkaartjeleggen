@@ -292,6 +292,9 @@
     <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="paused-title">
         <h2 id="paused-title" data-i18n="modal.paused">Game Paused</h2>
         <p id="paused-msg" role="status" aria-live="polite"></p>
+        <div class="modal-buttons" id="paused-host-actions" style="display:none;">
+            <button type="button" class="btn-pass" id="paused-end-game-btn" onclick="hostAbortGame()" data-i18n="btn.end_game">End game now</button>
+        </div>
     </div>
 </div>
 

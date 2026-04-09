@@ -143,8 +143,6 @@ class Player(ABC):
 
 # ─── Human player ─────────────────────────────────────────────────────────────
 
-DISCONNECT_TIMEOUT = 300   # seconds to wait for a disconnected player
-
 
 class HumanPlayer(Player):
     """Human player that communicates via callback functions.
@@ -152,9 +150,18 @@ class HumanPlayer(Player):
     The callbacks are set by the web server (app.py) and use threading.Event
     to block the game thread until the human responds.
 
-    Supports disconnect/reconnect: when disconnected, the game thread pauses
-    (blocks on the event) until the player reconnects or DISCONNECT_TIMEOUT
-    expires (which interrupts the game).
+    Disconnect/reconnect model:
+      - When the player disconnects, `connected` is flipped to False but the
+        game thread continues to block on the event. A separate auto-close
+        greenlet (scheduled by the server's disconnect handler) will call
+        `interrupt()` after a configurable timeout, unblocking the game loop
+        with GameInterrupt.
+      - When the player reconnects, the server emits a `game_state_snapshot`
+        that directly carries any pending request data (via
+        `get_pending_request()`), so the client re-displays the input UI
+        without waiting for a separate request event. The game thread never
+        needs to re-fire its callback — it stays blocked on the same event
+        and is unblocked by the usual `supply_*` path.
     """
 
     def __init__(self, name: str, team: int, seat_idx: int = 0):
@@ -165,9 +172,10 @@ class HumanPlayer(Player):
         self._bid_result: bool = False
         self._interrupted = False
         self.connected = True
-        self.disconnect_timeout = DISCONNECT_TIMEOUT
 
-        # Track in-flight requests so set_reconnected() can re-fire them
+        # In-flight request state. The reconnect snapshot reads these to
+        # re-display the input UI. They're cleared when the request is
+        # satisfied or interrupted.
         self._pending_legal: list | None = None
         self._pending_bid_suit: str | None = None
         self._pending_bid_forced: bool = False
@@ -177,14 +185,15 @@ class HumanPlayer(Player):
         self._forced_suit_result: str | None = None
         self._pending_forced_suit = False
 
-        # Callbacks set by the web server
-        self._on_move_request = None   # fn(seat_idx, legal_cards)
-        self._on_bid_request = None    # fn(seat_idx, suit, forced)
+        # Callbacks set by the web server (fire on the INITIAL request only;
+        # re-display on reconnect is handled by the snapshot, not by re-firing)
+        self._on_move_request = None         # fn(seat_idx, legal_cards)
+        self._on_bid_request = None          # fn(seat_idx, suit, forced)
         self._on_forced_suit_request = None  # fn(seat_idx)
-        self._on_disconnect_pause = None  # fn(seat_idx) — notify others of pause
 
     def interrupt(self) -> None:
-        """Signal the player to stop waiting (game restart / disconnect timeout)."""
+        """Signal the game thread to stop waiting (new_game, leave_game,
+        disconnect auto-close timeout, or room shutdown)."""
         self._interrupted = True
         self._move_event.set()
         self._bid_event.set()
@@ -194,25 +203,41 @@ class HumanPlayer(Player):
         self._interrupted = False
 
     def set_disconnected(self) -> None:
-        """Mark player as disconnected. Game thread will pause at next input request."""
+        """Mark player as disconnected. The game thread keeps waiting on its
+        event — the auto-close greenlet is responsible for interrupting if
+        the player doesn't return in time."""
         self.connected = False
 
     def set_reconnected(self) -> None:
-        """Mark player as reconnected. If the game is paused waiting for this player,
-        re-fire the request callback so the browser gets the prompt again.
-        Clears pending state after firing to prevent double-fire from the disconnect loop."""
+        """Mark player as reconnected. The snapshot sent just before this
+        carries any pending request data, so no callback re-fire is needed."""
         self.connected = True
-        if self._pending_legal is not None and self._on_move_request:
-            legal = self._pending_legal
-            self._pending_legal = None
-            self._on_move_request(self.seat_idx, legal)
-        elif self._pending_bid_suit is not None and self._on_bid_request:
-            suit, forced = self._pending_bid_suit, self._pending_bid_forced
-            self._pending_bid_suit = None
-            self._on_bid_request(self.seat_idx, suit, forced)
-        elif self._pending_forced_suit and self._on_forced_suit_request:
-            self._pending_forced_suit = False
-            self._on_forced_suit_request(self.seat_idx)
+
+    def get_pending_request(self) -> dict | None:
+        """Return the in-flight input request, if any, as a serializable dict.
+        Used by build_game_state_snapshot to tell the reconnecting client
+        exactly which input UI to re-display."""
+        if self._pending_legal is not None:
+            return {
+                "type": "move",
+                "legal": [str(c) for c in self._pending_legal],
+            }
+        if self._pending_bid_suit is not None:
+            return {
+                "type": "bid",
+                "suit": self._pending_bid_suit,
+                "forced": self._pending_bid_forced,
+            }
+        if self._pending_forced_suit:
+            return {"type": "forced_suit"}
+        return None
+
+    def _wait_for_input(self, event: threading.Event) -> None:
+        """Block the game thread until human input arrives or interrupt fires.
+        No timeout: the auto-close greenlet is the authoritative timeout."""
+        event.wait()
+        if self._interrupted:
+            raise GameInterrupt()
 
     def choose_card(self, trick: Trick, trump: str) -> Card:
         legal = self.legal_moves(trick, trump)
@@ -223,26 +248,12 @@ class HumanPlayer(Player):
         if self.connected and self._on_move_request:
             self._on_move_request(self.seat_idx, legal)
 
-        # If disconnected, notify others and wait for reconnect (with timeout)
-        if not self.connected:
-            if self._on_disconnect_pause:
-                self._on_disconnect_pause(self.seat_idx)
-            # Block until reconnect sets connected=True and re-fires move request
-            while not self.connected and not self._interrupted:
-                self._move_event.wait(timeout=1.0)
-                self._move_event.clear()
-            if self._interrupted:
-                self._pending_legal = None
-                raise GameInterrupt()
-            # Player reconnected — fire the request again (if set_reconnected didn't already)
-            if self._pending_legal is not None and self._on_move_request:
-                self._on_move_request(self.seat_idx, legal)
+        try:
+            self._wait_for_input(self._move_event)
+        finally:
+            self._pending_legal = None
 
-        self._move_event.wait(timeout=self.disconnect_timeout)
-        self._pending_legal = None
-        if self._interrupted or self._chosen_card is None:
-            if not self._interrupted:
-                self._interrupted = True  # timeout
+        if self._chosen_card is None:
             raise GameInterrupt()
         card = self._chosen_card
         self.hand.remove(card)
@@ -266,23 +277,11 @@ class HumanPlayer(Player):
         if self.connected and self._on_bid_request:
             self._on_bid_request(self.seat_idx, suit, forced)
 
-        if not self.connected:
-            if self._on_disconnect_pause:
-                self._on_disconnect_pause(self.seat_idx)
-            while not self.connected and not self._interrupted:
-                self._bid_event.wait(timeout=1.0)
-                self._bid_event.clear()
-            if self._interrupted:
-                self._pending_bid_suit = None
-                raise GameInterrupt()
-            # Player reconnected — fire the request again (if set_reconnected didn't already)
-            if self._pending_bid_suit is not None and self._on_bid_request:
-                self._on_bid_request(self.seat_idx, suit, forced)
+        try:
+            self._wait_for_input(self._bid_event)
+        finally:
+            self._pending_bid_suit = None
 
-        self._bid_event.wait(timeout=self.disconnect_timeout)
-        self._pending_bid_suit = None
-        if self._interrupted:
-            raise GameInterrupt()
         return self._bid_result
 
     def supply_bid(self, declare: bool) -> None:
@@ -299,23 +298,12 @@ class HumanPlayer(Player):
         if self.connected and self._on_forced_suit_request:
             self._on_forced_suit_request(self.seat_idx)
 
-        if not self.connected:
-            if self._on_disconnect_pause:
-                self._on_disconnect_pause(self.seat_idx)
-            while not self.connected and not self._interrupted:
-                self._forced_suit_event.wait(timeout=1.0)
-                self._forced_suit_event.clear()
-            if self._interrupted:
-                self._pending_forced_suit = False
-                raise GameInterrupt()
-            if self._pending_forced_suit and self._on_forced_suit_request:
-                self._on_forced_suit_request(self.seat_idx)
+        try:
+            self._wait_for_input(self._forced_suit_event)
+        finally:
+            self._pending_forced_suit = False
 
-        self._forced_suit_event.wait(timeout=self.disconnect_timeout)
-        self._pending_forced_suit = False
-        if self._interrupted or self._forced_suit_result is None:
-            if not self._interrupted:
-                self._interrupted = True
+        if self._forced_suit_result is None:
             raise GameInterrupt()
         return self._forced_suit_result
 

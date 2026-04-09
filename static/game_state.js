@@ -25,7 +25,8 @@ const VISUAL_TRICK_SLOTS = ["trick-s", "trick-w", "trick-n", "trick-e"];
 
 let mySeat = 0;
 let roomCode = null;
-let isCreator = false;
+let isCreator = false;            // alias of isHost (kept for legacy callers)
+let isHost = false;
 let playerNames = {};
 let currentLegal = [];
 let teamNames = ["Team 0", "Team 1"];
@@ -34,10 +35,9 @@ let userHandOrder = [];         // card strings in user's preferred order (drag-
 let dragSrcIndex = null;        // index of card being dragged
 let trickPlayCount = 0;         // cards played so far in the current trick (0–4)
 
-/* ─── Session persistence (auto-reconnect on page reload) ─────────────────
+/* ─── Session persistence ────────────────────────────────────────────────
    Stores {code, name} in localStorage so the player is automatically
-   put back into their seat if they reload or briefly lose connection.
-   Cleared when the game ends normally.
+   reconnected on page reload. Name is the stable identity for reconnect.
 */
 const SESSION_KEY = "klaverjas_session";
 function saveSession(code, name) {
@@ -54,30 +54,121 @@ function loadPlayerName() {
     try { return localStorage.getItem("klaverjas_player_name") || null; } catch(e) { return null; }
 }
 
-/* On every socket connection (initial load AND mid-game reconnects):
-   - If the lobby is visible and we have a session → show reconnecting UI
-   - If the game is already showing (mid-game socket reconnect) → silently rejoin
-     and hide the paused overlay once the server confirms with "reconnected".
+/* ─── ConnectionFSM ──────────────────────────────────────────────────────
+   Single source of truth for the client connection state. The UI overlays
+   and rejoin attempts are driven from this — no scattered ad-hoc handlers.
+
+   States:
+     IDLE       — no session, sitting on the lobby form
+     LOBBY      — in a room's waiting room (lobby visible, game not started)
+     IN_GAME    — game running, this client has a confirmed seat
+     RECONNECTING — socket dropped or game-state desync; trying to rejoin
+     LEFT       — user explicitly left; do not auto-reconnect
+
+   Transitions are triggered by Socket.IO events (room_created, room_joined,
+   game_starting, game_state_snapshot, disconnect, etc.) and by user actions.
 */
-socket.on("connect", () => {
-    const session = loadSession();
-    if (!session) return;
-    const lobbyVisible = document.getElementById("lobby-overlay").classList.contains("active");
-    if (lobbyVisible) {
-        showAutoReconnecting();
-    }
-    socket.emit("join_room", {code: session.code, name: session.name});
+const ConnState = Object.freeze({
+    IDLE: "IDLE",
+    LOBBY: "LOBBY",
+    IN_GAME: "IN_GAME",
+    RECONNECTING: "RECONNECTING",
+    LEFT: "LEFT",
 });
 
-/* Show the paused overlay immediately when our own socket drops, so the
-   player sees feedback at once rather than waiting for the server ping
-   timeout to fire (which can take 10–40 s). */
+const ConnectionFSM = {
+    state: ConnState.IDLE,
+    _rejoinTimer: null,
+
+    set(next) {
+        if (this.state === next) return;
+        this.state = next;
+        this._applyOverlays();
+    },
+
+    is(state) { return this.state === state; },
+
+    /* Called by socket.on("connect"). If we have a session and aren't in the
+       LEFT state, attempt to rejoin. */
+    onSocketConnect() {
+        if (this.state === ConnState.LEFT) return;
+        const session = loadSession();
+        if (!session) {
+            this.set(ConnState.IDLE);
+            return;
+        }
+        // We have a session — rejoin. The server's reply (game_state_snapshot
+        // for an in-progress game, room_joined for the lobby, or rejoin_error)
+        // will move us to the right state.
+        this.set(ConnState.RECONNECTING);
+        socket.emit("rejoin_game", {code: session.code, name: session.name});
+    },
+
+    /* Called by socket.on("disconnect"). Show the paused overlay so the user
+       gets immediate feedback while Socket.IO retries underneath. */
+    onSocketDisconnect() {
+        if (this.state === ConnState.LEFT || this.state === ConnState.IDLE) return;
+        // Stay logically in the same room state, but switch to RECONNECTING
+        // overlay treatment.
+        const wasInGame = this.state === ConnState.IN_GAME;
+        this.set(ConnState.RECONNECTING);
+        // Remember whether to return to game or lobby on success
+        this._wasInGame = wasInGame;
+    },
+
+    /* Called when the server confirms our seat (room_joined / room_created). */
+    onLobbyJoined() {
+        this.set(ConnState.LOBBY);
+    },
+
+    /* Called when game_starting or game_state_snapshot arrives. */
+    onGameJoined() {
+        this.set(ConnState.IN_GAME);
+    },
+
+    /* User explicitly left (leave_room or leave_game). No auto-reconnect. */
+    onLeave() {
+        clearSession();
+        this.set(ConnState.LEFT);
+        // After a brief moment, allow new sessions
+        setTimeout(() => {
+            if (this.state === ConnState.LEFT) this.set(ConnState.IDLE);
+        }, 300);
+    },
+
+    /* Hide all overlays and let the lobby take over. */
+    onIdle() {
+        this.set(ConnState.IDLE);
+    },
+
+    _applyOverlays() {
+        const paused = document.getElementById("paused-overlay");
+        const lobbyOverlay = document.getElementById("lobby-overlay");
+        if (!paused || !lobbyOverlay) return;
+
+        if (this.state === ConnState.RECONNECTING) {
+            const lobbyVisible = lobbyOverlay.classList.contains("active");
+            if (lobbyVisible) {
+                showAutoReconnecting();
+            } else {
+                const msgEl = document.getElementById("paused-msg");
+                if (msgEl) msgEl.textContent = t("error.reconnecting");
+                paused.classList.add("active");
+            }
+        } else if (this.state === ConnState.IN_GAME) {
+            paused.classList.remove("active");
+        } else if (this.state === ConnState.LOBBY || this.state === ConnState.IDLE) {
+            paused.classList.remove("active");
+        }
+    },
+};
+
+socket.on("connect", () => {
+    ConnectionFSM.onSocketConnect();
+});
+
 socket.on("disconnect", () => {
-    const lobbyVisible = document.getElementById("lobby-overlay").classList.contains("active");
-    if (!lobbyVisible) {
-        document.getElementById("paused-msg").textContent = t("error.reconnecting");
-        document.getElementById("paused-overlay").classList.add("active");
-    }
+    ConnectionFSM.onSocketDisconnect();
 });
 
 /* ─── Seat rotation ───────────────────────────────────────────────────

@@ -10,6 +10,12 @@ function createRoom() {
     socket.emit("create_room", {name});
 }
 
+// Tracks a manual lobby join attempt (name + code typed by the user). When
+// set, the client falls back to rejoin_game if peek_room reports the room is
+// already in progress, so that returning players can reconnect by re-entering
+// their name + room code without relying on saved localStorage session data.
+let manualJoinIntent = null;
+
 function peekRoom() {
     const name = document.getElementById("lobby-name").value.trim();
     if (!name) {
@@ -23,6 +29,7 @@ function peekRoom() {
         showLobbyError(t("error.enter_code"));
         return;
     }
+    manualJoinIntent = {code, name};
     socket.emit("peek_room", {code});
 }
 
@@ -154,6 +161,7 @@ function showAutoReconnecting() {
 
 function cancelAutoReconnect() {
     clearSession();
+    ConnectionFSM.onLeave();
     document.getElementById("lobby-reconnecting").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "block";
     document.getElementById("lobby-actions").style.display = "block";
@@ -257,6 +265,7 @@ function cancelLobby() {
     clearSession();
     history.replaceState(null, "", window.location.pathname);
     socket.emit("leave_room");
+    ConnectionFSM.onLeave();
     document.getElementById("lobby-waiting").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "block";
     document.getElementById("lobby-actions").style.display = "block";
@@ -359,30 +368,70 @@ function updateLobbySeats(lobby) {
 socket.on("room_created", data => {
     roomCode = data.code;
     mySeat = data.seat;
-    isCreator = true;
+    isHost = data.is_host === true;
+    isCreator = isHost;
     const name = document.getElementById("lobby-name").value.trim()
         || (loadSession() || {}).name
         || t("lobby.name_placeholder");
     saveSession(data.code, name);
+    ConnectionFSM.onLobbyJoined();
     showWaitingRoom(data.lobby);
 });
 
 socket.on("room_joined", data => {
     roomCode = data.code;
     mySeat = data.seat;
-    isCreator = data.is_creator === true;
+    isHost = data.is_host === true;
+    isCreator = isHost;
     const name = document.getElementById("lobby-name").value.trim()
         || (loadSession() || {}).name
         || t("lobby.name_placeholder");
     saveSession(data.code, name);
+    ConnectionFSM.onLobbyJoined();
     showWaitingRoom(data.lobby);
 });
 
+socket.on("rejoin_error", data => {
+    // Server rejected our rejoin attempt. Two cases:
+    //  1. Manual entry fallback (peek_room → game_in_progress → rejoin_game):
+    //     just show the error and let the user correct their input. Don't
+    //     clear any saved session — it may still be valid for another room.
+    //  2. Auto-reconnect from saved session: the saved session is bad, so
+    //     clear it and return to the lobby form pre-filled with what we had.
+    const msg = data.key ? t(data.key) : (data.msg || "Error");
+    if (manualJoinIntent) {
+        manualJoinIntent = null;
+        ConnectionFSM.onIdle();
+        showLobbyError(msg);
+        return;
+    }
+    const session = loadSession();
+    cancelAutoReconnect(); // clears session and shows the lobby form
+    if (session) {
+        const nameEl = document.getElementById("lobby-name");
+        const codeEl = document.getElementById("join-code");
+        if (nameEl && !nameEl.value) nameEl.value = session.name;
+        if (codeEl && !codeEl.value) codeEl.value = session.code;
+    }
+    ConnectionFSM.onIdle();
+    showLobbyError(msg);
+});
+
 socket.on("room_peeked", data => {
+    manualJoinIntent = null;
     showSeatPicker(data.lobby);
 });
 
 socket.on("join_error", data => {
+    // Game in progress + manual entry → try reconnecting by name instead.
+    // This is the primary path for users without a stored session (cleared
+    // browser data, fresh device, etc.) to rejoin a started game.
+    if (data.key === "error.game_in_progress" && manualJoinIntent) {
+        const intent = manualJoinIntent;
+        ConnectionFSM.set(ConnState.RECONNECTING);
+        socket.emit("rejoin_game", {code: intent.code, name: intent.name});
+        return;
+    }
     if (document.getElementById("lobby-reconnecting").style.display !== "none") {
         // Auto-reconnect failed — pre-fill form so user can try manually
         const session = loadSession();
@@ -394,13 +443,45 @@ socket.on("join_error", data => {
         }
         cancelAutoReconnect(); // also clears session
     }
+    manualJoinIntent = null;
+    ConnectionFSM.onIdle();
     const msg = data.key ? t(data.key) : (data.msg || "Error");
     showLobbyError(msg);
 });
 
 socket.on("lobby_update", data => {
+    // Sync host status from authoritative server data
+    if (typeof data.host_seat === "number") {
+        const wasHost = isHost;
+        isHost = (data.host_seat === mySeat);
+        isCreator = isHost;
+        if (!wasHost && isHost) {
+            // Just became host — make host-only buttons visible if we're in-game
+            const inGame = !document.getElementById("lobby-overlay").classList.contains("active");
+            if (inGame) {
+                document.getElementById("gameover-newgame-btn").style.display = "inline-block";
+                document.getElementById("gameover-banner-newgame-btn").style.display = "inline-block";
+            }
+        }
+    }
     if (document.getElementById("lobby-waiting").style.display !== "none") {
         updateLobbySeats(data);
+    }
+});
+
+socket.on("host_migrated", data => {
+    if (typeof data.seat === "number") {
+        isHost = (data.seat === mySeat);
+        isCreator = isHost;
+        const inGame = !document.getElementById("lobby-overlay").classList.contains("active");
+        if (inGame) {
+            const display = isHost ? "inline-block" : "none";
+            document.getElementById("gameover-newgame-btn").style.display = display;
+            document.getElementById("gameover-banner-newgame-btn").style.display = display;
+        }
+        if (data.name) {
+            appendLog(t("log.host_migrated", {name: data.name}), "");
+        }
     }
 });
 
@@ -409,16 +490,18 @@ socket.on("game_starting", data => {
     playerNames = data.player_names;
     if (data.team_names) teamNames = data.team_names;
 
+    ConnectionFSM.onGameJoined();
+
     // Hide lobby, show game
     document.getElementById("lobby-overlay").classList.remove("active");
     updateSeatLabels();
     updateScores([0, 0]);
 
-    // Show gameover New Game button only for creator; Leave/Close button for everyone
-    const creatorDisplay = isCreator ? "inline-block" : "none";
-    document.getElementById("gameover-newgame-btn").style.display = creatorDisplay;
+    // Show gameover New Game button only for host; Leave/Close button for everyone
+    const hostDisplay = isHost ? "inline-block" : "none";
+    document.getElementById("gameover-newgame-btn").style.display = hostDisplay;
     document.getElementById("gameover-close-btn").style.display = "inline-block";
-    document.getElementById("gameover-banner-newgame-btn").style.display = creatorDisplay;
+    document.getElementById("gameover-banner-newgame-btn").style.display = hostDisplay;
     document.getElementById("leave-game-btn").style.display = "inline-block";
 });
 
@@ -585,23 +668,23 @@ socket.on("request_move", data => {
     renderMyHand(cards, data.legal);
 });
 
-socket.on("request_bid", data => {
+function displayBidOverlay(suit, forced, leaderName) {
     const overlay = document.getElementById("bid-overlay");
     const suitDiv = document.getElementById("bid-suit");
     const msgDiv = document.getElementById("bid-msg");
     const btnsDiv = document.getElementById("bid-buttons");
 
-    suitDiv.className = `bid-suit ${isRed(data.suit) ? "red" : "black"}`;
-    suitDiv.textContent = `${data.suit}  ${tSuit(data.suit)}`;
+    suitDiv.className = `bid-suit ${isRed(suit) ? "red" : "black"}`;
+    suitDiv.textContent = `${suit}  ${tSuit(suit)}`;
 
     msgDiv.innerHTML = "";
     const mainMsg = document.createElement("div");
-    mainMsg.textContent = data.forced ? t("bid.forced") : t("bid.optional");
+    mainMsg.textContent = forced ? t("bid.forced") : t("bid.optional");
     msgDiv.appendChild(mainMsg);
-    if (data.leader_name) {
+    if (leaderName) {
         const leaderMsg = document.createElement("div");
         leaderMsg.className = "bid-leader-note";
-        leaderMsg.textContent = t("bid.leader", {name: data.leader_name});
+        leaderMsg.textContent = t("bid.leader", {name: leaderName});
         msgDiv.appendChild(leaderMsg);
     }
 
@@ -616,7 +699,7 @@ socket.on("request_bid", data => {
     };
     btnsDiv.appendChild(declareBtn);
 
-    if (!data.forced) {
+    if (!forced) {
         const passBtn = document.createElement("button");
         passBtn.className = "btn-pass";
         passBtn.textContent = t("bid.pass");
@@ -628,9 +711,9 @@ socket.on("request_bid", data => {
     }
 
     overlay.classList.add("active");
-});
+}
 
-socket.on("request_forced_suit", () => {
+function displayForcedSuitOverlay() {
     const overlay = document.getElementById("bid-overlay");
     const suitDiv = document.getElementById("bid-suit");
     const msgDiv = document.getElementById("bid-msg");
@@ -654,52 +737,150 @@ socket.on("request_forced_suit", () => {
     }
 
     overlay.classList.add("active");
+}
+
+socket.on("request_bid", data => {
+    displayBidOverlay(data.suit, data.forced, data.leader_name);
+});
+
+socket.on("request_forced_suit", () => {
+    displayForcedSuitOverlay();
 });
 
 /* ─── Disconnect / Reconnect ──────────────────────────────────────────── */
 
-socket.on("player_disconnected", data => {
-    document.getElementById("paused-msg").textContent = t("error.waiting_reconnect", {name: data.name});
+/* Another player dropped — show paused overlay with their name and a
+   countdown showing how long the host has before the seat auto-closes. */
+let pausedCountdownTimer = null;
+let pausedSeatIdx = null;
+let pausedSeatName = null;
+
+function startPausedCountdown(seat, name, seconds) {
+    stopPausedCountdown();
+    pausedSeatIdx = seat;
+    pausedSeatName = name;
+    let remaining = seconds;
+    const update = () => {
+        const msg = document.getElementById("paused-msg");
+        if (!msg) return;
+        msg.textContent = t("error.waiting_reconnect_countdown", {name, seconds: remaining});
+    };
+    update();
+    pausedCountdownTimer = setInterval(() => {
+        remaining -= 1;
+        if (remaining <= 0) {
+            stopPausedCountdown();
+            return;
+        }
+        update();
+    }, 1000);
+}
+
+function stopPausedCountdown() {
+    if (pausedCountdownTimer) {
+        clearInterval(pausedCountdownTimer);
+        pausedCountdownTimer = null;
+    }
+    pausedSeatIdx = null;
+    pausedSeatName = null;
+    const hostActions = document.getElementById("paused-host-actions");
+    if (hostActions) hostActions.style.display = "none";
+}
+
+function hostAbortGame() {
+    if (!isHost) return;
+    socket.emit("host_abort_game");
+}
+
+socket.on("seat_disconnected", data => {
+    const msg = document.getElementById("paused-msg");
+    if (msg) {
+        msg.textContent = t("error.waiting_reconnect", {name: data.name});
+    }
     document.getElementById("paused-overlay").classList.add("active");
+    pausedSeatIdx = data.seat;
+    if (typeof data.reconnect_timeout_seconds === "number") {
+        startPausedCountdown(data.seat, data.name, data.reconnect_timeout_seconds);
+    }
+    // Show "End game" button only to the host
+    const hostActions = document.getElementById("paused-host-actions");
+    if (hostActions) hostActions.style.display = isHost ? "block" : "none";
 });
 
-socket.on("game_paused", data => {
-    const msg = data.key ? t(data.key, {name: data.name}) : data.msg;
-    document.getElementById("paused-msg").textContent = msg;
-    document.getElementById("paused-overlay").classList.add("active");
-});
-
-socket.on("player_reconnected", data => {
+socket.on("seat_reconnected", data => {
+    stopPausedCountdown();
     document.getElementById("paused-overlay").classList.remove("active");
     appendLog(t("log.reconnected", {name: data.name}), "winner");
 });
 
-socket.on("reconnected", data => {
-    // We reconnected to a running game
+/* ─── Full game-state snapshot (the reconnect payload) ──────────────────
+   Single-source-of-truth restore. The server sends this when the player
+   rejoins via rejoin_game. We wipe the relevant UI bits and rebuild
+   everything from the snapshot — including any in-flight input request,
+   so a stuck game (waiting on this player to bid/play) immediately
+   re-displays the correct prompt.
+*/
+socket.on("game_state_snapshot", data => {
+    manualJoinIntent = null;
     roomCode = data.code;
     mySeat = data.seat;
-    playerNames = data.player_names;
-    if (data.is_creator !== undefined) isCreator = data.is_creator;
+    playerNames = data.player_names || playerNames;
+    if (typeof data.is_host === "boolean") {
+        isHost = data.is_host;
+        isCreator = isHost;
+    }
     if (data.team_names) teamNames = data.team_names;
 
+    // Persist session so subsequent reloads/disconnects auto-rejoin
+    const sessionName = (playerNames && playerNames[mySeat])
+        || (loadSession() || {}).name
+        || document.getElementById("lobby-name").value.trim();
+    if (sessionName) saveSession(data.code, sessionName);
+
+    ConnectionFSM.onGameJoined();
+    stopPausedCountdown();
+
+    // Hide lobby + paused overlays
     document.getElementById("lobby-overlay").classList.remove("active");
     document.getElementById("paused-overlay").classList.remove("active");
+
+    // Reset visible game state before restoring
+    clearTrickArea();
+    clearBidBadges();
+    clearDeclaringHighlight();
+    hideTurnArrow();
+    currentLegal = [];
+    currentTrump = null;
+    userHandOrder = [];
+    trickPlayCount = 0;
+    const bidOverlay = document.getElementById("bid-overlay");
+    if (bidOverlay) bidOverlay.classList.remove("active");
+    const trumpInd = document.getElementById("trump-card-indicator");
+    if (trumpInd) trumpInd.classList.remove("active");
+
+    // Action buttons
     document.getElementById("leave-game-btn").style.display = "inline-block";
-    const creatorDisplay = isCreator ? "inline-block" : "none";
-    document.getElementById("gameover-newgame-btn").style.display = creatorDisplay;
+    const hostDisplay = isHost ? "inline-block" : "none";
+    document.getElementById("gameover-newgame-btn").style.display = hostDisplay;
     document.getElementById("gameover-close-btn").style.display = "inline-block";
-    document.getElementById("gameover-banner-newgame-btn").style.display = creatorDisplay;
+    document.getElementById("gameover-banner-newgame-btn").style.display = hostDisplay;
+
     updateSeatLabels();
-    updateScores(data.scores);
-    updateRoundScores(data.cur_tricks, data.cur_roem);
+    updateScores(data.scores || [0, 0]);
+    updateRoundScores(data.cur_tricks || [0, 0], data.cur_roem || [0, 0]);
 
-    if (data.hand) renderMyHand(data.hand, []);
-    if (data.card_counts) renderOtherCards(data.card_counts);
+    // Restore log messages (do this before trick events so order is sane)
+    const logEl = document.getElementById("log") || document.getElementById("game-log");
+    if (logEl) logEl.innerHTML = "";
+    if (Array.isArray(data.log_messages)) {
+        for (const entry of data.log_messages) {
+            appendLog(entry.msg, entry.tag || "");
+        }
+    }
 
-    // Restore trump indicator
+    // Restore trump indicator and declaring highlight
     if (data.trump) {
-
-        clearDeclaringHighlight();
+        currentTrump = data.trump;
         if (data.declaring_player_idx !== null && data.declaring_player_idx !== undefined) {
             showDeclaringHighlight(data.declaring_player_idx, data.trump);
         }
@@ -712,13 +893,33 @@ socket.on("reconnected", data => {
         }
     }
 
-    // Restore any cards already played in the current trick
+    // Restore hand and other-player card counts
+    if (data.hand) renderMyHand(data.hand, []);
+    if (data.card_counts) renderOtherCards(data.card_counts);
+
+    // Restore in-progress trick
     if (data.trick_cards) {
-        for (const [pidxStr, c] of Object.entries(data.trick_cards)) {
+        const entries = Object.entries(data.trick_cards);
+        trickPlayCount = entries.length;
+        for (const [pidxStr, c] of entries) {
             showCardInTrick(parseInt(pidxStr), c);
         }
     }
 
+    // Restore any pending input request — this is the "stuck game" fix.
+    // The snapshot directly carries what the player was being asked for, so
+    // the input UI re-opens without needing a separate request_* event.
+    if (data.pending_request) {
+        const req = data.pending_request;
+        if (req.type === "move") {
+            currentLegal = req.legal || [];
+            if (data.hand) renderMyHand(data.hand, currentLegal);
+        } else if (req.type === "bid") {
+            displayBidOverlay(req.suit, req.forced, null);
+        } else if (req.type === "forced_suit") {
+            displayForcedSuitOverlay();
+        }
+    }
 });
 
 /* ─── Hands viewer ────────────────────────────────────────────────────── */
@@ -872,11 +1073,13 @@ function leaveGame() {
 function confirmLeave() {
     document.getElementById("leave-overlay").classList.remove("active");
     clearSession();
+    ConnectionFSM.onLeave();
     socket.emit("leave_game");
 }
 
 socket.on("game_aborted", data => {
     // Game was interrupted (e.g. player disconnect timeout) — return to lobby
+    stopPausedCountdown();
     document.getElementById("leave-game-btn").style.display = "none";
     document.getElementById("nextround-banner").classList.remove("active");
     document.getElementById("gameover-banner").classList.remove("active");
@@ -885,12 +1088,14 @@ socket.on("game_aborted", data => {
     document.getElementById("lobby-actions").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
     document.getElementById("lobby-overlay").classList.add("active");
+    ConnectionFSM.set(ConnState.LOBBY);
     const msg = data.key ? t(data.key) : "The game was aborted.";
     showLobbyError(msg);
 });
 
 socket.on("game_left", data => {
     // Return everyone to the lobby
+    stopPausedCountdown();
     clearSession();
     history.replaceState(null, "", window.location.pathname);
     document.getElementById("leave-game-btn").style.display = "none";
@@ -901,8 +1106,10 @@ socket.on("game_left", data => {
     document.getElementById("lobby-name-section").style.display = "block";
     document.getElementById("lobby-actions").style.display = "block";
     document.getElementById("lobby-overlay").classList.add("active");
+    ConnectionFSM.onLeave();
     showLobbyError(t("msg.game_left", {name: data.name}));
     roomCode = null;
+    isHost = false;
     isCreator = false;
 });
 
