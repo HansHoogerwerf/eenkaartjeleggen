@@ -62,6 +62,7 @@ class RolloutBuffer:
     values:     torch.Tensor   # [T] float
     rewards:    torch.Tensor   # [T] float
     masks:      torch.Tensor   # [T, 32] float
+    valid:      torch.Tensor = field(default_factory=lambda: torch.empty(0))  # [T] float, 1 for trained-policy transitions
     advantages: torch.Tensor = field(default_factory=lambda: torch.empty(0))
     returns:    torch.Tensor = field(default_factory=lambda: torch.empty(0))
 
@@ -69,18 +70,21 @@ class RolloutBuffer:
 def collect_rollout(
     engine: KlaverjasGPUEngine,
     model: KlaverjasActorCritic,
+    opponent_model: KlaverjasActorCritic,
     steps: int,
     temperature: float,
     device: torch.device,
+    our_team: int = 0,
 ) -> RolloutBuffer:
-    """Run `steps` steps across all B games, return a flat RolloutBuffer.
+    """Eager-mode rollout (fallback path; see GraphRollout for the fast path).
 
-    Reward = round-outcome for all transitions in a round (assigned at
-    round_done signal).  Intermediate steps get reward=0; the last step
-    of a round inherits the full round reward.  This is equivalent to
-    what train_selfplay.py does, but fully on GPU.
+    Seats on `our_team` use `model` (the trained policy); the other two seats
+    use the frozen `opponent_model`. Transitions carry a `valid` mask = 1 for
+    our-team steps, 0 otherwise, so PPO loss only backprops through decisions
+    our policy actually made.
     """
     B = engine.B
+    is_ours_per_seat = (engine.SEAT_TEAM == our_team)  # [4] bool
 
     all_states    = torch.zeros(steps, B, 267, dtype=torch.float32, device=device)
     all_actions   = torch.zeros(steps, B, dtype=torch.long, device=device)
@@ -88,41 +92,190 @@ def collect_rollout(
     all_values    = torch.zeros(steps, B, dtype=torch.float32, device=device)
     all_masks     = torch.zeros(steps, B, 32, dtype=torch.float32, device=device)
     all_rewards   = torch.zeros(steps, B, dtype=torch.float32, device=device)
+    all_valid     = torch.zeros(steps, B, dtype=torch.float32, device=device)
 
     model.eval()
+    opponent_model.eval()
     with torch.no_grad():
         for t in range(steps):
-            feats, masks = engine.get_state()   # [B,267], [B,32]
+            feats, masks = engine.get_state()
+            cur_seat = engine.current_seat
+            is_ours = is_ours_per_seat[cur_seat]  # [B] bool
 
             logits, values = model(feats)
             logits = logits.masked_fill(masks == 0, float("-inf"))
             if temperature != 1.0:
                 logits = logits / temperature
             probs = F.softmax(logits, dim=-1)
-            dist  = Categorical(probs)
-            acts  = dist.sample()
-            lps   = dist.log_prob(acts)
+            dist  = Categorical(probs, validate_args=False)
+            our_acts = dist.sample()
+
+            opp_logits, _ = opponent_model(feats)
+            opp_logits = opp_logits.masked_fill(masks == 0, float("-inf"))
+            if temperature != 1.0:
+                opp_logits = opp_logits / temperature
+            opp_probs = F.softmax(opp_logits, dim=-1)
+            opp_dist  = Categorical(opp_probs, validate_args=False)
+            opp_acts  = opp_dist.sample()
+
+            acts = torch.where(is_ours, our_acts, opp_acts)
+            lps  = dist.log_prob(acts)
 
             all_states[t]    = feats
             all_actions[t]   = acts
             all_log_probs[t] = lps
             all_values[t]    = values
             all_masks[t]     = masks
+            all_valid[t]     = is_ours.float()
 
-            rewards, round_done = engine.step(acts)   # [B], [B]
+            rewards, _ = engine.step(acts)
             all_rewards[t] = rewards
 
-    # Flatten: [steps, B] → [steps*B]
     T = steps * B
-    buf = RolloutBuffer(
+    return RolloutBuffer(
         states    = all_states.reshape(T, 267),
         actions   = all_actions.reshape(T),
         log_probs = all_log_probs.reshape(T),
         values    = all_values.reshape(T),
         rewards   = all_rewards.reshape(T),
         masks     = all_masks.reshape(T, 32),
+        valid     = all_valid.reshape(T),
     )
-    return buf
+
+
+# ─── CUDA-graph-captured rollout ──────────────────────────────────────────────
+
+class GraphRollout:
+    """Captures the full rollout loop as a CUDA graph and replays it.
+
+    Requires the engine to be sync-free (no .item()/.any() in hot path)
+    and all state mutations to happen in-place at fixed memory addresses.
+    See tools/gpu_engine.py for the Phase-1 refactor that made this possible.
+
+    Usage:
+        rollout = GraphRollout(engine, model, steps, temperature, device)
+        buf = rollout.run()   # captures on first call, replays thereafter
+    """
+
+    def __init__(
+        self,
+        engine: KlaverjasGPUEngine,
+        model: KlaverjasActorCritic,
+        opponent_model: KlaverjasActorCritic,
+        steps: int,
+        temperature: float,
+        device: torch.device,
+        our_team: int = 0,
+    ):
+        self.engine = engine
+        self.model  = model
+        self.opponent_model = opponent_model
+        self.steps  = steps
+        self.device = device
+        self.B      = engine.B
+
+        # Temperature as a tensor so callers can update it without re-capturing
+        self._temp = torch.tensor(temperature, dtype=torch.float32, device=device)
+
+        # Per-seat lookup: True if seat belongs to the trained policy's team.
+        # Static [4]-long tensor → indexable inside graph capture.
+        self._is_ours_per_seat = (engine.SEAT_TEAM == our_team)
+
+        S, B = steps, self.B
+        # Output buffers (pre-allocated, static memory addresses)
+        self.states    = torch.zeros(S, B, 267, dtype=torch.float32, device=device)
+        self.actions   = torch.zeros(S, B, dtype=torch.long, device=device)
+        self.log_probs = torch.zeros(S, B, dtype=torch.float32, device=device)
+        self.values    = torch.zeros(S, B, dtype=torch.float32, device=device)
+        self.masks     = torch.zeros(S, B, 32, dtype=torch.float32, device=device)
+        self.rewards   = torch.zeros(S, B, dtype=torch.float32, device=device)
+        self.valid     = torch.zeros(S, B, dtype=torch.float32, device=device)
+
+        self.graph: torch.cuda.CUDAGraph | None = None
+
+    def set_temperature(self, value: float) -> None:
+        """Update temperature without re-capturing the graph."""
+        self._temp.fill_(value)
+
+    def _body(self) -> None:
+        """One rollout: executed during warmup and captured into the graph.
+
+        Trained policy picks actions on `our_team` seats; frozen opponent picks
+        on the other two seats. Only our-team transitions contribute to the PPO
+        loss (see `valid` mask). All writes use in-place .copy_() into
+        pre-allocated buffers so memory addresses are static across replays.
+        """
+        for t in range(self.steps):
+            feats, masks = self.engine.get_state()
+            cur_seat = self.engine.current_seat
+            is_ours = self._is_ours_per_seat[cur_seat]  # [B] bool
+
+            # Trained policy forward
+            logits, values = self.model(feats)
+            logits = logits.masked_fill(masks == 0, float("-inf"))
+            logits = logits / self._temp
+            probs  = F.softmax(logits, dim=-1)
+            dist   = Categorical(probs, validate_args=False)
+            our_acts = dist.sample()
+
+            # Frozen opponent forward
+            opp_logits, _ = self.opponent_model(feats)
+            opp_logits = opp_logits.masked_fill(masks == 0, float("-inf"))
+            opp_logits = opp_logits / self._temp
+            opp_probs  = F.softmax(opp_logits, dim=-1)
+            opp_dist   = Categorical(opp_probs, validate_args=False)
+            opp_acts   = opp_dist.sample()
+
+            acts = torch.where(is_ours, our_acts, opp_acts)
+            lps  = dist.log_prob(acts)
+
+            self.states[t].copy_(feats)
+            self.actions[t].copy_(acts)
+            self.log_probs[t].copy_(lps)
+            self.values[t].copy_(values)
+            self.masks[t].copy_(masks)
+            self.valid[t].copy_(is_ours.float())
+
+            rewards, _ = self.engine.step(acts)
+            self.rewards[t].copy_(rewards)
+
+    def capture(self) -> None:
+        """Run 3 warmup iterations on a side stream, then capture."""
+        self.model.eval()
+        self.opponent_model.eval()
+
+        # Warmup — PyTorch requires this before graph capture so that
+        # cuBLAS/cuDNN allocate their workspaces and autotune heuristics.
+        s = torch.cuda.Stream()
+        s.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(s), torch.no_grad():
+            for _ in range(3):
+                self._body()
+        torch.cuda.current_stream().wait_stream(s)
+        torch.cuda.synchronize()
+
+        # Capture
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.no_grad(), torch.cuda.graph(self.graph):
+            self._body()
+
+    def run(self) -> RolloutBuffer:
+        """Replay (capture on first call). Returns a RolloutBuffer of views."""
+        if self.graph is None:
+            self.capture()
+        self.graph.replay()
+
+        S, B = self.steps, self.B
+        T = S * B
+        return RolloutBuffer(
+            states    = self.states.reshape(T, 267),
+            actions   = self.actions.reshape(T),
+            log_probs = self.log_probs.reshape(T),
+            values    = self.values.reshape(T),
+            rewards   = self.rewards.reshape(T),
+            masks     = self.masks.reshape(T, 32),
+            valid     = self.valid.reshape(T),
+        )
 
 
 def compute_gae(
@@ -240,7 +393,8 @@ def benchmark_vs_expert_v2(model_path: str, rounds: int = 256) -> dict | None:
          "--candidate-strength", "neural",
          "--baseline-strength", "expert_v2",
          "--rounds", str(rounds),
-         "--workers", "16"],
+         "--workers", "16",
+         "--model", model_path],
         cwd=str(ROOT),
         capture_output=True, text=True,
     )
@@ -266,6 +420,7 @@ def benchmark_vs_expert_v2(model_path: str, rounds: int = 256) -> dict | None:
 def train_gpu_selfplay(
     model_path: str,
     output_path: str,
+    opponent_path: str | None = None,
     num_epochs: int = 500,
     batch_size: int = 512,
     steps_per_epoch: int = 128,
@@ -280,6 +435,7 @@ def train_gpu_selfplay(
     gamma: float = 0.99,
     lam: float = 0.95,
     benchmark_interval: int = 25,
+    benchmark_rounds: int = 2048,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -299,12 +455,21 @@ def train_gpu_selfplay(
     model = KlaverjasActorCritic.from_policy_net(policy_net)
     model.to(device)
 
-    # Frozen reference for KL penalty
-    ref_model = KlaverjasActorCritic.from_policy_net(policy_net)
+    # Frozen reference used both for the KL anchor and the rollout opponent
+    # (seats 1,3). Defaults to the starting-weights policy (pure B1); pass
+    # --opponent to ladder against a stronger frozen checkpoint.
+    opp_path = opponent_path or model_path
+    opp_ckpt = torch.load(opp_path, map_location=device, weights_only=True)
+    opp_linear = [v for k, v in opp_ckpt.items() if k.endswith(".weight") and v.ndim == 2]
+    opp_hidden = tuple(w.shape[0] for w in opp_linear[:-1])
+    opp_net = KlaverjasNet(hidden_sizes=opp_hidden)
+    opp_net.load_state_dict(opp_ckpt)
+    ref_model = KlaverjasActorCritic.from_policy_net(opp_net)
     ref_model.to(device)
     ref_model.eval()
     for p in ref_model.parameters():
         p.requires_grad = False
+    print(f"Loaded frozen opponent/KL-ref from {opp_path}")
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"Actor-Critic parameters: {total_params:,}")
@@ -322,35 +487,64 @@ def train_gpu_selfplay(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     reward_history: list[float] = []
 
+    # CUDA-graph-captured rollout (10-100× less Python overhead per rollout).
+    # Falls back to eager `collect_rollout` if capture fails.
+    # `ref_model` doubles as the frozen opponent for seats 1,3 (see B1 plan).
+    use_graph = device.type == "cuda"
+    graph_rollout: GraphRollout | None = None
+    if use_graph:
+        try:
+            graph_rollout = GraphRollout(
+                engine, model, ref_model, steps_per_epoch, temperature, device)
+            print("CUDA graph: capturing rollout...")
+            graph_rollout.capture()
+            print("CUDA graph: captured.")
+        except Exception as exc:
+            print(f"CUDA graph capture failed ({exc!r}); falling back to eager rollout")
+            graph_rollout = None
+
     # Initial benchmark baseline
     print("\n--- Initial benchmark vs expert_v2 ---")
-    safe_copy(model_path, str(ROOT / "models" / "neural_best.pt"))
-    bench0 = benchmark_vs_expert_v2(model_path, rounds=512)
+    bench0 = benchmark_vs_expert_v2(model_path, rounds=benchmark_rounds)
     best_diff = float(bench0.get("avg_point_diff", -9999)) if bench0 else -9999
     if bench0:
         print(f"  win_rate={bench0.get('win_rate', '?')}  "
               f"avg_point_diff={best_diff:+.2f}")
 
     safe_copy(model_path, output_path)
-    safe_copy(model_path, str(ROOT / "models" / "neural_best.pt"))
     print(f"  => Baseline saved (avg_point_diff={best_diff:+.2f})\n")
 
-    window_path = output_path.replace(".pt", "_window_best.pt")
     current_path = output_path.replace(".pt", "_current.pt")
-    best_reward_recent = -float("inf")
-    best_reward_epoch = 0
 
     for epoch in range(1, num_epochs + 1):
         # ── Data collection ──────────────────────────────────────────────────
-        buf = collect_rollout(engine, model, steps_per_epoch, temperature, device)
+        if graph_rollout is not None:
+            buf = graph_rollout.run()
+        else:
+            buf = collect_rollout(
+                engine, model, ref_model, steps_per_epoch, temperature, device)
 
-        avg_reward = buf.rewards[buf.rewards != 0].mean().item() if (buf.rewards != 0).any() else 0.0
+        # Unbiased round-end average: reward is team-0 perspective regardless
+        # of which seat ended the round, so averaging across all non-zero
+        # rewards gives one sample per round without the valid-mask bias.
+        round_end_rewards = buf.rewards[buf.rewards != 0]
+        avg_reward = round_end_rewards.mean().item() if round_end_rewards.numel() > 0 else 0.0
         reward_history.append(avg_reward)
         recent_avg = float(np.mean(reward_history[-20:]))
 
-        # ── GAE ─────────────────────────────────────────────────────────────
+        # ── GAE over the full rollout (opp turns act as env transitions) ────
         buf = compute_gae(buf, steps=steps_per_epoch, batch_size=batch_size,
                           gamma=gamma, lam=lam)
+
+        # ── Filter to our-team transitions only before PPO loss ─────────────
+        valid_mask = buf.valid > 0
+        buf.states     = buf.states[valid_mask]
+        buf.actions    = buf.actions[valid_mask]
+        buf.log_probs  = buf.log_probs[valid_mask]
+        buf.values     = buf.values[valid_mask]
+        buf.masks      = buf.masks[valid_mask]
+        buf.advantages = buf.advantages[valid_mask]
+        buf.returns    = buf.returns[valid_mask]
 
         # ── PPO update ───────────────────────────────────────────────────────
         model.train()
@@ -372,60 +566,32 @@ def train_gpu_selfplay(
             f"trans={transitions_per_epoch:,}"
         )
 
-        # Track window best (for benchmark selection)
-        if recent_avg > best_reward_recent:
-            best_reward_recent = recent_avg
-            best_reward_epoch = epoch
-            export = model.export_policy_net()
-            torch.save(export.state_dict(), window_path)
-            print(f"  -> Window best (epoch {epoch}, recent20={recent_avg:+.4f})")
-
         # ── Periodic benchmark ───────────────────────────────────────────────
         if epoch % benchmark_interval == 0:
             export = model.export_policy_net()
             torch.save(export.state_dict(), current_path)
 
-            # Benchmark current
-            safe_copy(current_path, str(ROOT / "models" / "neural_best.pt"))
             print(f"\n--- Benchmark vs expert_v2 (epoch {epoch}) ---")
-            bench_cur = benchmark_vs_expert_v2(current_path, rounds=512)
+            bench_cur = benchmark_vs_expert_v2(current_path, rounds=benchmark_rounds)
             cur_diff = float(bench_cur.get("avg_point_diff", -9999)) if bench_cur else -9999
             if bench_cur:
                 print(f"  current: win_rate={bench_cur.get('win_rate', '?')}  "
                       f"avg_point_diff={cur_diff:+.2f}")
 
-            # Also benchmark window best if different epoch
-            chosen_diff = cur_diff
-            chosen_path = current_path
-            if best_reward_epoch != epoch and Path(window_path).exists():
-                safe_copy(window_path, str(ROOT / "models" / "neural_best.pt"))
-                bench_win = benchmark_vs_expert_v2(window_path, rounds=512)
-                win_diff = float(bench_win.get("avg_point_diff", -9999)) if bench_win else -9999
-                if bench_win:
-                    print(f"  window (ep {best_reward_epoch}): "
-                          f"win_rate={bench_win.get('win_rate', '?')}  "
-                          f"avg_point_diff={win_diff:+.2f}")
-                if win_diff > cur_diff:
-                    chosen_diff = win_diff
-                    chosen_path = window_path
-
-            if chosen_diff > best_diff:
-                best_diff = chosen_diff
-                safe_copy(chosen_path, output_path)
-                safe_copy(chosen_path, str(ROOT / "models" / "neural_best.pt"))
+            if cur_diff > best_diff:
+                best_diff = cur_diff
+                safe_copy(current_path, output_path)
                 print(f"  => NEW BEST  avg_point_diff={best_diff:+.2f}")
             else:
-                safe_copy(output_path, str(ROOT / "models" / "neural_best.pt"))
                 print(f"  => Kept previous best  (avg_point_diff={best_diff:+.2f})")
 
-            # Reset window tracking
-            best_reward_recent = -float("inf")
-            best_reward_epoch = epoch
             print()
 
         # Temperature decay
         if epoch % 100 == 0 and temperature > 1.0:
             temperature = max(1.0, temperature - 0.05)
+            if graph_rollout is not None:
+                graph_rollout.set_temperature(temperature)
             print(f"  -> Temperature: {temperature:.2f}")
 
     # ── Final export ─────────────────────────────────────────────────────────
@@ -433,9 +599,8 @@ def train_gpu_selfplay(
     final_path = output_path.replace(".pt", "_final.pt")
     torch.save(final_net.state_dict(), final_path)
 
-    safe_copy(final_path, str(ROOT / "models" / "neural_best.pt"))
     print(f"\n--- Final benchmark vs expert_v2 ---")
-    bench_f = benchmark_vs_expert_v2(final_path, rounds=512)
+    bench_f = benchmark_vs_expert_v2(final_path, rounds=benchmark_rounds)
     final_diff = float(bench_f.get("avg_point_diff", -9999)) if bench_f else -9999
     if bench_f:
         print(f"  win_rate={bench_f.get('win_rate', '?')}  "
@@ -445,7 +610,6 @@ def train_gpu_selfplay(
         safe_copy(final_path, output_path)
         print(f"  => Final is new best!")
     else:
-        safe_copy(output_path, str(ROOT / "models" / "neural_best.pt"))
         print(f"  => Keeping previous best (avg_point_diff={best_diff:+.2f})")
 
     print(f"\nDone. Best model: {output_path}")
@@ -458,9 +622,14 @@ def main_cli() -> None:
     parser = argparse.ArgumentParser(
         description="GPU self-play PPO training for Klaverjassen neural AI.")
     parser.add_argument("--model",  default=str(ROOT / "models" / "neural_best.pt"),
-                        help="Pretrained KlaverjasNet weights (.pt)")
-    parser.add_argument("--output", default=str(ROOT / "models" / "neural_gpu.pt"),
-                        help="Output path for best model")
+                        help="Starting weights for the trained policy (.pt)")
+    parser.add_argument("--opponent", default=None,
+                        help="Frozen opponent weights for seats 1,3 AND KL reference. "
+                             "Defaults to --model. Point at models/training_best.pt "
+                             "on subsequent ladder rungs.")
+    parser.add_argument("--output", default=str(ROOT / "models" / "training_best.pt"),
+                        help="Output path for the rolling best checkpoint. Separate "
+                             "from neural_best.pt (the deployed baseline).")
     parser.add_argument("--epochs",           type=int,   default=500)
     parser.add_argument("--batch-size",       type=int,   default=512,
                         help="Number of parallel games on GPU")
@@ -477,12 +646,15 @@ def main_cli() -> None:
     parser.add_argument("--gamma",            type=float, default=0.99)
     parser.add_argument("--lam",              type=float, default=0.95)
     parser.add_argument("--benchmark-interval", type=int, default=25)
+    parser.add_argument("--benchmark-rounds",   type=int, default=2048,
+                        help="Rounds per benchmark run (more = lower variance, slower).")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
     train_gpu_selfplay(
         model_path=args.model,
         output_path=args.output,
+        opponent_path=args.opponent,
         num_epochs=args.epochs,
         batch_size=args.batch_size,
         steps_per_epoch=args.steps_per_epoch,
@@ -497,6 +669,7 @@ def main_cli() -> None:
         gamma=args.gamma,
         lam=args.lam,
         benchmark_interval=args.benchmark_interval,
+        benchmark_rounds=args.benchmark_rounds,
     )
 
 

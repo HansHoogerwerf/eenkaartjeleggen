@@ -12,6 +12,11 @@ Rotterdam rules (strict):
   - Must follow lead suit if able
   - If lead suit is trump: must overtrump if possible
   - If can't follow suit: must trump (and overtrump existing trick trump if possible)
+
+CUDA-graph friendliness:
+  All hot-path mutations use in-place ops or `tensor.copy_(torch.where(...))`,
+  and no host syncs (no `.item()`, `.any()` guards) occur in step()/get_state().
+  Every branch always runs and is masked; dynamic-shape tensors are avoided.
 """
 
 from __future__ import annotations
@@ -23,23 +28,18 @@ from torch import Tensor
 # ─── Precomputed constant arrays (rank-indexed, shape [8]) ────────────────────
 
 # Non-trump strength: NON_TRUMP_ORDER = ["7","8","9","J","Q","K","10","A"]
-#   rank idx: 7=0, 8=1, 9=2, 10=3, J=4, Q=5, K=6, A=7
-#   strengths: 0→0, 1→1, 2→2, 3→6, 4→3, 5→4, 6→5, 7→7
 _NONTR_STR = [0, 1, 2, 6, 3, 4, 5, 7]
 
 # Trump strength: TRUMP_ORDER = ["7","8","Q","K","10","A","9","J"]
-#   rank idx: 7=0, 8=1, 9=2, 10=3, J=4, Q=5, K=6, A=7
-#   strengths: 0→0, 1→1, 2→6, 3→4, 4→7, 5→2, 6→3, 7→5
 _TRUMP_STR = [0, 1, 6, 4, 7, 2, 3, 5]
 
-# Reverse: trump strength → rank index (for "highest outstanding trump" feature)
-#   strength 0→rank0, 1→rank1, 2→rank5, 3→rank6, 4→rank3, 5→rank7, 6→rank2, 7→rank4
+# Reverse: trump strength → rank index
 _TRUMP_STR_TO_RANK = [0, 1, 5, 6, 3, 7, 2, 4]
 
-# Non-trump points by rank: {"A":11,"10":10,"K":4,"Q":3,"J":2,"9":0,"8":0,"7":0}
+# Non-trump points by rank
 _NONTR_PTS = [0, 0, 0, 10, 2, 3, 4, 11]
 
-# Trump points by rank: {"J":20,"9":14,"A":11,"10":10,"K":4,"Q":3,"8":0,"7":0}
+# Trump points by rank
 _TRUMP_PTS = [0, 0, 14, 10, 20, 3, 4, 11]
 
 # Team of each seat: {0:0, 1:1, 2:0, 3:1}
@@ -93,7 +93,24 @@ class KlaverjasGPUEngine:
         # RANK_OF[c] = rank index of card c  (c % 8)
         self.RANK_OF = torch.arange(NUM_CARDS, device=self.device) % 8   # [32]
 
-        # ── Mutable game state (allocated in reset()) ─────────────────────────
+        # 4-of-a-kind points per rank (200 for Jacks=rank4, 100 otherwise)
+        self._FOAK_PTS = torch.tensor(
+            [100, 100, 100, 100, 200, 100, 100, 100],
+            dtype=torch.int32, device=self.device)
+
+        # Opponent-seats lookup: OPP_SEATS[s] = 3 non-s seats in ascending order.
+        # Used to avoid boolean indexing (dynamic-shape; blocks CUDA graph capture).
+        self.OPP_SEATS = torch.tensor(
+            [[1, 2, 3], [0, 2, 3], [0, 1, 3], [0, 1, 2]],
+            dtype=torch.long, device=self.device)
+
+        # Scalar-valued scratch tensors — advanced-index assignments with a
+        # Python scalar source (e.g. `t[ar, idx] = 0.0`) aren't CUDA-graph
+        # captureable; using tensor sources is.
+        self._ZERO_B = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
+        self._ONE_B  = torch.ones(batch_size, dtype=torch.float32, device=self.device)
+
+        # ── Mutable game state (allocated once; only mutated in-place) ───────
         B = self.B
         Z = lambda *shape: torch.zeros(*shape, dtype=torch.float32, device=self.device)
         I = lambda *shape: torch.zeros(*shape, dtype=torch.long,    device=self.device)
@@ -152,56 +169,50 @@ class KlaverjasGPUEngine:
     def step(self, actions: Tensor) -> tuple[Tensor, Tensor]:
         """Play one card per game, advance state.
 
+        Sync-free: every branch always runs; results are masked to the
+        appropriate games. State updates are all in-place.
+
         Args:
             actions: [B] card indices (must be legal for each game).
         Returns:
             rewards:    [B] float32 — non-zero at round end (team point diff / 162)
             round_done: [B] bool    — True when a round just completed
         """
-        B = self.B
         ar = self._arange
         seat = self.current_seat.clone()  # capture BEFORE any mutations
 
-        # ── Play the card ────────────────────────────────────────────────────
-        self.hands[ar, seat, actions] = 0.0
-        self.played[ar, actions] = 1.0
+        # ── Play the card (in-place advanced-index assign with tensor src) ──
+        self.hands[ar, seat, actions] = self._ZERO_B
+        self.played[ar, actions] = self._ONE_B
 
-        # Void inference: if player didn't follow lead suit, they're void
-        has_trick = (self.cards_in_trick > 0)
-        if has_trick.any():
-            lead_card = self.trick_cards[:, 0].clamp(min=0)
-            lead_suit = self.SUIT_OF[lead_card]          # [B]
-            played_suit = self.SUIT_OF[actions]          # [B]
-            is_void = has_trick & (played_suit != lead_suit)
-            if is_void.any():
-                vb = ar[is_void]
-                vs = seat[is_void]
-                vsu = lead_suit[is_void]
-                self.opponent_voids[vb, vs, vsu] = 1.0
+        # ── Void inference (always compute; masked update) ───────────────────
+        lead_card   = self.trick_cards[:, 0].clamp(min=0)
+        lead_suit   = self.SUIT_OF[lead_card]
+        played_suit = self.SUIT_OF[actions]
+        has_trick   = (self.cards_in_trick > 0)
+        is_void     = has_trick & (played_suit != lead_suit)
+        # Conditionally set opponent_voids[b, seat, lead_suit] = 1 where is_void;
+        # otherwise restore the old value (no-op).
+        cur_void = self.opponent_voids[ar, seat, lead_suit]
+        self.opponent_voids[ar, seat, lead_suit] = torch.where(
+            is_void, torch.ones_like(cur_void), cur_void)
 
-        # Add card to current trick
+        # ── Add card to current trick ────────────────────────────────────────
         pos = self.cards_in_trick.clone()  # [B] position in trick
         self.trick_cards[ar, pos] = actions
         self.trick_seats[ar, pos] = seat
-        self.cards_in_trick += 1
+        self.cards_in_trick.add_(1)
 
-        # ── Resolve complete tricks ──────────────────────────────────────────
+        # ── Resolve complete tricks; compute rewards (always run) ────────────
         trick_complete = (self.cards_in_trick == 4)
-        round_done = torch.zeros(B, dtype=torch.bool, device=self.device)
-        rewards = torch.zeros(B, dtype=torch.float32, device=self.device)
+        round_done = self._resolve_trick(trick_complete)
+        rewards    = self._compute_round_rewards(round_done, seat)
 
-        if trick_complete.any():
-            round_done = self._resolve_trick(trick_complete)
-
-        if round_done.any():
-            # Use seat captured at start of step (before _start_new_round updated it)
-            rewards = self._compute_round_rewards(round_done, seat)
-
-        # ── Advance current seat for incomplete tricks ───────────────────────
+        # ── Advance current seat for incomplete tricks (always computed) ─────
         still_in_trick = ~trick_complete & ~self.done
-        if still_in_trick.any():
-            next_seat = (self.trick_leader + self.cards_in_trick) % 4
-            self.current_seat = torch.where(still_in_trick, next_seat, self.current_seat)
+        next_seat = (self.trick_leader + self.cards_in_trick) % 4
+        self.current_seat.copy_(
+            torch.where(still_in_trick, next_seat, self.current_seat))
 
         return rewards, round_done
 
@@ -212,6 +223,9 @@ class KlaverjasGPUEngine:
     def legal_mask(self) -> Tensor:
         """Compute legal move mask for the current player in each game.
         Returns [B, 32] float32 (1=legal, 0=illegal).
+
+        Runs the full trick-rules path unconditionally; the `no_trick` branch
+        is folded into the final torch.where so the op graph is static.
         """
         B = self.B
         ar = self._arange
@@ -221,37 +235,31 @@ class KlaverjasGPUEngine:
         player_hand = self.hands[ar, seat]  # [B, 32]
         no_trick = (self.cards_in_trick == 0)
 
-        # When leading: all hand cards are legal
-        result = player_hand.clone()
-        if no_trick.all():
-            return result
-
-        # ── Active-trick games ───────────────────────────────────────────────
+        # ── Active-trick computation (runs for all games) ────────────────────
         lead_card = self.trick_cards[:, 0].clamp(min=0)
         lead_suit  = self.SUIT_OF[lead_card]   # [B]
 
         card_suits = self.SUIT_OF.unsqueeze(0)  # [1, 32]
 
         # Trump cards in hand
-        trump_in_hand = player_hand * (card_suits == trump_suit.unsqueeze(1)).float()  # [B, 32]
+        trump_in_hand = player_hand * (card_suits == trump_suit.unsqueeze(1)).float()
         has_trump = trump_in_hand.sum(1) > 0  # [B]
 
         # Lead-suit cards in hand
-        lead_in_hand = player_hand * (card_suits == lead_suit.unsqueeze(1)).float()  # [B, 32]
+        lead_in_hand = player_hand * (card_suits == lead_suit.unsqueeze(1)).float()
         has_lead = lead_in_hand.sum(1) > 0  # [B]
 
         # Existing trumps in trick and their max strength
         tc_suits = self.SUIT_OF[self.trick_cards.clamp(min=0)]  # [B, 4]
         tc_ranks = self.trick_cards.clamp(min=0) % 8            # [B, 4]
-        tc_is_trump = (tc_suits == trump_suit.unsqueeze(1)) & (self.trick_cards >= 0)  # [B, 4]
-        tc_trump_str = self.TRUMP_STR[tc_ranks]                  # [B, 4]
+        tc_is_trump = (tc_suits == trump_suit.unsqueeze(1)) & (self.trick_cards >= 0)
+        tc_trump_str = self.TRUMP_STR[tc_ranks]
         tc_trump_str_m = torch.where(tc_is_trump, tc_trump_str,
                                      torch.full_like(tc_trump_str, -1))
         highest_trick_trump = tc_trump_str_m.max(dim=1).values   # [B]
-        any_trump_in_trick = tc_is_trump.any(dim=1)              # [B]
+        any_trump_in_trick = tc_is_trump.any(dim=1)              # [B] tensor (not .any().item())
 
         # My trump strengths per card
-        card_ranks = self.RANK_OF.unsqueeze(0)  # [1, 32]
         my_trump_str = self.TRUMP_STR[self.RANK_OF].unsqueeze(0)  # [1, 32]
 
         # Over-trumpers: my trump cards stronger than current highest trick trump
@@ -263,18 +271,16 @@ class KlaverjasGPUEngine:
 
         # Case 1a: lead IS trump → must overtrump if possible
         case1a = torch.where(has_over_trump.unsqueeze(1),
-                             over_trump.float(), lead_in_hand)  # [B, 32]
+                             over_trump.float(), lead_in_hand)
 
         # Case 1b: lead is NOT trump → play any lead-suit card
-        case1b = lead_in_hand  # [B, 32]
+        case1b = lead_in_hand
 
         case1 = torch.where(lead_is_trump.unsqueeze(1), case1a, case1b)
 
         # ── Case 2: no lead-suit cards → must trump (or discard) ────────────
-        # If trump in trick: must overtrump; if can't, must play any trump
-        # If no trump in trick: must trump; if no trump, play anything
         case2_trump_over = torch.where(has_over_trump.unsqueeze(1),
-                                       over_trump.float(), trump_in_hand)  # [B, 32]
+                                       over_trump.float(), trump_in_hand)
         case2_with_trick_trump = torch.where(has_trump.unsqueeze(1),
                                              case2_trump_over, player_hand)
         case2_no_trick_trump   = torch.where(has_trump.unsqueeze(1),
@@ -284,7 +290,7 @@ class KlaverjasGPUEngine:
 
         trick_legal = torch.where(has_lead.unsqueeze(1), case1, case2)
 
-        # Apply: leading games use full hand; non-leading use trick_legal
+        # Leading games use full hand; non-leading games use trick_legal
         result = torch.where(no_trick.unsqueeze(1), player_hand, trick_legal)
         return result.float()
 
@@ -354,12 +360,11 @@ class KlaverjasGPUEngine:
         o += 2
 
         # 10. Opponent voids: 3 opponents × 4 suits (12)
-        # Order: ascending seat index, excluding current seat
-        all_seats = torch.arange(4, device=self.device).unsqueeze(0).expand(B, -1)  # [B,4]
-        is_me = (all_seats == seat.unsqueeze(1))  # [B,4]
-        opp_seats = all_seats[~is_me].reshape(B, 3)  # [B,3] ascending order
+        # Static lookup instead of boolean indexing — keeps shape known to the
+        # graph capturer.
+        opp_seats = self.OPP_SEATS[seat]  # [B, 3]
         for oi in range(3):
-            opp_s = opp_seats[:, oi]  # [B]
+            opp_s = opp_seats[:, oi]
             feats[:, o + oi*4 : o + oi*4 + 4] = self.opponent_voids[ar, opp_s]
         o += 12
 
@@ -383,23 +388,23 @@ class KlaverjasGPUEngine:
         o += 1
 
         # 15. Trump cards in hand normalized (1)
-        trump_hand_mask = (card_suits == trump_suit.unsqueeze(1)).float()  # [B,32]
+        trump_hand_mask = (card_suits == trump_suit.unsqueeze(1)).float()
         trump_count = (player_hand * trump_hand_mask).sum(1)
         feats[:, o] = trump_count / 8.0
         o += 1
 
         # 16. Highest outstanding trump one-hot (8)
-        trump_card_base = trump_suit * 8  # [B]
+        trump_card_base = trump_suit * 8
         rank_offsets = torch.arange(8, device=self.device)
-        trump_card_idx = trump_card_base.unsqueeze(1) + rank_offsets.unsqueeze(0)  # [B,8]
-        hand_tp   = player_hand.gather(1, trump_card_idx)         # [B,8]
-        played_tp = self.played.gather(1, trump_card_idx)         # [B,8]
-        outstanding_tp = (1 - hand_tp - played_tp).clamp(min=0)  # [B,8]
+        trump_card_idx = trump_card_base.unsqueeze(1) + rank_offsets.unsqueeze(0)
+        hand_tp   = player_hand.gather(1, trump_card_idx)
+        played_tp = self.played.gather(1, trump_card_idx)
+        outstanding_tp = (1 - hand_tp - played_tp).clamp(min=0)
 
-        tp_str = self.TRUMP_STR[rank_offsets].unsqueeze(0).expand(B, -1)  # [B,8]
+        tp_str = self.TRUMP_STR[rank_offsets].unsqueeze(0).expand(B, -1)
         out_str_m = torch.where(outstanding_tp.bool(), tp_str,
                                 torch.full_like(tp_str, -1))
-        highest_out_str = out_str_m.max(dim=1).values  # [B]
+        highest_out_str = out_str_m.max(dim=1).values
         has_out = outstanding_tp.sum(1) > 0
         highest_out_rank = self.STR2RANK[highest_out_str.clamp(min=0)]
         hot_out = F.one_hot(highest_out_rank, num_classes=8).float()
@@ -407,18 +412,18 @@ class KlaverjasGPUEngine:
         o += 8
 
         # 17. Partner winning current trick (1)
-        win_pos = self._current_trick_winner_pos()  # [B] (-1 if no trick)
+        win_pos = self._current_trick_winner_pos()
         has_trick = (self.cards_in_trick > 0)
-        win_seat = self.trick_seats[ar, win_pos.clamp(min=0)]  # [B]
+        win_seat = self.trick_seats[ar, win_pos.clamp(min=0)]
         win_team = self.SEAT_TEAM[win_seat]
         partner_winning = has_trick & (win_team == team)
         feats[:, o] = partner_winning.float()
         o += 1
 
         # 18. Points on table normalized (1)
-        tc_valid = (self.trick_cards >= 0)  # [B,4]
-        tc_suits_f = self.SUIT_OF[self.trick_cards.clamp(min=0)]   # [B,4]
-        tc_ranks_f = self.trick_cards.clamp(min=0) % 8             # [B,4]
+        tc_valid = (self.trick_cards >= 0)
+        tc_suits_f = self.SUIT_OF[self.trick_cards.clamp(min=0)]
+        tc_ranks_f = self.trick_cards.clamp(min=0) % 8
         tc_is_trump = (tc_suits_f == trump_suit.unsqueeze(1)) & tc_valid
         tc_pts = torch.where(tc_is_trump,
                              self.TRUMP_PTS[tc_ranks_f],
@@ -447,7 +452,7 @@ class KlaverjasGPUEngine:
         # 22. Trump control: hold highest remaining trump (1)
         my_tp_str = torch.where(hand_tp.bool(), tp_str,
                                 torch.full_like(tp_str, -1))
-        my_best = my_tp_str.max(dim=1).values   # [B]
+        my_best = my_tp_str.max(dim=1).values
         has_my_trump = hand_tp.sum(1) > 0
         higher_out = outstanding_tp.bool() & (tp_str > my_best.unsqueeze(1))
         has_higher_out = higher_out.any(dim=1)
@@ -461,25 +466,24 @@ class KlaverjasGPUEngine:
 
         # 24. Suit master cards per suit (4)
         for si in range(4):
-            hand_s   = player_hand[:, si*8:(si+1)*8]   # [B,8]
-            played_s = self.played[:, si*8:(si+1)*8]    # [B,8]
+            hand_s   = player_hand[:, si*8:(si+1)*8]
+            played_s = self.played[:, si*8:(si+1)*8]
             out_s    = (1 - hand_s - played_s).clamp(min=0)
 
-            is_tp_suit = (trump_suit == si)   # [B]
+            is_tp_suit = (trump_suit == si)
             str_t = self.TRUMP_STR.unsqueeze(0).expand(B, -1)
             str_n = self.NONTR_STR.unsqueeze(0).expand(B, -1)
-            strength = torch.where(is_tp_suit.unsqueeze(1), str_t, str_n)  # [B,8]
+            strength = torch.where(is_tp_suit.unsqueeze(1), str_t, str_n)
 
             out_str_s = torch.where(out_s.bool(), strength,
                                     torch.full_like(strength, -1))
-            max_out = out_str_s.max(dim=1).values  # [B]
+            max_out = out_str_s.max(dim=1).values
 
             is_master = (hand_s > 0) & (strength > max_out.unsqueeze(1))
             feats[:, o+si] = is_master.float().sum(1)
         o += 4
 
         # 25. Point cards in hand normalized (1)
-        all_ranks = self.RANK_OF.unsqueeze(0).expand(B, -1)   # [B,32]
         all_is_trump = (card_suits == trump_suit.unsqueeze(1)).expand(B, -1)
         card_pts = torch.where(all_is_trump,
                                self.TRUMP_PTS[self.RANK_OF].unsqueeze(0).expand(B, -1).float(),
@@ -530,17 +534,16 @@ class KlaverjasGPUEngine:
 
     def _current_trick_winner_pos(self) -> Tensor:
         """Position (0-3) of current winning card. Returns -1 where no cards."""
-        B = self.B
         ar = self._arange
-        trump_suit = self.trump  # [B]
+        trump_suit = self.trump
         has_cards = (self.cards_in_trick > 0)
 
         lead_card = self.trick_cards[:, 0].clamp(min=0)
         lead_suit  = self.SUIT_OF[lead_card]
 
-        tc_suits = self.SUIT_OF[self.trick_cards.clamp(min=0)]  # [B,4]
-        tc_ranks = self.trick_cards.clamp(min=0) % 8            # [B,4]
-        tc_valid = (self.trick_cards >= 0)                       # [B,4]
+        tc_suits = self.SUIT_OF[self.trick_cards.clamp(min=0)]
+        tc_ranks = self.trick_cards.clamp(min=0) % 8
+        tc_valid = (self.trick_cards >= 0)
 
         is_trump = (tc_suits == trump_suit.unsqueeze(1)) & tc_valid
         is_lead  = (tc_suits == lead_suit.unsqueeze(1)) & tc_valid
@@ -561,17 +564,16 @@ class KlaverjasGPUEngine:
                            torch.full_like(winner_pos, -1))
 
     def _resolve_trick(self, active: Tensor) -> Tensor:
-        """Resolve completed tricks for active games.
+        """Resolve completed tricks for active games. Always runs; ops masked.
         Returns round_done: [B] bool."""
-        B = self.B
         ar = self._arange
-        trump_suit = self.trump  # [B]
+        trump_suit = self.trump
 
         lead_card = self.trick_cards[:, 0].clamp(min=0)
         lead_suit  = self.SUIT_OF[lead_card]
 
-        tc_suits = self.SUIT_OF[self.trick_cards.clamp(min=0)]  # [B,4]
-        tc_ranks = self.trick_cards.clamp(min=0) % 8            # [B,4]
+        tc_suits = self.SUIT_OF[self.trick_cards.clamp(min=0)]
+        tc_ranks = self.trick_cards.clamp(min=0) % 8
 
         is_trump = (tc_suits == trump_suit.unsqueeze(1))
         is_lead  = (tc_suits == lead_suit.unsqueeze(1))
@@ -585,46 +587,51 @@ class KlaverjasGPUEngine:
         lead_m  = torch.where(is_lead,  nt_str, torch.full_like(nt_str, -1))
 
         winner_pos = torch.where(any_trump, trump_m.argmax(1), lead_m.argmax(1))
-        winner_seat = self.trick_seats[ar, winner_pos]   # [B]
-        winner_team = self.SEAT_TEAM[winner_seat]         # [B]
+        winner_seat = self.trick_seats[ar, winner_pos]
+        winner_team = self.SEAT_TEAM[winner_seat]
 
-        # Trick points
-        is_trump_card = is_trump
-        card_pts = torch.where(is_trump_card,
+        # Trick points (masked by is_trump)
+        card_pts = torch.where(is_trump,
                                self.TRUMP_PTS[tc_ranks],
                                self.NONTR_PTS[tc_ranks])
         trick_total = card_pts.sum(dim=1)                        # [B]
         last_trick = (self.trick_num == 7)
         trick_total = trick_total + (last_trick.long() * 10).int()
 
+        # Distribute trick points to winning team (in-place +=)
         for t in range(2):
             mask = active & (winner_team == t)
             self.trick_pts[ar, t] += torch.where(mask, trick_total,
                                                   torch.zeros_like(trick_total))
 
-        # Advance trick counter
-        self.trick_num += active.long()
+        # Advance trick counter (in-place add)
+        self.trick_num.add_(active.long())
 
-        # Reset trick buffers for active games
-        self.trick_cards[active] = -1
-        self.trick_seats[active] = -1
-        self.cards_in_trick[active] = 0
+        # Reset trick buffers for active games (in-place masked fill)
+        self.trick_cards.masked_fill_(active.unsqueeze(1), -1)
+        self.trick_seats.masked_fill_(active.unsqueeze(1), -1)
+        self.cards_in_trick.masked_fill_(active, 0)
 
-        # Update leader & current seat to winner
-        self.trick_leader  = torch.where(active, winner_seat, self.trick_leader)
-        self.current_seat  = torch.where(active, winner_seat, self.current_seat)
+        # Update leader & current seat to winner (in-place)
+        self.trick_leader.copy_(torch.where(active, winner_seat, self.trick_leader))
+        self.current_seat.copy_(torch.where(active, winner_seat, self.current_seat))
 
+        # Round ends after 8 tricks (trick_num just incremented)
         round_done = active & (self.trick_num >= 8)
-        if round_done.any():
-            self._score_round(round_done)
+        # Always call (masked internally); handles all-False case cheaply.
+        self._score_round(round_done)
 
         return round_done
 
     def _score_round(self, active: Tensor) -> None:
-        """Apply round scoring, update game_scores, start new round or end game."""
+        """Apply round scoring, update game_scores, start new round or recycle.
+
+        Always runs; if `active` is all-False the state updates are no-ops
+        because every write is masked by `active` or `game_over ⊂ active`.
+        """
         B = self.B
         ar = self._arange
-        decl = self.declaring_team   # [B]
+        decl = self.declaring_team
         opp  = 1 - decl
 
         decl_trick = self.trick_pts[ar, decl]
@@ -643,99 +650,105 @@ class KlaverjasGPUEngine:
         final_decl = torch.where(is_nat, nat_decl, normal_decl)
         final_opp  = torch.where(is_nat, nat_opp,  normal_opp)
 
-        # Store for reward computation
-        zero = torch.zeros(B, dtype=torch.int32, device=self.device)
-        self._last_round_pts[ar, decl] = torch.where(active, final_decl, zero)
-        self._last_round_pts[ar, opp]  = torch.where(active, final_opp,  zero)
+        # Store last-round points (masked by active)
+        zero_b = torch.zeros(B, dtype=torch.int32, device=self.device)
+        self._last_round_pts[ar, decl] = torch.where(active, final_decl, zero_b)
+        self._last_round_pts[ar, opp]  = torch.where(active, final_opp,  zero_b)
 
-        self.game_scores[ar, decl] += torch.where(active, final_decl, zero)
-        self.game_scores[ar, opp]  += torch.where(active, final_opp,  zero)
+        # Add to game scores (+= with zero for inactive)
+        self.game_scores[ar, decl] += torch.where(active, final_decl, zero_b)
+        self.game_scores[ar, opp]  += torch.where(active, final_opp,  zero_b)
 
+        # Detect game-over
         game_over = active & (self.game_scores.max(dim=1).values >= self.score_limit)
-        self.done = self.done | game_over
 
-        # Start new round for non-terminal games; fully reset terminal games
-        need_new = active & ~self.done
-        if need_new.any():
-            self._start_new_round(need_new)
+        # Recycle game_over games: reset scores, round counter, dealer (masked in-place)
+        self.game_scores.copy_(torch.where(
+            game_over.unsqueeze(1),
+            torch.zeros_like(self.game_scores),
+            self.game_scores))
+        self.round_num.copy_(torch.where(
+            game_over, torch.zeros_like(self.round_num), self.round_num))
+        # Clear done for recycled games (done tracks terminal only transiently here)
+        self.done.masked_fill_(game_over, False)
+        new_dealer = torch.randint(0, 4, (B,), device=self.device, dtype=torch.long)
+        self.dealer.copy_(torch.where(game_over, new_dealer, self.dealer))
 
-        if game_over.any():
-            # Recycle: start a completely fresh game (reset scores)
-            self.game_scores[game_over] = 0
-            self.round_num[game_over] = 0
-            self.done[game_over] = False
-            self.dealer[game_over] = torch.randint(0, 4, (game_over.sum().item(),),
-                                                   device=self.device)
-            self._start_new_round(game_over)
+        # Start a new round for all active games (continuing + just-recycled).
+        # When `active` is all-False this is a cheap no-op via internal masking.
+        self._start_new_round(active)
 
     def _compute_round_rewards(self, active: Tensor, seat: Tensor) -> Tensor:
-        """Return per-game reward = (my_team_pts - opp_pts) / 162.
+        """Return per-game reward = (team0_pts - team1_pts) / 162.
 
-        Uses `seat` captured at the start of step() — before _start_new_round
-        updates current_seat for the next round.
+        Team-0 perspective is invariant to which seat ended the round, so the
+        signal is valid whether the training policy or the frozen opponent
+        played the last card. Callers filter by `valid` mask to keep only the
+        transitions that belong to the trained policy.
         """
-        B = self.B
         ar = self._arange
-        team = self.SEAT_TEAM[seat]
-        opp  = 1 - team
-        my_pts  = self._last_round_pts[ar, team].float()
-        opp_pts = self._last_round_pts[ar, opp].float()
-        reward = (my_pts - opp_pts) / 162.0
-        return torch.where(active, reward,
-                           torch.zeros(B, dtype=torch.float32, device=self.device))
+        team0_pts = self._last_round_pts[ar, 0].float()
+        team1_pts = self._last_round_pts[ar, 1].float()
+        reward = (team0_pts - team1_pts) / 162.0
+        return torch.where(active, reward, torch.zeros_like(reward))
 
     def _start_new_round(self, active: Tensor) -> None:
-        """Reset round state, deal hands, bid, compute roem for active games."""
-        B = self.B
-        ar = self._arange
+        """Reset round state, deal hands, bid, compute roem for active games.
+        Sync-free; all updates masked by `active`."""
+        # Reset round counters in-place (masked)
+        self.trick_num.masked_fill_(active, 0)
+        self.cards_in_trick.masked_fill_(active, 0)
+        self.trick_cards.masked_fill_(active.unsqueeze(1), -1)
+        self.trick_seats.masked_fill_(active.unsqueeze(1), -1)
+        self.played.masked_fill_(active.unsqueeze(1), 0.0)
+        self.opponent_voids.masked_fill_(active.view(-1, 1, 1), 0.0)
+        self.trick_pts.masked_fill_(active.unsqueeze(1), 0)
+        self.roem_pts.masked_fill_(active.unsqueeze(1), 0)
+        self.round_num.copy_(torch.where(
+            active, self.round_num + 1, self.round_num))
 
-        # Reset round counters
-        self.trick_num[active] = 0
-        self.cards_in_trick[active] = 0
-        self.trick_cards[active] = -1
-        self.trick_seats[active] = -1
-        self.played[active] = 0.0
-        self.opponent_voids[active] = 0.0
-        self.trick_pts[active] = 0
-        self.roem_pts[active] = 0
-        self.round_num[active] += 1
+        # Advance dealer (masked)
+        new_dealer = (self.dealer + 1) % 4
+        self.dealer.copy_(torch.where(active, new_dealer, self.dealer))
 
-        # Advance dealer
-        self.dealer[active] = (self.dealer[active] + 1) % 4
-
-        # Deal hands
+        # Deal hands (runs for all B; masked inside)
         self._deal_hands(active)
 
-        # Bidding: sets self.trump and self.declaring_team
+        # Bidding (runs unconditionally; masked inside)
         self._bidding(active)
 
         # Roem scoring
         roem = self._compute_roem_batch(self.initial_hands, self.trump)  # [B, 2]
-        self.roem_pts[active] = roem[active]
+        self.roem_pts.copy_(torch.where(
+            active.unsqueeze(1), roem, self.roem_pts))
 
         # First trick leader = player left of dealer
-        first_bidder = (self.dealer + 1) % 4  # [B]
-        self.trick_leader[active]  = first_bidder[active]
-        self.current_seat[active]  = first_bidder[active]
+        first_bidder = (self.dealer + 1) % 4
+        self.trick_leader.copy_(torch.where(active, first_bidder, self.trick_leader))
+        self.current_seat.copy_(torch.where(active, first_bidder, self.current_seat))
 
     def _deal_hands(self, active: Tensor) -> None:
-        """Deal random hands to active games using GPU random permutations."""
-        n = active.sum().item()
-        if n == 0:
-            return
-        idx = self._arange[active]
+        """Deal random hands to all B games; inactive games' hands unchanged.
 
-        # Random permutation of 32 cards per active game
-        noise = torch.rand(n, NUM_CARDS, device=self.device)
-        perm  = noise.argsort(dim=1)  # [n, 32]
+        Always generates B hands (vs. previously `n = active.sum().item()` which
+        was a host sync), then uses torch.where to merge.
+        """
+        B = self.B
 
-        new_hands = torch.zeros(n, 4, NUM_CARDS, device=self.device)
+        noise = torch.rand(B, NUM_CARDS, device=self.device)
+        perm  = noise.argsort(dim=1)  # [B, 32]
+
+        # Build hands via one-hot+sum (graph-capture-friendly; avoids scalar
+        # scatter_ which isn't always captureable).
+        new_hands = torch.zeros(B, 4, NUM_CARDS, dtype=torch.float32, device=self.device)
         for seat in range(4):
-            seat_cards = perm[:, seat*8:(seat+1)*8]  # [n, 8]
-            new_hands[:, seat].scatter_(1, seat_cards, 1.0)
+            seat_cards = perm[:, seat*8:(seat+1)*8]          # [B, 8]
+            new_hands[:, seat] = F.one_hot(
+                seat_cards, num_classes=NUM_CARDS).float().sum(dim=1)
 
-        self.hands[idx]         = new_hands
-        self.initial_hands[idx] = new_hands
+        mask = active.view(B, 1, 1)
+        self.hands.copy_(torch.where(mask, new_hands, self.hands))
+        self.initial_hands.copy_(torch.where(mask, new_hands, self.initial_hands))
 
     def _bid_score(self, hand: Tensor, suit: Tensor) -> Tensor:
         """Compute bid strength score for each active game.
@@ -750,7 +763,7 @@ class KlaverjasGPUEngine:
         ar = torch.arange(B, device=self.device)
 
         # High trump card bonuses
-        J_idx  = suit * 8 + 4   # [B]
+        J_idx  = suit * 8 + 4
         N9_idx = suit * 8 + 2
         A_idx  = suit * 8 + 7
         T10_idx = suit * 8 + 3
@@ -770,9 +783,9 @@ class KlaverjasGPUEngine:
             suit_counts[:, s] = hand[:, s*8:(s+1)*8].sum(1)
 
         for offset in range(1, 4):
-            s = (suit + offset) % 4           # [B]
-            cnt = suit_counts[ar, s]          # [B]
-            A_side = s * 8 + 7                # [B]
+            s = (suit + offset) % 4
+            cnt = suit_counts[ar, s]
+            A_side = s * 8 + 7
             score = score + hand[ar, A_side] * 0.70
             score = score + (cnt == 0).float() * 0.35
             score = score + (cnt == 1).float() * 0.17
@@ -785,43 +798,37 @@ class KlaverjasGPUEngine:
         return score
 
     def _bidding(self, active: Tensor) -> None:
-        """Vectorized bidding: pick suits, have each seat bid, handle forced."""
+        """Vectorized bidding. Always runs all 8 bid iterations (no early
+        break) to keep the op sequence static for graph capture."""
         B = self.B
         ar = self._arange
 
-        # Pick 2 random suits per game
         noise = torch.rand(B, 4, device=self.device)
         suit_perm = noise.argsort(dim=1)
-        r1_suit = suit_perm[:, 0]  # [B]
-        r2_suit = suit_perm[:, 1]  # [B]
+        r1_suit = suit_perm[:, 0]
+        r2_suit = suit_perm[:, 1]
 
-        first_bidder = (self.dealer + 1) % 4  # [B]
+        first_bidder = (self.dealer + 1) % 4
         declared = torch.zeros(B, dtype=torch.bool, device=self.device)
         trump = r1_suit.clone()
         decl_team = self.SEAT_TEAM[first_bidder]
 
-        # Round 1: each seat gets a chance
+        # Round 1 — 4 seats get a chance at r1_suit
         for i in range(4):
-            bidder = (first_bidder + i) % 4   # [B]
-            hand_b = self.hands[ar, bidder]   # [B, 32]
-            can_bid = active & ~declared
-            if not can_bid.any():
-                break
+            bidder = (first_bidder + i) % 4
+            hand_b = self.hands[ar, bidder]
             score = self._bid_score(hand_b, r1_suit)
-            bids = can_bid & (score >= self.bid_threshold)
+            bids = active & ~declared & (score >= self.bid_threshold)
             trump = torch.where(bids, r1_suit, trump)
             decl_team = torch.where(bids, self.SEAT_TEAM[bidder], decl_team)
             declared = declared | bids
 
-        # Round 2
+        # Round 2 — same 4 seats at r2_suit
         for i in range(4):
             bidder = (first_bidder + i) % 4
             hand_b = self.hands[ar, bidder]
-            can_bid = active & ~declared
-            if not can_bid.any():
-                break
             score = self._bid_score(hand_b, r2_suit)
-            bids = can_bid & (score >= self.bid_threshold)
+            bids = active & ~declared & (score >= self.bid_threshold)
             trump = torch.where(bids, r2_suit, trump)
             decl_team = torch.where(bids, self.SEAT_TEAM[bidder], decl_team)
             declared = declared | bids
@@ -831,8 +838,9 @@ class KlaverjasGPUEngine:
         trump = torch.where(forced, r2_suit, trump)
         decl_team = torch.where(forced, self.SEAT_TEAM[first_bidder], decl_team)
 
-        self.trump[active]          = trump[active]
-        self.declaring_team[active] = decl_team[active]
+        # Commit to state (masked in-place)
+        self.trump.copy_(torch.where(active, trump, self.trump))
+        self.declaring_team.copy_(torch.where(active, decl_team, self.declaring_team))
 
     def _compute_roem_batch(self, hands: Tensor, trump: Tensor) -> Tensor:
         """Compute roem for all seats, return [B, 2] team totals."""
@@ -840,30 +848,28 @@ class KlaverjasGPUEngine:
         ar = torch.arange(B, device=self.device)
         roem = torch.zeros(B, 2, dtype=torch.int32, device=self.device)
 
+        K_idx = trump * 8 + 6
+        Q_idx = trump * 8 + 5
+
         for seat in range(4):
             team = _SEAT_TEAM[seat]
             hand = hands[:, seat]  # [B, 32]
 
-            # Stuk: K + Q of trump (20 pts)
-            K_idx = trump * 8 + 6
-            Q_idx = trump * 8 + 5
+            # Stuk (K+Q of trump = 20 pts)
             stuk = (hand[ar, K_idx] * hand[ar, Q_idx] * 20).int()
-            roem[:, team] = roem[:, team] + stuk
+            roem[:, team] += stuk
 
-            # Four of a kind (100 pts, 200 for four Jacks)
-            for rank in range(8):
-                rank_cards = torch.tensor(
-                    [rank, rank+8, rank+16, rank+24], dtype=torch.long, device=self.device)
-                four_count = hand[:, rank_cards].sum(1)
-                pts = 200 if rank == 4 else 100
-                roem[:, team] = roem[:, team] + ((four_count == 4).int() * pts)
+            # 4-of-a-kind (vectorized): [B,32] → [B,4,8] → sum over suits → [B,8]
+            by_suit = hand.view(B, 4, 8)
+            rank_count = by_suit.sum(dim=1)  # [B, 8]
+            foak = ((rank_count == 4).int() * self._FOAK_PTS).sum(dim=1)
+            roem[:, team] += foak
 
             # Sequences per suit (3+=20, 4=50, 5+=100)
-            # SEQUENCE_ORDER matches RANKS order exactly (index = sequence position)
             for suit_idx in range(4):
                 suit_hand = hand[:, suit_idx*8:(suit_idx+1)*8].int()  # [B, 8]
 
-                # Sequential scan to find run lengths (8 iterations)
+                # Scan run lengths
                 run_len = torch.zeros(B, 8, dtype=torch.int32, device=self.device)
                 prev = torch.zeros(B, dtype=torch.int32, device=self.device)
                 for r in range(8):
@@ -872,11 +878,12 @@ class KlaverjasGPUEngine:
                                                 torch.zeros_like(prev))
                     prev = run_len[:, r]
 
-                # End-of-run: card present, next card absent (or end of ranks)
-                padded = torch.cat([suit_hand,
-                                    torch.zeros(B, 1, dtype=torch.int32,
-                                                device=self.device)], dim=1)
-                is_end = suit_hand.bool() & ~padded[:, 1:].bool()  # [B, 8]
+                # End-of-run indicator: card present, next card absent (or end)
+                next_cur = torch.cat([
+                    suit_hand[:, 1:],
+                    torch.zeros(B, 1, dtype=torch.int32, device=self.device),
+                ], dim=1)
+                is_end = suit_hand.bool() & ~next_cur.bool()
 
                 seq_pts = torch.where(run_len >= 5,
                              torch.full_like(run_len, 100),
@@ -886,6 +893,6 @@ class KlaverjasGPUEngine:
                                    torch.full_like(run_len, 20),
                                    torch.zeros_like(run_len))))
                 awarded = (is_end.int() * seq_pts).sum(dim=1)
-                roem[:, team] = roem[:, team] + awarded
+                roem[:, team] += awarded
 
         return roem
