@@ -638,7 +638,17 @@ class KlaverjasGPUEngine:
         opp_trick  = self.trick_pts[ar, opp]
         decl_roem  = self.roem_pts[ar, decl]
         opp_roem   = self.roem_pts[ar, opp]
-        total_roem = self.roem_pts.sum(dim=1)
+
+        # Pit bonus: +100 roem to whichever team took all 162 trick points
+        # (matches main.py line 2163). Added as roem so it correctly propagates
+        # into the nat penalty (nat_opp = 162 + total_roem) when applicable.
+        pit_bonus  = torch.full_like(decl_roem, 100)
+        zero_roem  = torch.zeros_like(decl_roem)
+        decl_pit   = active & (decl_trick == 162)
+        opp_pit    = active & (opp_trick  == 162)
+        decl_roem  = decl_roem + torch.where(decl_pit, pit_bonus, zero_roem)
+        opp_roem   = opp_roem  + torch.where(opp_pit,  pit_bonus, zero_roem)
+        total_roem = decl_roem + opp_roem
 
         is_nat  = active & (decl_trick <= 81)
 
