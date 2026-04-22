@@ -289,23 +289,39 @@ def compute_gae(
 
     The flat buffer has layout [step0_game0, step0_game1, ..., stepT_gameB-1].
     We reshape to [steps, B], compute GAE along the steps axis, then flatten.
+
+    Features are encoded from the current seat's perspective, so the critic
+    (trained only on our-team transitions) learns "my-team return from
+    my-team-perspective features." On opp-turn states the features are
+    team-1-perspective, so the raw critic output is effectively the opponent's
+    expected return. The reward stream is in team-0 frame, so we flip the sign
+    of opp-turn values before GAE to put all bootstrap values in the same
+    frame as rewards.
     """
     device = buf.rewards.device
     B, T = batch_size, steps
 
-    vals = buf.values.reshape(T, B)    # [T, B]
-    rews = buf.rewards.reshape(T, B)   # [T, B]
+    vals  = buf.values.reshape(T, B)   # [T, B], current-seat perspective
+    rews  = buf.rewards.reshape(T, B)  # [T, B], team-0 perspective
+    valid = buf.valid.reshape(T, B)    # [T, B], 1.0 for our-team steps
+
+    # Team-0-frame values: keep where our team plays, negate where opponent plays.
+    sign = 2.0 * valid - 1.0           # +1 on our turns, -1 on opp turns
+    vals_t0 = vals * sign
 
     adv  = torch.zeros(T, B, device=device)
     last_gae = torch.zeros(B, device=device)
 
     for t in reversed(range(T)):
-        next_val = vals[t + 1] if t < T - 1 else torch.zeros(B, device=device)
-        delta    = rews[t] + gamma * next_val - vals[t]
+        next_val = vals_t0[t + 1] if t < T - 1 else torch.zeros(B, device=device)
+        delta    = rews[t] + gamma * next_val - vals_t0[t]
         last_gae = delta + gamma * lam * last_gae
         adv[t]   = last_gae
 
-    ret = adv + vals   # [T, B]
+    # Returns are training targets for the critic. Only our-team steps are
+    # kept for training; for those, vals_t0 == vals, so ret = adv + vals is
+    # the correct target.
+    ret = adv + vals_t0   # [T, B]
     buf.advantages = adv.reshape(T * B)
     buf.returns    = ret.reshape(T * B)
     return buf

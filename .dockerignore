@@ -1,17 +1,62 @@
-__pycache__
-*.pyc
+# VCS and agent/local metadata
 .git
+.github
+.claude
+AGENTS.md
+
+# Python caches and local test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+
+# Virtual environments and packaging artifacts
+.venv/
+venv/
+env/
+ENV/
+build/
+dist/
+*.egg-info/
+
+# Local configuration and secrets
 .env
 .env.*
 !.env.example
+
+# Editor, OS, and log noise
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+*.log
+logs/
+
+# Docker/deployment files are not needed inside the image
 .dockerignore
 Dockerfile
 docker-compose*.yml
+scripts/
 
-# Training data and tools (not needed at runtime)
-models/*.npz
+# Development, documentation, and validation assets
+docs/
+plans/
+tests/
 tools/
+requirements-dev.txt
+analytics/
 
-# Exclude all models, then whitelist only the ones needed at runtime
+# Generated static assets and source-only helpers
+static/icons/generate_icons.py
+
+# Training data and non-production model checkpoints
+models/*.npz
 models/*.pt
 !models/neural_best.pt
