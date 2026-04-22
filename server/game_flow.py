@@ -386,11 +386,16 @@ def room_state(socketio, room: Room, event: str, data: dict) -> None:
             "winner_name": room.player_names().get(winner_idx, "?"),
             "pts": pts,
         })
-        room.cur_trick_cards.clear()
+        # Don't clear cur_trick_cards here — cards remain visible until trick_cleared
         room.cur_tricks[:] = list(data["trick_pts"])
         room.cur_roem[:] = list(data["roem_pts"])
         send_data["cur_tricks"] = list(room.cur_tricks)
         send_data["cur_roem"] = list(room.cur_roem)
+    elif event == "trick_cleared":
+        # Clear trick cards now that the UI animation is complete
+        room.cur_trick_cards.clear()
+        socketio.emit(event, send_data, room=room.code)
+        return
     elif event == "roem":
         room.cur_roem[:] = list(data["roem_pts"])
         send_data["items"] = [(desc, pts) for desc, pts in data["items"]]
