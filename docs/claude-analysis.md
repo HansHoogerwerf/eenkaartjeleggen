@@ -1,9 +1,9 @@
 # Codebase Analysis: Klaverjassen Web Game (eenkaartjeleggen)
 
-**Repository:** https://github.com/HansHoogerwerf/eenkaartjeleggen
-**Analysis Date:** 2026-02-23
-**Current Branch:** develop
-**Project Size:** ~3.0 MB
+**Repository:** https://github.com/HansHoogerwerf/eenkaartjeleggen  
+**Snapshot Date:** 2026-04-22  
+**Current Branch:** develop  
+**Tracked Project Size:** ~7.9 MB, including the two tracked production neural model artifacts
 
 ---
 
@@ -14,110 +14,161 @@
 3. [Technology Stack](#3-technology-stack)
 4. [Architecture](#4-architecture)
 5. [Configuration](#5-configuration)
-6. [Deployment & Scripts](#6-deployment--scripts)
-7. [Game Engine Deep Dive](#7-game-engine-deep-dive)
-8. [Docker & Containerization](#8-docker--containerization)
-9. [CI/CD Pipelines](#9-cicd-pipelines)
-10. [Dependencies](#10-dependencies)
-11. [Testing & Code Quality](#11-testing--code-quality)
-12. [Security](#12-security)
-13. [Internationalization](#13-internationalization)
-14. [Code Patterns & Conventions](#14-code-patterns--conventions)
-15. [Deployment Configuration Summary](#15-deployment-configuration-summary)
-16. [Issues & Areas for Improvement](#16-issues--areas-for-improvement)
-17. [Summary & Recommendations](#17-summary--recommendations)
+6. [Game Engine Deep Dive](#6-game-engine-deep-dive)
+7. [Frontend and PWA](#7-frontend-and-pwa)
+8. [Neural AI and Training Tooling](#8-neural-ai-and-training-tooling)
+9. [Deployment and CI/CD](#9-deployment-and-cicd)
+10. [Testing and Verification](#10-testing-and-verification)
+11. [Security and Reliability](#11-security-and-reliability)
+12. [Current Issues and Recommendations](#12-current-issues-and-recommendations)
+13. [Key Files Reference](#13-key-files-reference)
 
 ---
 
 ## 1. Project Overview
 
-A multiplayer **Klaverjassen** card game (known locally as "eenkaartjeleggen") built as a real-time web application. Players can create/join game rooms, fill empty seats with AI opponents, and play against each other in-browser.
+This repository contains a real-time multiplayer **Klaverjassen** card game, branded as "eenkaartjeleggen". Players can create rooms, join seats, play with other humans, and fill empty seats with AI players. The app is browser-based, uses Socket.IO for real-time state, and keeps room/game state in memory.
 
-| Attribute | Value |
-|-----------|-------|
-| Type | Multiplayer card game web app |
-| Primary Backend Language | Python 3.12 |
-| Primary Frontend Language | Vanilla JavaScript |
-| Real-time Protocol | WebSocket (Socket.IO) |
-| Deployment Target | VPS with Docker + Traefik |
-| Players per Room | Up to 4 (human or AI) |
-| Supported Languages | Dutch (default), English |
+| Attribute | Current Value |
+|---|---|
+| Type | Multiplayer Klaverjassen web app |
+| Backend | Python + Flask + Flask-SocketIO |
+| Frontend | Vanilla JavaScript, HTML, CSS |
+| Real-time protocol | Socket.IO |
+| Player seats | 4 total seats: South, West, North, East |
+| Teams | Team 0 = seats 0 and 2; Team 1 = seats 1 and 3 |
+| AI public options | Beginner, Advanced, Expert |
+| AI public mapping | Beginner = previous Expert; Advanced = previous Expert v2; Expert = Neural-backed profile |
+| Rules variants | Rotterdam, Amsterdam |
+| Game modes | Score limit, Boom, Free play |
+| Supported languages | Dutch and English |
+| Deployment target | VPS with Docker Compose, Gunicorn, Gevent, Traefik |
+| PWA support | Manifest, service worker, generated icons |
+
+The core game is still a four-player Klaverjassen engine. The recent AI change is about **AI strength option labels**, not seat count.
 
 ---
 
 ## 2. Project Structure
 
-```
+Current tracked structure, grouped by purpose:
+
+```text
 /
-├── app.py                          # Flask + Socket.IO server (~416 lines)
-├── main.py                         # Game engine core logic (~1,660 lines)
-├── config.py                       # Centralized config via frozen dataclasses (~74 lines)
-├── requirements.txt                # Python runtime dependencies
-├── requirements-dev.txt            # Dev dependencies (Playwright)
+├── app.py                          # Flask + Socket.IO server (~604 lines)
+├── main.py                         # Game engine, AI logic, replay support (~2,255 lines)
+├── config.py                       # Frozen runtime config dataclasses (~80 lines)
+├── requirements.txt                # Runtime dependencies
+├── requirements-dev.txt            # Dev/test dependencies
+├── AGENTS.md                       # Local agent/project instructions
 │
-├── klaverjas/                      # Game rules & card logic module
+├── klaverjas/                      # Pure card/rules primitives
 │   ├── __init__.py
-│   ├── constants.py                # Card ranks, suits, scoring rules (23 lines)
-│   └── core.py                     # Card, Deck, Trick classes (98 lines)
+│   ├── constants.py                # Suits, ranks, scores, seat/team maps
+│   └── core.py                     # Card, Deck, Trick, roem helpers
 │
-├── server/                         # Web server helpers
+├── server/                         # Room and game-flow bridge
 │   ├── __init__.py
-│   ├── room_state.py               # Room management, player seats (153 lines)
-│   └── game_flow.py                # Game lifecycle, event handling (235 lines)
+│   ├── room_state.py               # Room seats, host migration, TTL cleanup (~275 lines)
+│   └── game_flow.py                # Game startup, reconnect snapshots, event routing (~441 lines)
 │
-├── static/                         # Frontend assets
-│   ├── game_app.js                 # Main app logic (1,004 lines)
-│   ├── game_render.js              # Game board rendering (178 lines)
-│   ├── game_state.js               # Client-side state (116 lines)
-│   ├── i18n.js                     # Internationalization (378 lines)
-│   └── style.css                   # Styling (~26 KB)
+├── neural/                         # Neural-card-play feature/model/inference code
+│   ├── __init__.py
+│   ├── bid_features.py
+│   ├── features.py                 # State encoder for card-play model
+│   ├── model.py                    # PyTorch model definitions
+│   └── player.py                   # Neural inference wrapper with heuristic fallback
+│
+├── models/
+│   ├── .gitignore                  # Ignores training data/intermediate models
+│   ├── neural_best.pt              # Tracked production neural model
+│   └── neural_gpu.pt               # Tracked GPU-trained model artifact
+│
+├── static/
+│   ├── game_app.js                 # Socket.IO I/O, lobby, interactions (~1,346 lines)
+│   ├── game_render.js              # Board/card rendering (~225 lines)
+│   ├── game_state.js               # Client state and seat rotation (~211 lines)
+│   ├── i18n.js                     # Dutch/English translations (~402 lines)
+│   ├── socket.io.min.js            # Local Socket.IO client asset
+│   ├── style.css                   # Main responsive styling
+│   ├── manifest.webmanifest        # PWA manifest
+│   ├── sw.js                       # Service worker
+│   └── icons/                      # Generated app icons and generator script
 │
 ├── templates/
-│   └── index.html                  # Main HTML page (~18 KB)
+│   └── index.html                  # Single-page app template (~334 lines)
 │
-├── tests/                          # 15 test files
-│   ├── test_app_integration.py     # Flask/Socket.IO integration tests
-│   ├── test_ai_decisions.py        # AI logic tests
-│   ├── test_ai_strength_levels.py  # AI difficulty levels
-│   ├── test_ai_advanced_tactics.py # Advanced AI tactics
-│   ├── test_ai_seat_logic.py       # Seat-specific AI logic
-│   ├── test_ai_signaling.py        # Partner signal tests
-│   ├── test_game_flow_unit.py      # Game flow tests
-│   ├── test_room_state_unit.py     # Room management tests
-│   ├── test_core_unit.py           # Card/Deck/Trick unit tests
-│   ├── test_browser_integration.py # Playwright E2E browser tests
-│   ├── test_benchmark_smoke.py     # Quick benchmark sanity check
-│   ├── test_ci_quality_gate.py     # CI regression gate tests
-│   ├── test_replay_determinism.py  # Seed-based replay determinism
-│   ├── test_frontend_split.py      # Checks JS files are split correctly and key element IDs exist (not i18n)
-│   └── test_refactor_structure.py  # Architecture/import tests
+├── tests/                          # 15 unittest/Playwright-oriented test files
+│   ├── test_ai_advanced_tactics.py
+│   ├── test_ai_decisions.py
+│   ├── test_ai_seat_logic.py
+│   ├── test_ai_signaling.py
+│   ├── test_ai_strength_levels.py
+│   ├── test_app_integration.py
+│   ├── test_benchmark_smoke.py
+│   ├── test_browser_integration.py
+│   ├── test_ci_quality_gate.py
+│   ├── test_core_unit.py
+│   ├── test_frontend_split.py
+│   ├── test_game_flow_unit.py
+│   ├── test_refactor_structure.py
+│   ├── test_replay_determinism.py
+│   └── test_room_state_unit.py
 │
-├── tools/                          # Dev & CI tools
-│   ├── ai_benchmark.py             # AI performance benchmarking (181 lines)
-│   ├── ci_quality_gate.py          # CI quality gate checks (105 lines)
-│   ├── replay_cli.py               # Game replay debugging (135 lines)
-│   └── benchmark_baseline.json     # Baseline metrics for regression
-│
-├── scripts/
-│   └── deploy.sh                   # Docker Compose deployment script (~54 lines)
+├── tools/                          # Benchmarks, replay, data generation, neural/RL training
+│   ├── ai_benchmark.py
+│   ├── benchmark_lookahead.py
+│   ├── ci_quality_gate.py
+│   ├── generate_bid_data.py
+│   ├── generate_training_data.py
+│   ├── gpu_engine.py
+│   ├── replay_cli.py
+│   ├── reward_rules.py
+│   ├── run_full_pipeline.py
+│   ├── train_bid_neural.py
+│   ├── train_bid_pipeline.py
+│   ├── train_bid_rl.py
+│   ├── train_gpu_selfplay.py
+│   ├── train_neural.py
+│   ├── train_ppo.py
+│   ├── train_rl.py
+│   ├── train_selfplay.py
+│   ├── train_shaped.py
+│   └── tune_bid_threshold.py
 │
 ├── docs/
-│   └── VPS_AUTO_DEPLOY.md          # Deployment documentation
+│   ├── ai-strategy.md
+│   ├── claude-analysis.md
+│   ├── neural-ai-plan.md
+│   ├── VPS_AUTO_DEPLOY.md
+│   └── vps-setup-runbook.md
+│
+├── plans/
+│   ├── reconnect-ui-fix.md
+│   └── reconnect-ui-fix-implementation.md
+│
+├── scripts/
+│   └── deploy.sh
 │
 ├── .github/workflows/
-│   ├── ci.yml                      # Main CI pipeline + production deploy
-│   └── deploy-acceptance.yml       # Acceptance environment deploy
+│   ├── ci.yml
+│   └── deploy-acceptance.yml
 │
-├── docker-compose.yml              # Local dev environment
-├── docker-compose.prod.yml         # Production environment
-├── docker-compose.acceptance.yml   # Acceptance/staging environment
-├── docker-compose.traefik.yml      # Traefik reverse proxy config
-├── Dockerfile                      # Container image definition
-├── .dockerignore                   # Docker build exclusions
-├── .gitignore                      # Git exclusions
-├── .env.example                    # Environment variable template
-└── .claude/settings.local.json     # Claude Code CLI permissions
+├── Dockerfile
+├── docker-compose.yml
+├── docker-compose.prod.yml
+├── docker-compose.acceptance.yml
+├── docker-compose.traefik.yml
+├── .dockerignore
+├── .env.example
+└── .gitignore
 ```
+
+Notes:
+
+- `analytics/` exists locally but has no tracked files at this snapshot.
+- `.gitignore` and `models/.gitignore` ignore `*.npz` and most `*.pt` files, while allowing `neural_best.pt` and `neural_gpu.pt`.
+- The Socket.IO client is now served locally from `static/socket.io.min.js`, not from a CDN.
 
 ---
 
@@ -125,275 +176,302 @@ A multiplayer **Klaverjassen** card game (known locally as "eenkaartjeleggen") b
 
 ### Backend
 
-| Component | Technology | Version |
-|-----------|-----------|---------|
-| Language | Python | 3.12 |
-| Web Framework | Flask | 3.1.2 |
-| Real-time | Flask-SocketIO | Latest |
-| WSGI Server | Gunicorn | Latest |
-| Async Runtime | Gevent + gevent-websocket | Latest |
-| Threading | Python threading | stdlib |
+| Component | Technology |
+|---|---|
+| Language | Python; Docker image uses `python:3.12-slim`; GitHub Actions uses Python 3.11 |
+| Web framework | Flask 3.1.2 |
+| Real-time | Flask-SocketIO |
+| Async runtime | Gevent + gevent-websocket |
+| Production WSGI | Gunicorn |
+| Numeric dependency | NumPy |
+| Neural inference | PyTorch-compatible `.pt` models; `torch` is optional at runtime and not listed in `requirements.txt` |
+
+`neural/player.py` gracefully returns `None` if `torch` or the model file is unavailable. The AI then falls back to heuristic play.
 
 ### Frontend
 
 | Component | Technology |
-|-----------|-----------|
-| Language | Vanilla JavaScript (no framework) |
-| Real-time Client | Socket.IO 4.7.5 client (loaded from cdnjs.cloudflare.com; no SRI) |
-| Styling | CSS3 with CSS variables |
-| Internationalization | Custom i18n implementation |
-| E2E Testing | Playwright 1.52.0 |
+|---|---|
+| Language | Vanilla JavaScript |
+| Real-time client | Local Socket.IO client at `/static/socket.io.min.js` |
+| Styling | CSS variables and responsive CSS |
+| Internationalization | Custom key/value dictionary in `static/i18n.js` |
+| PWA | `manifest.webmanifest`, `sw.js`, generated PNG icons |
+| Browser tests | Playwright 1.52.0 via `requirements-dev.txt` |
 
 ### Infrastructure
 
 | Component | Technology |
-|-----------|-----------|
-| Containers | Docker (python:3.12-slim base) |
-| Orchestration | Docker Compose |
-| Reverse Proxy | Traefik (latest) |
-| SSL/TLS | Let's Encrypt (ACME) |
+|---|---|
+| Container | Docker |
+| Local orchestration | Docker Compose |
+| Production process | Gunicorn with `geventwebsocket.gunicorn.workers.GeventWebSocketWorker` |
+| Reverse proxy | Traefik |
+| TLS | Let's Encrypt via Traefik ACME |
 | CI/CD | GitHub Actions |
-
-### Domains
-
-| Environment | Domain |
-|-------------|--------|
-| Production | eenkaartjeleggen.nl |
-| Acceptance | acceptance.eenkaartjeleggen.nl |
 
 ---
 
 ## 4. Architecture
 
-### Backend: Layered Architecture with Real-time Event Streaming
+```text
+Browser SPA
+  ├─ static/game_state.js       local state and seat rotation
+  ├─ static/game_render.js      board/card rendering
+  ├─ static/game_app.js         Socket.IO events, lobby, controls
+  └─ static/i18n.js             translations
 
-```
-┌──────────────────────────────────────────┐
-│           Flask Web Layer (app.py)        │  HTTP + Socket.IO events
-├──────────────────────────────────────────┤
-│       Server Helpers (server/)            │  Room state, game flow bridge
-├──────────────────────────────────────────┤
-│       Game Engine (main.py)               │  Pure game logic in daemon thread
-├──────────────────────────────────────────┤
-│       Game Rules (klaverjas/)             │  Cards, Tricks, Constants
-├──────────────────────────────────────────┤
-│       Configuration (config.py)           │  Frozen dataclasses + env vars
-└──────────────────────────────────────────┘
-```
+Flask / Socket.IO app.py
+  ├─ HTTP routes
+  ├─ Socket.IO event handlers
+  ├─ background room cleanup task
+  └─ native threadpool offload hook for CPU-heavy AI decisions
 
-**1. Flask Web Layer (`app.py`)**
-- HTTP route `/` serves `index.html`
-- Socket.IO event handlers for all multiplayer actions
-- Request validation and routing to server helpers
+server/
+  ├─ room_state.py              rooms, seats, host migration, sid lookup
+  └─ game_flow.py               game startup, reconnect snapshots, room events
 
-**2. Server Helpers Layer (`server/`)**
-- `room_state.py`: Manages game rooms; lobby, active games, seat assignments
-- `game_flow.py`: Bridges the game engine thread and Socket.IO event layer
-- Handles reconnection logic and broadcasting state to clients
+main.py
+  ├─ Player / HumanPlayer / AIPlayer
+  ├─ bidding, trick play, scoring, replay data
+  ├─ heuristic AI, inference, lookahead, endgame solver
+  └─ optional neural card play
 
-**3. Game Engine Layer (`main.py`)**
-- Pure game logic (~1,660 lines), no web dependencies
-- `Player` base class with `HumanPlayer` and `AIPlayer` subclasses
-- `KlaverjasGame` orchestrates rounds, bidding, and trick play
-- Runs in a separate daemon thread per room
-
-**4. Configuration Layer (`config.py`)**
-- Centralized frozen dataclasses (`ServerConfig`, `RoomConfig`)
-- Environment variable overrides at instantiation time
-- Immutable once created
-
-**5. Game Rules Module (`klaverjas/`)**
-- `Card`, `Deck`, `Trick` implementations
-- Trick winner calculation
-- Roem (honour card combination) scoring
-- Rule variant definitions
-
-### Frontend: Event-Driven State Machine
-
-```
-┌────────────────────────────────────────────┐
-│   game_app.js (1,004 lines)                 │  Socket.IO I/O, user input, notifications
-├────────────────────────────────────────────┤
-│   game_state.js (116 lines)                 │  Client-side state cache
-├────────────────────────────────────────────┤
-│   game_render.js (178 lines)                │  Card table visualization
-├────────────────────────────────────────────┤
-│   i18n.js (378 lines)                       │  Translation key system
-└────────────────────────────────────────────┘
+klaverjas/
+  └─ reusable card, deck, trick, constants, roem logic
 ```
 
-### Multiplayer Architecture
+### Runtime Model
 
-- **Room-based Lobbies:** Up to 4 players per room (identified by 4-char alphanumeric code)
-- **AI Fill:** Empty seats can be filled with AI players at configurable strength
-- **Host Migration:** If the room creator disconnects, host role passes to another player
-- **Disconnect/Reconnect:** Players can temporarily disconnect; game pauses and resumes on reconnect (120s timeout)
-- **Room Lifecycle:**
-  - Lobby phase TTL: 3600s
-  - Game phase TTL: 21600s
-  - Automatic expiration and cleanup
+- The web layer is Gevent-based.
+- Each active room's game loop runs in its own thread/greenlet path through `start_room_game()`.
+- CPU-heavy AI work is offloaded through `main._thread_offload`, set by `app.py` to Gevent's native threadpool.
+- Room state is in memory. This is why production uses one process/worker.
 
-### Thread Model
+### Room Identity and Reconnect
 
-```
-Main thread       → Flask HTTP + Socket.IO event handling (Gevent greenlets)
-Game thread       → One daemon thread per active room (blocks on human input via threading.Event)
-```
-
-This hybrid model (gevent for the web layer, OS threads for game execution) is pragmatic and works, but it increases concurrency complexity. Shared mutable state (`sid_to_room`, `rooms`, room snapshots) is accessed from both gevent handlers and game threads without explicit synchronisation. Under normal load this is safe; under reconnect/disconnect churn race conditions can surface.
-
-**Note:** Production Gunicorn is configured with `-w 1` (single worker). This is correct and intentional — with in-memory room state and process-local WebSocket connections, multiple workers would break state consistency.
+- Seats are indexed `0..3`.
+- Socket IDs are transient and tracked in `sid_to_seat`.
+- Reconnect identity is still based on `(room code, player name)`.
+- Active connected seats reject duplicate reconnect attempts from another socket.
+- Disconnected seats can be reclaimed by matching name, which is convenient but not cryptographically secure.
 
 ---
 
 ## 5. Configuration
 
-### `config.py` — Frozen Dataclasses
+Configuration lives in `config.py` as frozen dataclasses:
 
-```python
-ServerConfig:
-  secret_key        # Flask session encryption (default: "klaverjas-secret"; override via SECRET_KEY)
-  cors_origins      # CORS allowed origins (env: CORS_ORIGINS)
-  ping_timeout      # 30s
-  ping_interval     # 10s
-  host              # 0.0.0.0
-  port              # 5000
-  debug             # Controlled by FLASK_DEBUG env var
+```text
+ServerConfig
+  secret_key        default "klaverjas-secret"; override with SECRET_KEY
+  cors_origins      default "*"; override with CORS_ORIGINS
+  ping_timeout      30
+  ping_interval     10
+  host              0.0.0.0
+  port              5000
+  debug             FLASK_DEBUG == "1"
 
-RoomConfig:
-  default_player_name       # "Player"
-  max_player_name_len       # 16 characters
-  max_chat_message_len      # 200 characters
-  seat_count                # 4
-  room_code_length          # 4 chars
-  allowed_game_modes        # ["score_limit", "boom", "free_play"]
-  default_game_mode         # "score_limit"
-  allowed_ai_strengths      # ["beginner", "advanced", "expert"]
-  default_ai_strength       # "expert"
-  allowed_rules_variants    # ["rotterdam", "amsterdam"]
-  default_rules_variant     # "rotterdam"
-  score_limit_range         # 50–5000 (default: 500)
-  max_team_name_len         # 16 characters
+RoomConfig
+  default_player_name              "Player"
+  max_player_name_len              16
+  max_chat_message_len             200
+  seat_count                       4
+  room_code_length                 4
+  allowed_game_modes               score_limit, boom, free_play
+  default_game_mode                score_limit
+  allowed_ai_strengths             beginner, advanced, expert
+  default_ai_strength              expert
+  allowed_rules_variants           rotterdam, amsterdam
+  default_rules_variant            rotterdam
+  score_limit range                50..5000, default 500
+  default_team_names               Team A, Team N
+  max_team_name_len                16
+  seat_reconnect_timeout_seconds   env SEAT_RECONNECT_TIMEOUT_SECONDS, default 60
+  lobby_ttl_seconds                env ROOM_LOBBY_TTL_SECONDS, default 3600
+  started_ttl_seconds              env ROOM_STARTED_TTL_SECONDS, default 21600
 ```
 
-### Environment Variables
+Important environment variables:
 
-| Variable | Purpose | Required |
-|----------|---------|----------|
-| `SECRET_KEY` | Flask session encryption | Yes (production) |
-| `CORS_ORIGINS` | Allowed CORS origins | Optional |
-| `FLASK_DEBUG` | Enable debug mode | Dev only |
-| `ACME_EMAIL` | Let's Encrypt contact email | VPS deployment |
-
----
-
-## 6. Deployment & Scripts
-
-### `scripts/deploy.sh`
-
-A 54-line bash script orchestrating Docker Compose deployments:
-
-- Detects Docker Compose plugin vs legacy `docker-compose` command
-- Isolates Traefik and app as separate Compose projects
-- Ensures Traefik is running before starting the app
-- Pulls latest images (best effort, non-fatal)
-- Builds and starts services with `--remove-orphans`
-- Optional flags via environment variables:
-
-| Env Var | Default | Effect |
-|---------|---------|--------|
-| `COMPOSE_FILE` | `docker-compose.prod.yml` | Override compose file |
-| `FORCE_DOWN_UP` | `0` | Force `down` then `up` |
-| `PRUNE_IMAGES` | `0` | Prune unused Docker images after deploy |
-| `TRAEFIK_PROJECT_NAME` | `traefik` | Compose project name for Traefik |
+| Variable | Purpose |
+|---|---|
+| `SECRET_KEY` | Flask session secret; should be set in production |
+| `CORS_ORIGINS` | Socket.IO CORS allow-list |
+| `FLASK_DEBUG` | Enables Flask debug mode when `1` |
+| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Per-seat reconnect grace period |
+| `ROOM_LOBBY_TTL_SECONDS` | Expiry for inactive lobby rooms |
+| `ROOM_STARTED_TTL_SECONDS` | Expiry for inactive started rooms |
+| `ACME_EMAIL` | Traefik/Let's Encrypt contact email |
 
 ---
 
-## 7. Game Engine Deep Dive
+## 6. Game Engine Deep Dive
 
-### Core Classes (`main.py`)
+### Seat and Team Model
 
-#### `Player` (Abstract Base Class)
+`main.KlaverjasGame` is a four-seat game:
 
-| Property | Description |
-|----------|-------------|
-| `name` | Player's display name |
-| `team` | 0 or 1 (two teams: seats 0+2 vs 1+3) |
-| `seat_idx` | 0–3 (South, West, North, East) |
-| `hand` | Current cards in hand |
-| `played_cards` | Cards seen played this round |
-| `rules_variant` | `"rotterdam"` or `"amsterdam"` |
+| Seat | Direction | Team |
+|---|---|---|
+| 0 | South | 0 |
+| 1 | West | 1 |
+| 2 | North | 0 |
+| 3 | East | 1 |
 
-Key methods:
-- `legal_moves(trick, trump)` — Returns playable cards per rules variant
-- `choose_card(trick, trump)` — Abstract; implemented by subclasses
-- `choose_trump(suit, forced)` — Abstract; for bidding phase
-- `receive_hand(cards)` — Deals cards to player
-- `observe_card(card)` / `observe_trick_play(...)` — State tracking for inference
+Human seats are passed as `human_seats={seat_idx: name}`. Seats not present become `AIPlayer`s.
 
-#### Rules Variants
+### Game Modes
 
-| Rule | Rotterdam (Default) | Amsterdam |
-|------|-------------------|-----------|
-| Trump requirement | Must trump if partner is losing | Can follow any card if partner winning |
-| Overtrump | Must overtrump if possible | Softer requirement |
-| Nat (pit) | 0 points if < 81 trick points | Same |
+| Mode | Meaning |
+|---|---|
+| `score_limit` | First team to reach configured score limit wins |
+| `boom` | Fixed 16-round game |
+| `free_play` | Continues without a win condition |
 
-#### `HumanPlayer(Player)`
+### Rules Variants
 
-- Uses `threading.Event` to pause the game thread waiting for a human's card/bid choice
-- Supports disconnect/reconnect:
-  - `set_disconnected()` — Pauses game
-  - `set_reconnected()` — Resumes and re-fires pending request
-  - Disconnect timeout: 120s (configurable)
-- Callbacks injected from Flask layer:
-  - `_on_move_request(seat_idx, legal_cards)`
-  - `_on_bid_request(seat_idx, suit, forced)`
-  - `_on_disconnect_pause(seat_idx)`
+| Variant | Notes |
+|---|---|
+| Rotterdam | Default; stricter trump/overtrump behavior |
+| Amsterdam | Softer partner-winning behavior |
 
-#### `AIPlayer(Player)`
+### Player Classes
 
-Three strength profiles with tuned parameters:
+`Player`
+
+- Base class for hands, legal moves, observed cards, void tracking, and rule-aware move constraints.
+
+`HumanPlayer`
+
+- Blocks the game loop using events while waiting for client input.
+- Supports pending move, bid, and forced-suit requests.
+- Handles disconnect/reconnect pause behavior and timeout interruption.
+
+`AIPlayer`
+
+- Contains bidding heuristics, card-play heuristics, inference, Monte Carlo trick-win probability, partner signaling, lookahead, endgame exact minimax, and optional neural card play.
+
+### Current Public AI Strength Mapping
+
+The public labels were intentionally remapped:
+
+| Public Option | Previous Equivalent | Main Behavior |
+|---|---|---|
+| Beginner | Previous `expert` | Heuristic expert: inference, trick probability, endgame solver |
+| Advanced | Previous `expert_v2` | Expert heuristic plus enhanced 3-trick sampled lookahead |
+| Expert | Previous `neural` | Neural card play when available, with heuristic fallback |
+
+The app only accepts `beginner`, `advanced`, and `expert` through `CONFIG.room.allowed_ai_strengths`.
+
+Internal legacy profile keys such as `expert_v2`, `expert_v2_base`, and `neural` still exist in `AI_STRENGTH_PROFILES` for benchmark/training scripts, but they are no longer public lobby options.
+
+### AI Profile Flags
 
 | Parameter | Beginner | Advanced | Expert |
-|-----------|----------|----------|--------|
-| Inference | No | Yes | Yes |
-| Trick Probability | No | Yes | Yes |
-| Endgame Solver | No | No | Yes |
-| Tie Break Delta | 0.95 | 0.55 | 0.35 |
-| Mistake Rate | 10% | 3% | 0% |
-| Declaration Bias | 0.65 | 0.25 | 0.0 |
-| Trick Sim Samples | 4 | 12 | 20 |
-
-Decision making:
-- `_declaration_score(suit)` — Evaluates hand strength for bidding (weights: Trump J=1.85, Trump 9=1.30, voids=0.35, etc.)
-- `_strategy(legal, trick, trump)` — Card play heuristics
-- `_score_pressure()` — Context-aware aggression/caution modifier
-- Partner signaling — Infers information from partner's card choices
-- Void tracking — Infers which suits opponents cannot play
-
-#### `KlaverjasGame`
-
-Orchestrates the full game loop:
-
-1. **Deal** — Distribute 8 cards × 4 players
-2. **Bidding** — Each player is offered the current suit; can pass or declare
-3. **Trick Play** — 8 tricks, 4 cards each
-4. **Scoring** — Calculate trick points + roem (honour combinations) + nat check
-
-**Game Modes:**
-
-| Mode | Description |
-|------|-------------|
-| `score_limit` | First team to reach score_limit (default 500) wins |
-| `boom` | Play fixed 16 rounds |
-| `free_play` | Continuous play, no win condition |
+|---|---|---|---|
+| `use_inference` | True | True | True |
+| `use_trick_prob` | True | True | True |
+| `use_endgame_solver` | True | True | True |
+| `use_lookahead` | False | True | False |
+| `lookahead_enhanced` | False | True | False |
+| `lookahead_depth` | 0 | 3 | 0 |
+| `lookahead_samples` | 0 | 8 | 0 |
+| `use_neural_play` | False | False | True |
+| `tie_break_delta` | 0.35 | 0.35 | 0.35 |
+| `random_mistake_rate` | 0% | 0% | 0% |
+| `declaration_bias` | 0.0 | 0.0 | 0.0 |
+| `trick_win_sim_samples` | 20 | 20 | 20 |
 
 ---
 
-## 8. Docker & Containerization
+## 7. Frontend and PWA
 
-### Dockerfile
+### Main Files
+
+| File | Role |
+|---|---|
+| `templates/index.html` | Single page shell, lobby, board, modals, scripts |
+| `static/game_state.js` | Socket init, global state, session persistence, seat rotation |
+| `static/game_render.js` | Cards, labels, trick slots, trump badges |
+| `static/game_app.js` | Lobby flow, Socket.IO event handlers, bid/play controls, chat, history |
+| `static/i18n.js` | Dutch/English translations |
+| `static/style.css` | Responsive game UI styling |
+| `static/socket.io.min.js` | Locally served Socket.IO client |
+| `static/manifest.webmanifest` | PWA metadata |
+| `static/sw.js` | Service worker with static asset cache |
+
+### User-Facing Lobby Flow
+
+1. Player enters a name.
+2. Host creates a room or a player joins by room code.
+3. Joining player chooses an open seat.
+4. Host selects game mode, rules variant, score limit, team names, and public AI strength.
+5. Empty seats become AI players when the game starts.
+
+### Session Persistence
+
+The browser stores `{code, name}` in localStorage under `klaverjas_session`. On reconnect/page reload, the client emits `rejoin_game`.
+
+### PWA Behavior
+
+- Service worker caches static assets.
+- Static assets use network-first refresh with cache fallback.
+- WebSocket/Socket.IO requests bypass service-worker interception.
+
+---
+
+## 8. Neural AI and Training Tooling
+
+### Neural Runtime
+
+`neural/player.py` provides `neural_choose_card()`.
+
+Flow:
+
+1. Try to import `torch`.
+2. Try to load the configured `.pt` model from `models/neural_best.pt` by default.
+3. Encode the current game state through `neural/features.py`.
+4. Predict one of 32 card logits and mask to legal moves.
+5. Return `None` if unavailable so `AIPlayer._strategy()` falls back to heuristic play.
+
+Because `torch` is not in `requirements.txt`, a plain production install can still run: Expert AI will degrade to non-neural heuristic behavior if PyTorch is absent.
+
+### Tracked Model Artifacts
+
+| File | Purpose |
+|---|---|
+| `models/neural_best.pt` | Default neural inference model |
+| `models/neural_gpu.pt` | GPU-trained model artifact |
+
+Training `.npz` files and intermediate `.pt` files are ignored.
+
+### Tooling
+
+| Tool | Purpose |
+|---|---|
+| `tools/ai_benchmark.py` | Candidate vs baseline AI benchmark |
+| `tools/benchmark_lookahead.py` | Compare lookahead profiles |
+| `tools/ci_quality_gate.py` | CI regression check around benchmark metrics |
+| `tools/replay_cli.py` | Capture/verify deterministic replay traces |
+| `tools/generate_training_data.py` | Generate card-play imitation data |
+| `tools/generate_bid_data.py` | Generate bidding imitation data |
+| `tools/train_neural.py` | Supervised card-play training |
+| `tools/train_bid_neural.py` | Supervised bidding model training |
+| `tools/train_ppo.py` / `train_rl.py` / `train_selfplay.py` / `train_shaped.py` | RL/self-play experiments |
+| `tools/train_gpu_selfplay.py` / `gpu_engine.py` | GPU self-play tooling |
+| `tools/train_bid_rl.py` / `train_bid_pipeline.py` | Bidding RL and pipeline helpers |
+| `tools/run_full_pipeline.py` | End-to-end data/train/benchmark script |
+| `tools/reward_rules.py` | Reward shaping helpers |
+| `tools/tune_bid_threshold.py` | Bid-threshold tuning helper |
+
+---
+
+## 9. Deployment and CI/CD
+
+### Docker
+
+`Dockerfile`
 
 ```dockerfile
 FROM python:3.12-slim
@@ -405,365 +483,170 @@ EXPOSE 5000
 CMD ["python", "app.py"]
 ```
 
-Optimizations:
-- Slim base image for reduced footprint
-- Dependencies installed before app code (maximizes layer cache reuse)
-- `--no-cache-dir` reduces image size
+Compose files:
 
-### `.dockerignore`
+| File | Purpose |
+|---|---|
+| `docker-compose.yml` | Local development, exposes port 5000 |
+| `docker-compose.prod.yml` | Production app service behind Traefik |
+| `docker-compose.acceptance.yml` | Acceptance/staging deployment |
+| `docker-compose.traefik.yml` | Shared Traefik reverse proxy |
 
-Excludes: `__pycache__`, `*.pyc`, `.git`, `.env`, `.env.*` (but not `.env.example`), Docker config files
+`scripts/deploy.sh`
 
-### Docker Compose Files
+- Detects Docker Compose plugin vs legacy binary.
+- Ensures Traefik is running.
+- Pulls images best-effort.
+- Builds and starts app with `--remove-orphans`.
+- Supports `COMPOSE_FILE`, `FORCE_DOWN_UP`, `PRUNE_IMAGES`, and `TRAEFIK_PROJECT_NAME`.
 
-| File | Environment | Key Difference |
-|------|-------------|----------------|
-| `docker-compose.yml` | Local dev | Source volume mount, `FLASK_DEBUG=1`, port 5000 mapped |
-| `docker-compose.prod.yml` | Production | Gunicorn+Gevent, Traefik integration, `restart: unless-stopped` |
-| `docker-compose.acceptance.yml` | Acceptance | Same as prod, port 5050, different domain |
-| `docker-compose.traefik.yml` | Shared VPS | Traefik with ACME, HTTP→HTTPS redirect |
+### GitHub Actions
 
----
+`.github/workflows/ci.yml`
 
-## 9. CI/CD Pipelines
+- Runs on pull requests and pushes to `main`.
+- PRs targeting `main` must come from `develop`.
+- Installs `requirements.txt` and `requirements-dev.txt`.
+- Runs `python -m unittest discover -s tests -v`.
+- Runs `tools/ci_quality_gate.py` with candidate `expert` vs baseline `advanced`.
+- Deploys to VPS on `main` push if required secrets are present.
+- Deployment branch defaults to `main` but can be overridden by `VPS_BRANCH`.
 
-### `.github/workflows/ci.yml` (Main Pipeline)
+`.github/workflows/deploy-acceptance.yml`
 
-**Triggers:** Push to `main`, pull requests
+- Runs on pushes to `develop` and manual dispatch.
+- Deploys acceptance if required secrets are present.
+- Deployment branch defaults to `develop` but can be overridden by `ACCEPTANCE_VPS_BRANCH`.
+- Still does not run tests before acceptance deploy; this remains a process gap.
 
-**Test Job:**
-1. Set up Python 3.11
-2. Install dependencies
-3. Run unit tests: `python -m unittest discover`
-4. Run AI benchmark quality gate (CI invokes tool with 256 rounds and seed 42; the tool's own default is 10,000 rounds)
+### Domains
 
-**Quality Gate Thresholds (Expert vs Advanced AI):**
-
-| Metric | Max Allowed Regression |
-|--------|----------------------|
-| Win rate drop | 3% |
-| Avg point diff drop | 20 points |
-| Declare success drop | 6% |
-
-**Deploy Job (main branch only, after tests pass):**
-1. Set up SSH with key from GitHub Secrets
-2. SSH to VPS
-3. `git pull --ff-only origin/main`
-4. Run `scripts/deploy.sh`
-
-**Required Secrets:**
-
-| Secret | Required? |
-|--------|----------|
-| `VPS_HOST` | Yes |
-| `VPS_USER` | Yes |
-| `VPS_SSH_KEY` | Yes |
-| `VPS_APP_DIR` | Yes |
-| `VPS_PORT` | Optional (default 22) |
-| `VPS_COMPOSE_FILE` | Optional |
-| `VPS_KNOWN_HOSTS` | Optional |
-
-### `.github/workflows/deploy-acceptance.yml`
-
-**Triggers:** Push to `develop`, manual `workflow_dispatch`
-
-- Same pipeline structure; uses `ACCEPTANCE_*` secret prefix
-- Defaults to `docker-compose.acceptance.yml`
-- Deploys to `acceptance.eenkaartjeleggen.nl`
-
-> **Gap:** This workflow is deploy-only — it does not run the unit test suite or AI benchmark quality gate before deploying. A failing or regressed `develop` push can reach the acceptance environment without being caught. The `ci.yml` test job does not cover `develop` pushes; only PRs and `main` pushes are tested automatically.
+| Environment | Domain |
+|---|---|
+| Production | `eenkaartjeleggen.nl` |
+| Acceptance | `acceptance.eenkaartjeleggen.nl` |
 
 ---
 
-## 10. Dependencies
+## 10. Testing and Verification
 
-### Python (`requirements.txt`)
+### Test Suite
 
-| Package | Purpose |
-|---------|---------|
-| `flask==3.1.2` | Web framework |
-| `flask-socketio` | Real-time Socket.IO events |
-| `gevent` | Async greenlet runtime |
-| `gevent-websocket` | WebSocket support for Gevent |
-| `gunicorn` | Production WSGI server |
+| File | Focus |
+|---|---|
+| `test_core_unit.py` | Card, deck, trick winner, roem |
+| `test_room_state_unit.py` | Room seats, host migration, reconnect helpers |
+| `test_game_flow_unit.py` | Snapshots, reconnect, event routing, start game |
+| `test_app_integration.py` | Flask/Socket.IO room, lobby, start, chat, reconnect errors |
+| `test_browser_integration.py` | Playwright browser flows |
+| `test_frontend_split.py` | Static split-file/template checks |
+| `test_ai_decisions.py` | AI bidding/card heuristics |
+| `test_ai_advanced_tactics.py` | Endgame solver, inference, weighted discard |
+| `test_ai_seat_logic.py` | Seat-index-aware partner/opponent logic |
+| `test_ai_signaling.py` | Partner signal encoding/decay |
+| `test_ai_strength_levels.py` | Current public AI strength remap |
+| `test_benchmark_smoke.py` | Benchmark smoke test |
+| `test_ci_quality_gate.py` | Regression gate metric checks |
+| `test_replay_determinism.py` | Replay capture and deterministic verification |
+| `test_refactor_structure.py` | Module import/refactor boundaries |
 
-### Python Dev (`requirements-dev.txt`)
+### Latest Local Verification
 
-| Package | Purpose |
-|---------|---------|
-| `playwright==1.52.0` | Browser automation for E2E tests |
+Command run:
 
-### JavaScript
+```powershell
+python -m unittest discover -s tests -v
+```
 
-- Socket.IO 4.7.5 client loaded from cdnjs.cloudflare.com (`index.html:301`); no SRI integrity attribute
-- No JavaScript package manager used
+Result:
 
-### Docker Images
+- 68 tests passed.
+- 1 browser integration setup skipped because port `5000` was already in use.
 
-| Image | Use |
-|-------|-----|
-| `python:3.12-slim` | Application container |
-| `traefik:latest` | Reverse proxy |
-
----
-
-## 11. Testing & Code Quality
-
-### Test Suite (15 files)
-
-| Test File | Focus |
-|-----------|-------|
-| `test_app_integration.py` | Room creation, joining, chat, game start via Socket.IO |
-| `test_game_flow_unit.py` | Game phase transitions and state |
-| `test_room_state_unit.py` | Seats, host migration, TTL expiry |
-| `test_ai_decisions.py` | Bidding, card choices, strategy |
-| `test_ai_strength_levels.py` | Strength profile parameter effects |
-| `test_ai_advanced_tactics.py` | Signaling, inference, endgame solver |
-| `test_ai_seat_logic.py` | Position-aware AI logic |
-| `test_ai_signaling.py` | Partner signal encoding/decoding |
-| `test_core_unit.py` | Card, Deck, Trick winner calculation |
-| `test_browser_integration.py` | Full game flow with Playwright |
-| `test_benchmark_smoke.py` | Quick benchmark sanity check |
-| `test_ci_quality_gate.py` | CI regression baseline loading |
-| `test_replay_determinism.py` | Seed-based reproducibility |
-| `test_frontend_split.py` | Checks that the frontend JS is split into the three expected files and that key element IDs (e.g. `lobby-ai-picker`) are present; does not test i18n/translations |
-| `test_refactor_structure.py` | Module imports and architecture |
-
-### Quality Gate Tools (`tools/`)
-
-**`ai_benchmark.py`**
-- Runs configurable rounds (CLI default: 10,000; CI workflow invocation uses 256 rounds with seed 42) of AI vs AI
-- Tracks: wins, total points, declarations, nats
-- Compares expert vs advanced AI
-
-**`ci_quality_gate.py`**
-- Loads baseline from `tools/benchmark_baseline.json`
-- Runs benchmark and compares vs baseline
-- Fails CI (exit code 1) if regression exceeds any threshold
-
-**`replay_cli.py`**
-- CLI tool to replay a game with the same seed for determinism debugging
+The AI quality gate command attempted in the sandbox failed on Windows multiprocessing pipe permissions. It needs to be rerun outside the sandbox or in CI after the AI strength remap, because the public `expert` vs `advanced` relationship has changed.
 
 ---
 
-## 12. Security
+## 11. Security and Reliability
 
-### Environment Variables & Secrets
+### Security Improvements Since the Older Snapshot
 
-| Secret | Storage |
-|--------|---------|
-| `SECRET_KEY` | `.env` (git-ignored) + GitHub Secrets |
-| `ACME_EMAIL` | `.env` + VPS env file |
-| `VPS_SSH_KEY` | GitHub Secrets (encrypted) |
+| Area | Current State |
+|---|---|
+| Socket.IO client | Served locally from `static/socket.io.min.js`; no CDN/SRI dependency |
+| Active-seat hijack guard | A live connected seat rejects another socket trying to rejoin with the same name |
+| Room lookup | `sid_to_seat` stores `(room_code, seat_idx)` instead of only room code |
 
-### Input Validation
+### Remaining Security and Reliability Gaps
 
-**Server-side (partial and inconsistent):**
-The following fields do have server-side guards: player names (trimmed, max 16 chars), chat messages (trimmed, max 200 chars), room codes (uppercase, 4 chars), game mode (allow-list), AI strength (allow-list), score limit (range 50–5000). However, many Socket.IO handlers use raw direct indexing (`data["card"]`) and unguarded type casts (`int(requested_seat)`) without catching exceptions. Input validation should be considered mixed quality, not a broadly satisfied property.
-
-**Client-side:**
-- HTML `maxlength` attributes
-- JavaScript cleanup before Socket.IO emit
-
-### Network Security
-
-- HTTPS enforced via Traefik (HTTP → HTTPS redirect)
-- Let's Encrypt certificates (auto-renewed)
-- WebSocket upgrades to WSS in production
-- App exposed only via Traefik on internal Docker network
-
-### Security Gaps
-
-| Issue | Risk | Suggested Fix |
-|-------|------|--------------|
-| Partial XSS risk for player names in lobby | Chat messages and sender names ARE escaped via `escapeHtml()` (`game_app.js:788`, `game_app.js:839`). However, player names rendered into the seat picker and lobby seat lists use `innerHTML` without escaping (`game_app.js:105`, `game_app.js:243`) | Wrap `seat.name` in `escapeHtml()` at those two locations |
-| No rate limiting on Socket.IO events | DoS via rapid event emission | Add per-socket rate limiter middleware |
-| No player authentication | Trolling, room hijacking | Accept for public game; optionally add optional nicknames with abuse reporting |
-| Room code collision (36^4 = 1,679,616 combinations; codes are A-Z0-9) | `generate_code()` retries for uniqueness within a process, so in-process collisions are prevented. Risk is guessability/enumeration by outsiders and eventual search-space saturation at high concurrent room counts | Increase `room_code_length` from 4 to 6 if load grows; consider rate-limiting room join attempts |
-| **Reconnect identity based on display name** | A third party with the room code can hijack a disconnected seat by joining with the same display name | Issue a per-seat secret token on join; require it for reconnect |
-| **Default `SECRET_KEY` is a static placeholder** (`config.py:48`) | Sessions are predictable if the env var is not set in production | Fail fast on startup when `SECRET_KEY` equals the default in non-debug mode |
-| **Default CORS origin is `*`** (`config.py:49`) | Any origin can make credentialed requests if the env var is not overridden | Use a restrictive default CORS origin in non-debug mode |
-| **Socket.IO CDN loaded without Subresource Integrity (SRI)** | CDN compromise could inject malicious JavaScript | Add `integrity` and `crossorigin` attributes to the `<script>` tag |
+| Issue | Current Risk | Suggested Fix |
+|---|---|---|
+| Name-based reconnect for disconnected seats | Anyone with room code and matching name can reclaim a disconnected seat | Add server-issued per-seat reconnect tokens stored client-side |
+| Lobby player-name XSS | Seat picker and lobby seat list interpolate `seat.name` through `innerHTML` without escaping | Use DOM text nodes or `escapeHtml()` for lobby seat names |
+| Partial Socket.IO payload validation | Some handlers still use raw direct indexing such as `data["card"]` | Validate `.get()` payloads and emit structured errors |
+| Default `SECRET_KEY` | Static fallback if env var is missing | Fail fast in non-debug production when default is used |
+| Default `CORS_ORIGINS="*"` | Broad CORS in production if not overridden | Require explicit CORS origins outside debug |
+| No rate limiting | Room probing, chat spam, rapid event spam | Add per-socket/per-event rate limits |
+| In-memory room state | Restart loses games; multi-worker deployment would split state | Keep one worker or introduce Redis/persistent state |
+| Import-time background cleanup task | `socketio.start_background_task()` runs at import time | Move startup into explicit app initialization |
+| Acceptance deploy lacks tests | `develop` can deploy to acceptance without the unittest/benchmark job | Add a test job dependency to acceptance workflow |
+| AI quality gate baseline | Public AI labels were remapped, so current baseline may be stale | Recalibrate `tools/benchmark_baseline.json` after benchmark verification |
 
 ---
 
-## 13. Internationalization
+## 12. Current Issues and Recommendations
 
-**Supported Languages:** Dutch (nl, default), English (en)
+### High Priority
 
-**Implementation (`static/i18n.js`):**
-- Key-based translation dictionary embedded in JavaScript
-- Language switcher UI (flag buttons)
-- Persists selected language to `localStorage`
-- Translates: text content and placeholder attributes (`applyStaticTranslations()`)
+| Task | Why |
+|---|---|
+| Re-run and recalibrate the AI quality gate | `expert` now means neural-backed profile and `advanced` means lookahead profile |
+| Fix lobby player-name escaping | Prevents a straightforward XSS path in lobby views |
+| Add reconnect tokens | Name-only reconnect remains the most important identity weakness |
+| Harden Socket.IO payload validation | Prevent malformed clients from raising handler exceptions |
 
-**Coverage:** 200+ translation keys covering lobby UI, game UI, bidding, scoring, errors, and notifications. `applyStaticTranslations()` updates `textContent` and `placeholder` attributes, but there is no generic pass for `aria-label` attributes — many `aria-label` values remain hardcoded in `templates/index.html` and are not translated.
+### Medium Priority
 
----
+| Task | Why |
+|---|---|
+| Add tests to acceptance deploy workflow | Prevents broken `develop` pushes reaching acceptance |
+| Require production `SECRET_KEY` and explicit CORS | Avoids insecure defaults in live deployment |
+| Add rate limiting | Reduces abuse risk for public rooms |
+| Pin loose runtime dependencies or add a lock file | Makes Docker/CI builds reproducible |
 
-## 14. Code Patterns & Conventions
+### Longer-Term Maintainability
 
-### Naming Conventions
-
-| Context | Convention |
-|---------|-----------|
-| Python variables/functions | `snake_case` |
-| Python constants | `UPPER_CASE` |
-| JavaScript functions | `camelCase` |
-| CSS variables | `--kebab-case` |
-
-### Python Style
-
-- Modern Python 3.11+ features: `from __future__ import annotations`, `str | None` union types
-- Frozen `@dataclass` for immutable config objects
-- Type hints on function signatures throughout
-- Module-level docstrings for rules explanations
-- Method-level docstrings sparse in AI logic (noted as improvement area)
-
-### Git Workflow
-
-- Branch naming: `codex/*`, `feat-*`, `chore-*`
-- PR-based development with squash/merge
-- Two environments: `develop` → acceptance, `main` → production
-- Recent commits show Traefik isolation refactor and deploy script simplification
+| Task | Why |
+|---|---|
+| Decompose `main.py` | It now contains game flow, AI heuristics, lookahead, neural hooks, and replay logic |
+| Move pacing delays into per-game config | Tools currently patch mutable global delay constants |
+| Add a Socket.IO event schema document | Server and client event contracts are scattered across `app.py` and `game_app.js` |
+| Add load/concurrency testing | Current capacity is unknown; room state is process-local |
 
 ---
 
-## 15. Deployment Configuration Summary
+## 13. Key Files Reference
 
-| Aspect | Dev | Acceptance | Production |
-|--------|-----|-----------|-----------|
-| Compose File | `docker-compose.yml` | `docker-compose.acceptance.yml` | `docker-compose.prod.yml` |
-| Port | 5000 (host mapped) | 5050 (exposed) | 5000 (internal only) |
-| Domain | `localhost` | `acceptance.eenkaartjeleggen.nl` | `eenkaartjeleggen.nl` |
-| WSGI Server | Flask dev server | Gunicorn + GeventWebSocketWorker | Gunicorn + GeventWebSocketWorker |
-| Debug Mode | Yes (`FLASK_DEBUG=1`) | No | No |
-| Source Volume | Yes | No | No |
-| Restart Policy | None | `unless-stopped` | `unless-stopped` |
-| Reverse Proxy | None | Traefik | Traefik |
-| SSL | None | Let's Encrypt | Let's Encrypt |
-| Docker Network | Default bridge | `traefik-public` (external) | `traefik-public` (external) |
+Line counts are current approximate counts from this checkout.
 
----
-
-## 16. Issues & Areas for Improvement
-
-### Specific Bugs (from code-level analysis)
-
-1. **Stale SID mappings accumulate on reconnect** (`server/game_flow.py:28-33`, `app.py:340-355`) — `reconnect_player()` adds `sid_to_room[new_sid]` but does not remove the old SID mapping. For started games, `handle_disconnect()` intentionally retains the old SID entry. Reconnect cycles therefore accumulate stale entries in the global `sid_to_room` dict, which can cause unexpected lookup behaviour and memory growth over time. Fix: remove `old_sid` from `sid_to_room` on successful reconnect.
-
-2. **`handle_start_game()` has a server crash path** (`app.py:143-174`) — `team_names` is normalised from `names` inside the `isinstance(names, list)` guard, but a second reference to `enumerate(names)` exists outside that guard (inside the `reconnect_timeout_seconds` validation block). If a client sends `reconnect_timeout_seconds` but omits or invalidates `team_names`, `enumerate(names)` raises an exception. The standard browser client always sends valid `team_names`, so this is invisible in normal use but is exploitable with a custom client.
-
-3. **Reconnect identity is based on player name matching** (`app.py:75-96`, `static/game_state.js:42`) — The server matches a reconnecting client to a disconnected seat using exact string equality (`info["name"] == name`) on the server-normalised display name (trimmed and truncated before comparison, no case normalisation). The client stores only `{code, name}` in localStorage. Anyone who knows the room code can claim a disconnected player's seat by joining with the same display name. Fix: issue a per-seat reconnect token on join and store `{code, name, reconnect_token}` client-side.
-
-4. **Socket.IO payload validation is inconsistent** (`app.py:105`, `app.py:201`, `app.py:219`) — Some handlers perform raw index access (`data["card"]`) or unsafe coercions (`int(requested_seat)`) without guarding against missing keys or wrong types. Malformed payloads raise unhandled exceptions. Fix: validate all incoming event payloads defensively; use `.get(...)` and type checks; return socket error events instead of raising.
-
-### Security
-
-5. **Partial XSS in lobby player names** — Chat messages and sender names are correctly escaped via `escapeHtml()` before insertion. However, player names rendered into the seat picker (`game_app.js:105`) and lobby seat list (`game_app.js:243`) are interpolated into `innerHTML` without escaping. A player who joins with a name containing `<script>` or `<img onerror=...>` can trigger execution in other clients' browsers. Fix: wrap `seat.name` in `escapeHtml()` at those two call sites.
-6. **No rate limiting** — Rapid Socket.IO event emission could abuse the server. Add per-socket throttling.
-7. **Room code guessability** — Codes are 4 characters from A-Z0-9 (36^4 = 1,679,616 combinations). `generate_code()` retries until a unique code is found within the process, so in-process collisions are not possible. The real risk is external enumeration: an attacker can probe room codes to discover active games. Consider increasing `room_code_length` to 6 and rate-limiting `peek_room`/`join_room` events.
-
-### Reliability
-
-4. **In-memory state only** — VPS restart loses all active games. Acceptable for current scale; would need a Redis/database layer for production resilience.
-5. **Single VPS** — Single point of failure with no load balancing. Acceptable for hobby project; consider failover for production.
-
-### Code Quality
-
-8. **Undocumented AI inference heuristics** — The AI's card inference and endgame solver logic is complex but lacks explaining comments/docstrings. Makes future maintenance harder.
-9. **Sparse method docstrings** — Particularly in `main.py` AI logic and `server/game_flow.py`.
-10. **`main.py` is a multi-concern monolith** — Domain model, AI heuristics, endgame solver, game loop, replay generation, and UI pacing all live in one 1,659-line file. Suggested decomposition: `engine/game.py`, `engine/players.py`, `ai/strategy.py`, `ai/inference.py`, `replay/model.py`.
-11. **UI pacing delays are global mutable constants patched by tooling** (`klaverjas/constants.py:17-19`) — `tools/ai_benchmark.py` and `tools/replay_cli.py` zero out these constants at module level to disable delays during automation. This couples tool behaviour to global mutable state. Fix: pass pacing configuration into the `KlaverjasGame` constructor so each instance controls its own delays.
-12. **Import-time background task startup** (`app.py:41`) — The room cleanup task is started at module import time, creating a hidden side effect. This complicates test isolation and could spawn duplicate loops in alternative deployment patterns. Fix: move task startup into an explicit initialisation hook.
-13. **Minor unused code** — `CURRENT_BRANCH` computed but unused (`scripts/deploy.sh:8`); `total_points` computed but unused (`main.py:1591`).
-14. **Inline `onclick` handlers in `index.html`** — The template uses inline `onclick` attributes throughout, preventing a Content Security Policy that disallows `unsafe-inline`. Refactoring to `addEventListener` calls in `game_app.js` would enable a stricter CSP.
-
-### Testing
-
-8. **Partial E2E test coverage** — A reconnect-on-reload flow is already covered by `test_reload_auto_reconnect_restores_active_game` in `test_browser_integration.py`. Remaining gaps: full multiplayer game flow (4 humans), host migration E2E, and disconnect-timeout expiry scenarios.
-9. **No load testing** — Concurrent room capacity is unknown and untested. Do not make concurrency claims without a benchmark; add load testing before drawing conclusions about scale limits.
-
-### Scalability
-
-10. **Game thread blocks on human input** — Acceptable for 4 players; scales poorly to hundreds of concurrent games. Would need async game engine for high concurrency.
-11. **Socket.IO transport configuration not explicitly set** — `game_state.js` initialises Socket.IO without specifying `transports`. This means Socket.IO uses its default behaviour (WebSocket first, falls back to long-polling). This is generally fine and makes the app work on restricted networks. If a WebSocket-only policy is desired for performance reasons, explicitly set `transports: ['websocket']`; otherwise this is acceptable as-is.
-
-### Dependencies
-
-12. **Loose version pinning** — `flask-socketio`, `gevent`, `gunicorn` have no pinned versions in `requirements.txt`. Risk of breaking changes on fresh installs.
-13. **No lock file** — No `pip-tools` or `Poetry` lock file. Recommend adding `requirements.lock` for reproducible builds.
-
-### Documentation
-
-14. **No Socket.IO event schema** — Events are hardcoded in `app.py` and `game_app.js` with no central documentation. A simple event catalog (event name, payload shape, direction) would help maintainability.
+| File | Lines | Role |
+|---|---:|---|
+| `app.py` | 604 | Flask/Socket.IO server |
+| `main.py` | 2,255 | Game engine, AI, replay |
+| `config.py` | 80 | Runtime config |
+| `server/room_state.py` | 275 | Room, seat, host state |
+| `server/game_flow.py` | 441 | Game startup/reconnect/event bridge |
+| `static/game_app.js` | 1,346 | Client event/control logic |
+| `static/game_render.js` | 225 | Board/card rendering |
+| `static/game_state.js` | 211 | Client state/session/seat rotation |
+| `static/i18n.js` | 402 | Translations |
+| `templates/index.html` | 334 | Main page template |
+| `neural/model.py` | 178 | Neural model definitions |
+| `neural/features.py` | 263 | Neural feature encoding |
+| `neural/player.py` | 123 | Neural inference wrapper |
+| `tools/ai_benchmark.py` | 242 | AI benchmark runner |
+| `tools/ci_quality_gate.py` | 105 | AI regression quality gate |
 
 ---
 
-## 17. Summary & Recommendations
-
-### Strengths
-
-- Clean layer separation: game engine, web layer, frontend are independently testable
-- Comprehensive test suite: unit, integration, E2E, and AI regression benchmarks
-- Robust CI/CD: automated deployment with quality gates and staging environment
-- Solid multiplayer reliability: disconnect/reconnect, host migration, AI fill
-- Flexible AI: three difficulty levels with tunable parameters and regression protection
-- Internationalization: Dutch + English with 200+ translation keys
-- Modern Python: type hints, frozen dataclasses, slim dependencies
-
-### Phased Improvement Roadmap
-
-**Phase 1 — High value, low risk (fix now)**
-
-| Task | Notes |
-|------|-------|
-| Fix reconnect SID cleanup bug | Remove old SID from `sid_to_room` on reconnect |
-| Fix `handle_start_game()` crash path | Normalise `team_names` once; guard before all references |
-| Harden Socket.IO payload validation | Use `.get()`, type guards, error events in all handlers |
-| Fix unescaped player names in lobby seat picker and seat list (XSS) | Wrap `seat.name` in `escapeHtml()` at `game_app.js:105` and `game_app.js:243`; chat content is already escaped |
-| Add regression tests for malformed payloads | Prevents future regressions on validation fixes |
-| Pin all package versions in `requirements.txt` | ~30 min; prevents breaking-change surprises |
-| Remove unused `CURRENT_BRANCH` and `total_points` | Minor noise reduction |
-
-**Phase 2 — Security / reliability**
-
-| Task | Notes |
-|------|-------|
-| Replace name-based reconnect with server-issued tokens | Store `reconnect_token` in localStorage |
-| Add per-socket rate limiting / abuse guards | Covers room probing, chat, rapid card play |
-| Fail-fast for default `SECRET_KEY` and `*` CORS in production | Add startup assertion in `app.py` |
-| Add SRI hash to Socket.IO CDN `<script>` tag | Prevents CDN-level supply chain attack |
-| Add tests to `ci.yml` for `develop` push / before acceptance deploy | Prevents unverified code reaching acceptance |
-
-**Phase 3 — Maintainability / scale**
-
-| Task | Notes |
-|------|-------|
-| Decompose `main.py` into `engine/`, `ai/`, `replay/` modules | Reduces merge conflict blast radius |
-| Move pacing delays into `KlaverjasGame` constructor options | Decouples tooling from global state |
-| Move background task startup into explicit init hook | Cleans up import-time side effects |
-| Introduce per-room concurrency locks | Guards `sid_to_room` and seat mutations |
-| Expand E2E test suite (host migration, 4-player flow, disconnect timeout) | 2–3 days; reconnect-on-reload already covered |
-| Add `requirements.lock` via pip-tools | Reproducible builds |
-| Add Redis for game state persistence (future) | Only needed if multi-instance or restart resilience required |
-
-### Key Files Reference
-
-Line counts are approximate snapshots from initial analysis and may drift as the codebase evolves.
-
-| File | Lines (approx.) | Role |
-|------|-----------------|------|
-| [main.py](main.py) | ~1,660 | Game engine — core game logic |
-| [app.py](app.py) | ~416 | Flask/Socket.IO server |
-| [static/game_app.js](static/game_app.js) | ~1,004 | Frontend game logic |
-| [config.py](config.py) | ~74 | Centralized configuration |
-| [server/game_flow.py](server/game_flow.py) | ~235 | Game lifecycle bridge |
-| [server/room_state.py](server/room_state.py) | ~153 | Room management |
-| [scripts/deploy.sh](scripts/deploy.sh) | ~54 | Deployment script |
-| [tools/ai_benchmark.py](tools/ai_benchmark.py) | ~181 | AI benchmarking |
-| [static/i18n.js](static/i18n.js) | ~378 | Internationalization |
-
----
-
-*Analysis performed by Claude Sonnet 4.6 on 2026-02-23.*
+*Updated by Codex on 2026-04-22.*

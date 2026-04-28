@@ -114,6 +114,18 @@ class TestAppIntegration(unittest.TestCase):
             self.assertEqual(room.ai_strength, "advanced")
             self.assertEqual(room.rules_variant, "amsterdam")
 
+    def test_start_game_ignores_legacy_public_ai_strengths(self):
+        code = self._create_room()
+        room = rooms[code]
+
+        with patch("app.start_room_game") as start_game:
+            for legacy_strength in ("expert_v2", "neural"):
+                room.ai_strength = "expert"
+                self.c1.emit("start_game", {"ai_strength": legacy_strength})
+                self.assertEqual(room.ai_strength, "expert")
+
+            self.assertEqual(start_game.call_count, 2)
+
     def test_leave_room_removes_unstarted_player(self):
         code = self._create_room()
         self.c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
