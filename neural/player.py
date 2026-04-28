@@ -19,7 +19,7 @@ DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "neural_be
 
 # Global model cache so we load the weights only once
 _model_cache: dict[str, object] = {}
-_device: torch.device | None = None
+_device = None
 
 
 def _get_device() -> torch.device:
@@ -32,37 +32,44 @@ def _get_device() -> torch.device:
 
 
 def _get_model(model_path: str | Path):
-    """Load and cache the neural network model."""
+    """Load and cache the neural network model.
+
+    Returns None on any failure (missing torch, missing weights, broken
+    torch install, mismatched architecture). Failures are cached so the
+    heuristic fallback isn't re-attempted on every card.
+    """
     if not _TORCH_AVAILABLE:
         return None
-
-    from neural.model import KlaverjasNet
 
     key = str(model_path)
     if key in _model_cache:
         return _model_cache[key]
 
-    path = Path(model_path)
-    if not path.exists():
+    try:
+        from neural.model import KlaverjasNet
+
+        path = Path(model_path)
+        if not path.exists():
+            _model_cache[key] = None
+            return None
+
+        device = _get_device()
+        state_dict = torch.load(path, map_location=device, weights_only=True)
+
+        linear_keys = sorted(
+            (k for k in state_dict if k.endswith(".weight") and "net." in k),
+            key=lambda k: int(k.split(".")[1]),
+        )
+        hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
+
+        model = KlaverjasNet(hidden_sizes=hidden_sizes)
+        model.load_state_dict(state_dict)
+        model.to(device)
+        model.eval()
+    except Exception:
+        _model_cache[key] = None
         return None
 
-    device = _get_device()
-    state_dict = torch.load(path, map_location=device, weights_only=True)
-
-    # Infer hidden sizes from the weight shapes so any architecture loads correctly.
-    # The net is: Linear(in, h0), ReLU, Dropout, Linear(h0, h1), ..., Linear(hN, 32)
-    # Linear layer weights are at keys net.0.weight, net.3.weight, net.6.weight, ...
-    linear_keys = sorted(
-        (k for k in state_dict if k.endswith(".weight") and "net." in k),
-        key=lambda k: int(k.split(".")[1]),
-    )
-    # All except the last linear are hidden layers
-    hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
-
-    model = KlaverjasNet(hidden_sizes=hidden_sizes)
-    model.load_state_dict(state_dict)
-    model.to(device)
-    model.eval()
     _model_cache[key] = model
     return model
 
@@ -82,42 +89,39 @@ def neural_choose_card(
     if model is None:
         return None
 
-    device = _get_device()
+    try:
+        device = _get_device()
 
-    # Encode state
-    features = encode_state(
-        hand=list(player.hand),
-        trick=trick,
-        trump=trump,
-        played_cards=set(player.played_cards),
-        seat_idx=player.seat_idx,
-        trick_num=player.trick_num,
-        trick_pts=list(player.trick_pts),
-        roem_pts=list(player.roem_pts),
-        declaring_team=player.declaring_team,
-        opponent_voids={k: set(v) for k, v in player.opponent_voids.items()},
-        game_scores=list(player.game_scores),
-        round_num=player.round_num,
-        legal_moves=legal,
-    )
+        features = encode_state(
+            hand=list(player.hand),
+            trick=trick,
+            trump=trump,
+            played_cards=set(player.played_cards),
+            seat_idx=player.seat_idx,
+            trick_num=player.trick_num,
+            trick_pts=list(player.trick_pts),
+            roem_pts=list(player.roem_pts),
+            declaring_team=player.declaring_team,
+            opponent_voids={k: set(v) for k, v in player.opponent_voids.items()},
+            game_scores=list(player.game_scores),
+            round_num=player.round_num,
+            legal_moves=legal,
+        )
 
-    # Convert to tensor
-    x = torch.from_numpy(features).unsqueeze(0).to(device)
+        x = torch.from_numpy(features).unsqueeze(0).to(device)
 
-    # Build legal mask
-    legal_mask = torch.zeros(1, 32, device=device)
-    for c in legal:
-        legal_mask[0, CARD_INDEX[str(c)]] = 1.0
+        legal_mask = torch.zeros(1, 32, device=device)
+        for c in legal:
+            legal_mask[0, CARD_INDEX[str(c)]] = 1.0
 
-    # Forward pass
-    with torch.no_grad():
-        chosen_idx = model.predict(x, legal_mask).item()
+        with torch.no_grad():
+            chosen_idx = model.predict(x, legal_mask).item()
+    except Exception:
+        return None
 
-    # Find the card in the legal moves
     target_str = IDX_TO_CARD_STR[chosen_idx]
     for c in legal:
         if str(c) == target_str:
             return c
 
-    # Safety fallback: if somehow the chosen card isn't in legal moves, pick first legal
     return legal[0] if legal else None
