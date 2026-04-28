@@ -1,5 +1,7 @@
 """NeuralAIPlayer — uses trained neural networks for card play."""
 
+from __future__ import annotations
+
 from pathlib import Path
 
 try:
