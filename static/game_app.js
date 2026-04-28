@@ -273,7 +273,7 @@ function cancelLobby() {
 
 function updateLobbySeats(lobby) {
     if (lobby && typeof lobby.ai_strength === "string") {
-        if (["beginner", "advanced", "expert", "expert_v2", "expert_v3"].includes(lobby.ai_strength)) {
+        if (["beginner", "advanced", "expert"].includes(lobby.ai_strength)) {
             selectedAiStrength = lobby.ai_strength;
         }
     }

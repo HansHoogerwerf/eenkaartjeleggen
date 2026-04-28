@@ -7,35 +7,39 @@
 
 ## Overview
 
-The AI is a rule-based heuristic player with four optional advanced capabilities that are toggled based on the selected difficulty level:
+The AI exposes three public difficulty names. They now map to the stronger generation of profiles: Beginner uses the previous Expert profile, Advanced uses the previous Expert v2 lookahead profile, and Expert uses neural card play when a model is available.
 
-| Capability | Beginner | Advanced | Expert | Expert v2 |
-|---|---|---|---|---|
-| Card inference (void/trump deduction) | No | Yes | Yes | Yes |
-| Monte Carlo trick-win probability | No | Yes | Yes | Yes |
-| Endgame exact minimax solver | No | No | Yes | Yes |
-| 3-trick lookahead (sampled minimax) | No | No | No | Yes |
+| Capability | Beginner | Advanced | Expert |
+|---|---|---|---|
+| Previous equivalent | Expert | Expert v2 | Neural |
+| Card inference (void/trump deduction) | Yes | Yes | Yes |
+| Monte Carlo trick-win probability | Yes | Yes | Yes |
+| Endgame exact minimax solver | Yes | Yes | Yes |
+| 3-trick lookahead (sampled minimax) | No | Yes | No |
+| Neural card play | No | No | Yes |
 
-All difficulty levels share the same decision-making structure. The difference is in the precision of the information used and the probability of making deliberate mistakes.
+All public difficulty levels share the same baseline decision-making structure. Advanced adds sampled lookahead, while Expert asks the neural model first and falls back to heuristic play if the model is unavailable.
 
 ---
 
 ## Difficulty Profiles
 
-Defined in `AIPlayer.AI_STRENGTH_PROFILES` ([main.py:294](../main.py#L294)):
+Defined in `AIPlayer.AI_STRENGTH_PROFILES` ([main.py](../main.py)):
 
-| Parameter | Beginner | Advanced | Expert | Expert v2 |
-|---|---|---|---|---|
-| `use_inference` | False | True | True | True |
-| `use_trick_prob` | False | True | True | True |
-| `use_endgame_solver` | False | False | True | True |
-| `use_lookahead` | False | False | False | True |
-| `lookahead_depth` | 0 | 0 | 0 | 3 |
-| `lookahead_samples` | 0 | 0 | 0 | 5 |
-| `tie_break_delta` | 0.95 | 0.55 | 0.35 | 0.35 |
-| `random_mistake_rate` | 10% | 3% | 0% | 0% |
-| `declaration_bias` | +0.65 | +0.25 | 0.0 | 0.0 |
-| `trick_win_sim_samples` | 4 | 12 | 20 | 20 |
+| Parameter | Beginner | Advanced | Expert |
+|---|---|---|---|
+| `use_inference` | True | True | True |
+| `use_trick_prob` | True | True | True |
+| `use_endgame_solver` | True | True | True |
+| `use_lookahead` | False | True | False |
+| `lookahead_enhanced` | False | True | False |
+| `lookahead_depth` | 0 | 3 | 0 |
+| `lookahead_samples` | 0 | 8 | 0 |
+| `use_neural_play` | False | False | True |
+| `tie_break_delta` | 0.35 | 0.35 | 0.35 |
+| `random_mistake_rate` | 0% | 0% | 0% |
+| `declaration_bias` | 0.0 | 0.0 | 0.0 |
+| `trick_win_sim_samples` | 20 | 20 | 20 |
 
 **`tie_break_delta`** — How close two card scores must be before they are considered equivalent and chosen randomly between. A high value means more moves "look similar" to the AI → more variance in play (feels more human-like for beginners).
 
@@ -93,7 +97,10 @@ Method: `_strategy()` ([main.py:587](../main.py#L587))
 Is this the last 3 cards and endgame solver enabled?
   → Yes: use exact minimax solver (_endgame_exact_choice)
 
-Is lookahead enabled and more than 3 cards remain? (Expert v2 only)
+Is neural play enabled?
+  → Yes: use neural_choose_card; if unavailable, continue
+
+Is lookahead enabled and more than 3 cards remain? (Advanced)
   → Yes: use 3-trick sampled minimax (_lookahead_choice)
 
 Is it our lead (trick is empty)?
@@ -209,7 +216,7 @@ Pressure modulates almost every scoring formula: it increases aggression (fight 
 
 ## Card Inference
 
-Enabled at Advanced and Expert level.
+Enabled at all public levels.
 
 ### Void Tracking
 
@@ -236,23 +243,21 @@ This tracking feeds into:
 
 ## Monte Carlo Trick-Win Probability
 
-Enabled at Advanced and Expert level. Method: `_estimate_team_trick_win_prob()` ([main.py:714](../main.py#L714))
+Enabled at all public levels. Method: `_estimate_team_trick_win_prob()` ([main.py](../main.py))
 
 When the AI needs to estimate whether a card will win a trick that has not yet been fully played:
 
 1. Record the current trick state (cards already played).
 2. For each remaining seat in play order, sample a card from their `possible_cards_by_seat` pool, restricted to legal moves.
 3. Determine the trick winner.
-4. Repeat for `TRICK_WIN_SIM_SAMPLES` iterations (4 / 12 / 20 per difficulty level).
+4. Repeat for `TRICK_WIN_SIM_SAMPLES` iterations (20 for all public difficulty levels).
 5. Return `wins / total_simulations`.
-
-**Fallback for Beginner:** a simpler heuristic computes win probability based on whether the current leader's card is trump, how many trumps remain, and how many players are left.
 
 ---
 
 ## Endgame Exact Solver
 
-Enabled at Expert level only. Activates when **≤3 cards** remain in hand.
+Enabled at all public levels. Activates when **≤3 cards** remain in hand.
 
 ### Hand Determinization (`_determinize_endgame_hands`)
 
@@ -274,15 +279,15 @@ With complete information determinized, the AI runs **full-tree minimax** over t
 
 ### Card Selection
 
-Each legal card is tried as the first move. The one with the highest minimax value is returned (with tie-breaking by `TIE_BREAK_DELTA` at Expert level = 0.35).
+Each legal card is tried as the first move. The one with the highest minimax value is returned (with tie-breaking by `TIE_BREAK_DELTA` = 0.35).
 
 ---
 
-## 3-Trick Lookahead (Expert v2)
+## 3-Trick Lookahead (Advanced)
 
-Enabled at Expert v2 level only. Activates when **>3 cards** remain in hand (the endgame solver handles the last 3).
+Enabled at Advanced level. Activates when **>3 cards** remain in hand (the endgame solver handles the last 3).
 
-This is the key difference between Expert and Expert v2: instead of relying on heuristic scoring for card play, the AI searches 3 full tricks into the future using sampled opponent hands and minimax.
+This is the key difference for Advanced: instead of relying on heuristic scoring for card play, the AI searches 3 full tricks into the future using sampled opponent hands and minimax.
 
 ### Hand Sampling (`_sample_hands`)
 
@@ -317,7 +322,7 @@ If all sampling attempts fail (inconsistent constraints), the method returns `No
 | Parameter | Value |
 |---|---|
 | Lookahead depth | 3 tricks (12 plies) |
-| Samples per decision | 5 |
+| Samples per decision | 8 |
 | Branch limit per node | 3 |
 | Worst-case nodes per sample | ~530K |
 | Approximate time per round | ~5-7 seconds |
@@ -391,6 +396,6 @@ Before committing a trump or high card to win a trick, the AI checks whether it 
 
 4. **Inference narrows uncertainty progressively.** The possible-cards model starts broad (all unseen cards possible) and tightens each time a void or trump-strength inference fires. Better information → better Monte Carlo samples → better decisions.
 
-5. **The endgame solver provides perfect play in the final tricks.** Once ≤3 cards remain, the AI switches from heuristics to exact minimax (subject to successful hand determinization). This is where Expert AI is strongest.
+5. **The endgame solver provides perfect play in the final tricks.** Once ≤3 cards remain, the AI switches from heuristics or neural play to exact minimax (subject to successful hand determinization).
 
 6. **Partner signaling is lightweight but meaningful.** The signal system does not rely on secret conventions — it observes natural plays (leading strong suits, playing small encouraging cards) and softly biases future leads toward partner's shown strength.

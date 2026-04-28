@@ -11,6 +11,8 @@ class TestFrontendSplit(unittest.TestCase):
         self.assertNotIn('/static/game.js"></script>', html)
         self.assertIn('id="lobby-ai-picker"', html)
         self.assertIn('id="lobby-ai-display"', html)
+        self.assertNotIn('data-strength="expert_v2"', html)
+        self.assertNotIn('data-strength="neural"', html)
 
     def test_split_files_exist(self):
         self.assertTrue(Path("static/game_state.js").exists())
