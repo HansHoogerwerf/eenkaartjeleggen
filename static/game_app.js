@@ -168,7 +168,7 @@ function cancelAutoReconnect() {
 }
 
 let selectedMode = "score_limit";
-let selectedAiStrength = "expert";
+let selectedAiStrength = "neural";
 let selectedRulesVariant = "rotterdam";
 let hasPendingRulesVariantSelection = false;
 
@@ -273,7 +273,7 @@ function cancelLobby() {
 
 function updateLobbySeats(lobby) {
     if (lobby && typeof lobby.ai_strength === "string") {
-        if (["beginner", "advanced", "expert"].includes(lobby.ai_strength)) {
+        if (["opus", "mythos", "neural"].includes(lobby.ai_strength)) {
             selectedAiStrength = lobby.ai_strength;
         }
     }
