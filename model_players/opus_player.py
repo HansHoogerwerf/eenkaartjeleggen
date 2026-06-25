@@ -144,6 +144,13 @@ class OpusPlayer(AIPlayer):
         trick_prefix = [(p.seat_idx, c) for p, c in trick]
         next_after_me = (self.seat_idx + 1) % 4
 
+        # Points already banked this round (completed tricks) so the search can
+        # apply nat/pit against the true round totals at the end of the round.
+        mt0 = float(self.trick_pts[self.team])
+        mr0 = float(self.roem_pts[self.team])
+        ot0 = float(self.trick_pts[1 - self.team])
+        or0 = float(self.roem_pts[1 - self.team])
+
         totals: dict[str, float] = {str(c): 0.0 for c in legal}
         worst: dict[str, float] = {str(c): float("inf") for c in legal}
         counts: dict[str, int] = {str(c): 0 for c in legal}
@@ -161,7 +168,6 @@ class OpusPlayer(AIPlayer):
                     break
                 continue
 
-            memo: dict = {}  # shared across candidates: values are path-independent
             self._dd_nodes = 0  # node budget is per world
             for card in legal:
                 cs = str(card)
@@ -170,8 +176,8 @@ class OpusPlayer(AIPlayer):
                     continue
                 tc = trick_prefix + [(self.seat_idx, card)]
                 score = self._dd_search(
-                    test_hands, tc, next_after_me, trump, depth, memo,
-                    float("-inf"), float("inf"),
+                    test_hands, tc, next_after_me, trump, depth,
+                    mt0, mr0, ot0, or0, float("-inf"), float("inf"),
                 )
                 totals[cs] += score
                 counts[cs] += 1
@@ -208,6 +214,49 @@ class OpusPlayer(AIPlayer):
                 del cards[i]
                 return True
         return False
+
+    def _legal_moves_search(self, hand_cards: list[Card],
+                            trick_cards: list[tuple[int, Card]],
+                            trump: str, seat: int) -> list[Card]:
+        """Legal moves for `seat`, honouring the configured rules variant.
+
+        The inherited static _legal_moves_for_cards is Rotterdam-only (it always
+        forces an overtrump and ignores the Amsterdam partner-winning exemption),
+        so it mis-models Amsterdam inside the search.  This mirrors the engine's
+        Player.legal_moves, parameterised by the seat to move.
+        """
+        if not trick_cards:
+            return list(hand_cards)
+        lead_suit = trick_cards[0][1].suit
+        same_suit = [c for c in hand_cards if c.suit == lead_suit]
+        if same_suit:
+            if lead_suit == trump:
+                trick_trumps = [c for _, c in trick_cards if c.suit == trump]
+                highest = max(trick_trumps, key=lambda c: c.strength(trump))
+                over = [c for c in same_suit if c.strength(trump) > highest.strength(trump)]
+                return over if over else same_suit
+            return same_suit
+        trumps = [c for c in hand_cards if c.suit == trump]
+        if not trumps:
+            return list(hand_cards)
+        sim_trick = [
+            (main.SimpleNamespace(seat_idx=s, team=SEAT_TEAMS[s]), c)
+            for s, c in trick_cards
+        ]
+        winner_seat = trick_cards[trick_winner_index(sim_trick, trump)][0]
+        partner_winning = SEAT_TEAMS[winner_seat] == SEAT_TEAMS[seat]
+        if self.rules_variant == "amsterdam" and partner_winning:
+            return list(hand_cards)
+        trick_trumps = [c for _, c in trick_cards if c.suit == trump]
+        if trick_trumps:
+            highest = max(trick_trumps, key=lambda c: c.strength(trump))
+            over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
+            if over:
+                return over
+            if self.rules_variant == "amsterdam":
+                return list(hand_cards)
+            return trumps
+        return trumps
 
     def _order_moves(self, legal: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:
         """Heuristic move ordering to maximise alpha-beta cutoffs."""
@@ -247,50 +296,57 @@ class OpusPlayer(AIPlayer):
         next_seat: int,
         trump: str,
         tricks_remaining: int,
-        memo: dict,
+        mt: float,
+        mr: float,
+        ot: float,
+        orr: float,
         alpha: float,
         beta: float,
     ) -> float:
-        """Alpha-beta double-dummy search returning our team's point delta."""
+        """Alpha-beta double-dummy search from our team's perspective.
+
+        Tracks absolute trick/roem points per team (mt/mr ours, ot/orr theirs)
+        so the true end of round applies pit (+100 for all trick points) and nat
+        (the declarer must strictly outscore), matching real scoring.  No
+        transposition table: with nat/pit applied the value is path-dependent.
+        """
         # Trick complete: resolve it, then continue into the next trick.
         if len(trick_cards) == 4:
             sim_trick = [
                 (main.SimpleNamespace(seat_idx=s, team=SEAT_TEAMS[s]), c)
                 for s, c in trick_cards
             ]
-            wi = trick_winner_index(sim_trick, trump)
-            winner_seat = trick_cards[wi][0]
-            pts = sum(c.points(trump) for _, c in trick_cards)
+            winner_seat = trick_cards[trick_winner_index(sim_trick, trump)][0]
             empty = all(len(h) == 0 for h in hands.values())
-            last_bonus = 10 if empty else 0
-            gain = pts + last_bonus
-            delta = gain if SEAT_TEAMS[winner_seat] == self.team else -gain
+            pts = sum(c.points(trump) for _, c in trick_cards) + (10 if empty else 0)
+            roem = sum(p for _, p in find_roem([c for _, c in trick_cards], trump))
+            if SEAT_TEAMS[winner_seat] == self.team:
+                mt += pts
+                mr += roem
+            else:
+                ot += pts
+                orr += roem
             if empty:
-                return delta
+                return self._dd_terminal(mt, mr, ot, orr)
             if tricks_remaining <= 1:
-                return delta + self._dd_leaf(hands, trump)
-            return delta + self._dd_search(
-                hands, [], winner_seat, trump, tricks_remaining - 1, memo,
-                alpha, beta,
+                return (mt + mr) - (ot + orr) + self._dd_leaf(hands, trump)
+            return self._dd_search(
+                hands, [], winner_seat, trump, tricks_remaining - 1,
+                mt, mr, ot, orr, alpha, beta,
             )
 
         if all(len(h) == 0 for h in hands.values()):
-            return 0.0
+            return (mt + mr) - (ot + orr)
 
         # Safety valve: if this world is exploding, bail out with the leaf
         # estimate so the per-card budget stays bounded.
         self._dd_nodes += 1
         if self._dd_nodes > self.PER_WORLD_NODE_CAP:
-            return self._dd_leaf(hands, trump)
+            return (mt + mr) - (ot + orr) + self._dd_leaf(hands, trump)
 
-        key = self._endgame_state_key(hands, trick_cards, next_seat)
-        if key in memo:
-            return memo[key]
-
-        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump)
+        legal = self._legal_moves_search(hands[next_seat], trick_cards, trump, next_seat)
         if not legal:
-            memo[key] = 0.0
-            return 0.0
+            return (mt + mr) - (ot + orr)
         legal = self._order_moves(legal, trick_cards, trump)
         # Forward-prune wide nodes (lead choices) when depth-limited.
         if self._dd_branch_limit and len(legal) > self._dd_branch_limit:
@@ -298,14 +354,13 @@ class OpusPlayer(AIPlayer):
 
         is_max = SEAT_TEAMS[next_seat] == self.team
         best = float("-inf") if is_max else float("inf")
-        cutoff = False
 
         for card in legal:
             new_hands = {seat: list(cs) for seat, cs in hands.items()}
             self._remove_card(new_hands[next_seat], str(card))
             val = self._dd_search(
                 new_hands, trick_cards + [(next_seat, card)], (next_seat + 1) % 4,
-                trump, tricks_remaining, memo, alpha, beta,
+                trump, tricks_remaining, mt, mr, ot, orr, alpha, beta,
             )
             if is_max:
                 if val > best:
@@ -318,13 +373,25 @@ class OpusPlayer(AIPlayer):
                 if best < beta:
                     beta = best
             if beta <= alpha:
-                cutoff = True
                 break
-
-        # Only memoise exact values (cutoffs return a bound, not the true score).
-        if not cutoff:
-            memo[key] = best
         return best
+
+    def _dd_terminal(self, mt: float, mr: float, ot: float, orr: float) -> float:
+        """End-of-round value from our perspective, with pit and nat applied."""
+        if mt >= TRICK_CARD_TOTAL:
+            mr += 100.0                       # pit: our team took every trick point
+        if ot >= TRICK_CARD_TOTAL:
+            orr += 100.0
+        my_total = mt + mr
+        op_total = ot + orr
+        d = self.declaring_team
+        if d == self.team:
+            if my_total <= op_total:          # we declared and went nat
+                return -(162.0 + mr + orr)
+        elif d == 1 - self.team:
+            if op_total <= my_total:          # they declared and went nat
+                return 162.0 + mr + orr
+        return my_total - op_total
 
     def _dd_leaf(self, hands: dict[int, list[Card]], trump: str) -> float:
         """Master-card leaf evaluation for depth-limited (early-trick) nodes.
@@ -482,7 +549,7 @@ class OpusPlayer(AIPlayer):
 
     def _sim_pick(self, seat: int, hand: list[Card], trick: list[tuple[int, Card]], trump: str) -> Card:
         """Compact greedy policy used only inside bid simulations."""
-        legal = self._legal_moves_for_cards(hand, trick, trump)
+        legal = self._legal_moves_search(hand, trick, trump, seat)
         if len(legal) == 1:
             return legal[0]
 

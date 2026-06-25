@@ -13,21 +13,35 @@ This file is the short operational guide for coding agents. For the fuller curre
 - The game is four seats only: South, West, North, East.
 - Empty seats become AI players when a room starts.
 
-## Current Public AI Strengths
+## Current Public AI Opponents
 
-The public lobby options are intentionally remapped:
+The public lobby options are drop-in model players, registered in
+`main.AI_PLAYER_FACTORIES` by `model_players/registry.py` (imported at startup
+by `app.py`):
 
-| Public option | Current behavior |
+| Public option | Implementation |
 |---|---|
-| `beginner` | Previous `expert` profile |
-| `advanced` | Previous `expert_v2` lookahead profile |
-| `expert` | Previous `neural` profile |
+| `opus` | `model_players/opus_player.py` — PIMC double-dummy card play + its own MC nat-aware bidder |
+| `mythos` | `model_players/mythos_player.py` — determinized alpha-beta card play + MC nat-aware bidder |
+| `neural` (default) | `model_players/neural_mythos_player.py` — neural-net card play + **Mythos's** MC bidder |
 
-Only `beginner`, `advanced`, and `expert` should be exposed by the app or accepted through `CONFIG.room.allowed_ai_strengths`.
+Only `opus`, `mythos`, and `neural` should be exposed by the app or accepted
+through `CONFIG.room.allowed_ai_strengths`.
 
-Internal legacy profile keys such as `expert_v2`, `expert_v2_base`, and `neural` may still exist for benchmark/training tools. Do not re-add them to the lobby unless the user asks.
+Important distinctions:
 
-`expert` uses neural card play when PyTorch and the model are available. If neural inference is unavailable, it falls back to heuristic play.
+- The public `neural` option is NOT the engine-internal `neural` profile. The
+  internal `AIPlayer` strength profiles (`beginner`, `advanced`, `expert`,
+  `expert_v2`, `neural`) still exist for tests, benchmarks, and training tools;
+  the internal `expert`/`neural` profiles still use the old heuristic bidder.
+  Do not expose internal profiles in the lobby.
+- No public opponent uses a *trained* bidder yet — the public `neural`/`mythos`
+  bidding is a hand-written Monte-Carlo round simulation. Training a neural
+  bidder is planned future work.
+- `AI_CARD_BUDGET` (env, seconds per card decision, default 1.0) bounds the
+  Opus/Mythos search; lower it on weak hardware. The `neural` opponent is not
+  search-bound. Neural card play needs PyTorch + `models/neural_best.pt`; it
+  falls back to heuristic play if unavailable.
 
 ## Important Runtime Patterns
 
@@ -74,7 +88,11 @@ main.AI_PLAY_DELAY = 0.0
 main.TRICK_CLEAR_DELAY = 0.0
 ```
 
-The benchmark baseline may need recalibration after AI strength changes. Public `expert` now means neural-backed profile and public `advanced` now means lookahead profile.
+The benchmark baseline may need recalibration after AI strength changes. Note
+that `tools/ci_quality_gate.py` benchmarks the engine-internal profiles
+(`expert` vs `advanced`), which are no longer what the lobby exposes — the
+public opponents (`opus`/`mythos`/`neural`) are the drop-in model players and
+are not covered by the quality gate.
 
 ## Deployment Notes
 

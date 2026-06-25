@@ -12,7 +12,10 @@ class TestFrontendSplit(unittest.TestCase):
         self.assertIn('id="lobby-ai-picker"', html)
         self.assertIn('id="lobby-ai-display"', html)
         self.assertNotIn('data-strength="expert_v2"', html)
-        self.assertNotIn('data-strength="neural"', html)
+        # Public AI opponents are the model players (neural is the default).
+        self.assertIn('data-strength="opus"', html)
+        self.assertIn('data-strength="mythos"', html)
+        self.assertIn('data-strength="neural"', html)
 
     def test_split_files_exist(self):
         self.assertTrue(Path("static/game_state.js").exists())

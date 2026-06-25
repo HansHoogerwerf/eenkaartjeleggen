@@ -31,7 +31,7 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
     parser.add_argument("--workers", type=int, default=0, help="Parallel workers (default: cpu_count-1).")
-    strengths = ["beginner", "advanced", "expert", "expert_v2_base", "expert_v2"]
+    strengths = ["beginner", "advanced", "expert", "expert_v2"]
     parser.add_argument("--candidate", default="expert_v2", choices=strengths, help="Candidate strength.")
     parser.add_argument("--baseline", default="expert", choices=strengths, help="Baseline strength.")
     args = parser.parse_args()
