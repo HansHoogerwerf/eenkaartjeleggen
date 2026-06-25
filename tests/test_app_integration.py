@@ -103,7 +103,7 @@ class TestAppIntegration(unittest.TestCase):
                 "mode": "boom",
                 "score_limit": 700,
                 "team_names": ["A", "B"],
-                "ai_strength": "advanced",
+                "ai_strength": "mythos",
                 "rules_variant": "amsterdam",
             })
             self.assertEqual(start_game.call_count, 1)
@@ -111,7 +111,7 @@ class TestAppIntegration(unittest.TestCase):
             self.assertEqual(room.game_mode, "boom")
             self.assertEqual(room.score_limit, 700)
             self.assertEqual(room.team_names, ["A", "B"])
-            self.assertEqual(room.ai_strength, "advanced")
+            self.assertEqual(room.ai_strength, "mythos")
             self.assertEqual(room.rules_variant, "amsterdam")
 
     def test_start_game_ignores_legacy_public_ai_strengths(self):
@@ -119,12 +119,12 @@ class TestAppIntegration(unittest.TestCase):
         room = rooms[code]
 
         with patch("app.start_room_game") as start_game:
-            for legacy_strength in ("expert_v2", "neural"):
-                room.ai_strength = "expert"
+            for legacy_strength in ("beginner", "advanced", "expert"):
+                room.ai_strength = "neural"
                 self.c1.emit("start_game", {"ai_strength": legacy_strength})
-                self.assertEqual(room.ai_strength, "expert")
+                self.assertEqual(room.ai_strength, "neural")
 
-            self.assertEqual(start_game.call_count, 2)
+            self.assertEqual(start_game.call_count, 3)
 
     def test_leave_room_removes_unstarted_player(self):
         code = self._create_room()

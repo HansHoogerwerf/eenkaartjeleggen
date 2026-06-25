@@ -86,12 +86,12 @@ const TRANSLATIONS = {
         "mode.free_play": "Free Play",
         "mode.target_score": "Target score:",
         "ai.label": "AI strength:",
-        "ai.beginner": "Beginner",
+        "ai.opus": "Opus",
         "rules.label": "Rules:",
         "rules.rotterdam": "Rotterdam",
         "rules.amsterdam": "Amsterdam",
-        "ai.advanced": "Advanced",
-        "ai.expert": "Expert",
+        "ai.mythos": "Mythos",
+        "ai.neural": "Neural",
 
         // ── Next Round modal ──
         "modal.round_finished": "Round Finished",
@@ -255,12 +255,12 @@ const TRANSLATIONS = {
         "mode.free_play": "Vrij Spelen",
         "mode.target_score": "Doelscore:",
         "ai.label": "AI niveau:",
-        "ai.beginner": "Beginner",
+        "ai.opus": "Opus",
         "rules.label": "Regels:",
         "rules.rotterdam": "Rotterdam",
         "rules.amsterdam": "Amsterdam",
-        "ai.advanced": "Gevorderd",
-        "ai.expert": "Expert",
+        "ai.mythos": "Mythos",
+        "ai.neural": "Neural",
 
         // ── Volgende Ronde modal ──
         "modal.round_finished": "Ronde Afgelopen",

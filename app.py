@@ -38,6 +38,10 @@ try:
 except Exception:
     pass
 
+# Register the drop-in model players so "opus" / "mythos" / "neural" are
+# selectable AI opponents (populates main.AI_PLAYER_FACTORIES).
+import model_players.registry  # noqa: F401,E402
+
 app = Flask(__name__)
 app.config["SECRET_KEY"] = CONFIG.server.secret_key
 socketio = SocketIO(

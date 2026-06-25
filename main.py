@@ -377,19 +377,6 @@ class AIPlayer(Player):
             "trick_win_sim_samples": 20,
             "use_neural_play": True,
         },
-        "expert_v2_base": {
-            "use_inference": True,
-            "use_trick_prob": True,
-            "use_endgame_solver": True,
-            "use_lookahead": True,
-            "lookahead_enhanced": False,
-            "lookahead_depth": 3,
-            "lookahead_samples": 8,
-            "tie_break_delta": 0.35,
-            "random_mistake_rate": 0.0,
-            "declaration_bias": 0.0,
-            "trick_win_sim_samples": 20,
-        },
         "expert_v2": {
             "use_inference": True,
             "use_trick_prob": True,
@@ -1788,6 +1775,32 @@ class AIPlayer(Player):
 # ─── Game ─────────────────────────────────────────────────────────────────────
 
 
+# ── Drop-in AI registry ──────────────────────────────────────────────────────
+# External player implementations register a factory here keyed by the
+# ai_strength string.  make_ai_player() consults this before falling back to the
+# built-in AIPlayer profiles, so a drop-in player can be selected exactly like a
+# strength level.  (The web app maps "opus"/"mythos" to drop-in classes this way;
+# "neural" stays a built-in profile and needs no factory.)  Factories are called
+# with keyword args (name, team, seat_idx, rng_seed, signal_profile) and must
+# return a Player; KlaverjasGame sets rules_variant on the result afterwards.
+AI_PLAYER_FACTORIES: dict = {}
+
+
+def make_ai_player(name, team, seat_idx, rng_seed=None,
+                   signal_profile="core", ai_strength="expert"):
+    """Build an AI seat: a registered drop-in for `ai_strength`, else AIPlayer."""
+    factory = AI_PLAYER_FACTORIES.get(ai_strength)
+    if factory is not None:
+        return factory(
+            name=name, team=team, seat_idx=seat_idx,
+            rng_seed=rng_seed, signal_profile=signal_profile,
+        )
+    return AIPlayer(
+        name, team, seat_idx=seat_idx, rng_seed=rng_seed,
+        signal_profile=signal_profile, ai_strength=ai_strength,
+    )
+
+
 class KlaverjasGame:
     """
     Seat order:  0=South  1=West  2=North  3=East
@@ -1838,7 +1851,7 @@ class KlaverjasGame:
             else:
                 name = f"AI {SEAT_DEFAULTS[seat]}"
                 self.players.append(
-                    AIPlayer(
+                    make_ai_player(
                         name,
                         team,
                         seat_idx=seat,

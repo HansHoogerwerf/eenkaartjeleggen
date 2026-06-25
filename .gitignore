@@ -12,3 +12,6 @@ __pycache__/
 # Claude Code local settings
 .claude/
 
+# Show-off benchmark output (generated)
+model_players/showoff_results.txt
+

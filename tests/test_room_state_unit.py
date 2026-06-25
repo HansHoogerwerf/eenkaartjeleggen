@@ -27,8 +27,8 @@ class TestRoomStateUnit(unittest.TestCase):
         self.assertTrue(lobby["seats"]["0"]["connected"])
         self.assertFalse(lobby["seats"]["0"]["disconnected"])
         self.assertEqual(lobby["host_seat"], 0)
-        self.assertEqual(room.ai_strength, "expert")
-        self.assertEqual(lobby["ai_strength"], "expert")
+        self.assertEqual(room.ai_strength, "neural")
+        self.assertEqual(lobby["ai_strength"], "neural")
 
     def test_generate_code_skips_existing(self):
         rooms["AAAA"] = Room("AAAA", "sid-x", "X")
