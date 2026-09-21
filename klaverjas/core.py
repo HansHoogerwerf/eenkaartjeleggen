@@ -96,3 +96,15 @@ def find_roem(hand: list[Card], trump: str) -> list[tuple[str, int]]:
             roem.append(("Four Jacks", 200) if rank == "J" else (f"Four {rank}s", 100))
 
     return roem
+
+
+def trick_roem_points(cards: list[Card], trump: str) -> int:
+    """Roem (honour) points formed by the cards of one trick.
+
+    The game awards ``find_roem`` over the four cards of a completed trick to
+    the team that wins it.  On a partial trick this is the roem already
+    formed, which later cards can only add to, never remove.
+    """
+    if len(cards) < 2:
+        return 0
+    return sum(pts for _, pts in find_roem(cards, trump))

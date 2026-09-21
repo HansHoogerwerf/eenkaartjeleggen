@@ -1,5 +1,10 @@
 # Neural AI Implementation Plan
 
+> **Update (Sept 2026):** the plan below describes the first-generation net
+> (267 features, imitation of the `expert` heuristics). The roem-aware second
+> generation — 300 features, Mythos as teacher, CUDA self-play with per-trick
+> roem — is documented in [neural-roem-retrain.md](neural-roem-retrain.md).
+
 ## Goal
 Train a neural network via **imitation learning** to play Klaverjassen card play at expert level or better. The neural AI uses expert's bidding logic but replaces card play decisions with neural network inference.
 

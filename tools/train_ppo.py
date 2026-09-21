@@ -32,7 +32,7 @@ import main
 from klaverjas.constants import SEAT_DEFAULTS, SEAT_TEAMS
 from klaverjas.core import Card, Trick
 from main import AIPlayer, KlaverjasGame
-from neural.features import CARD_INDEX, NUM_FEATURES, encode_state
+from neural.features import CARD_INDEX, NUM_FEATURES, encode_state, feature_version_for_size
 from neural.model import KlaverjasActorCritic, KlaverjasNet
 
 IDX_TO_CARD_STR: dict[int, str] = {v: k for k, v in CARD_INDEX.items()}
@@ -67,6 +67,8 @@ class PPOPlayer(AIPlayer):
         super().__init__(name, team, seat_idx, rng_seed, signal_profile, ai_strength)
         self.model = model
         self.device = device
+        # Encode with the layout the checkpoint was trained on (267 = v1, 300 = v2)
+        self.feature_version = feature_version_for_size(model.in_features)
         self.temperature = temperature
         self.transitions: list[Transition] = []
 
@@ -99,6 +101,7 @@ class PPOPlayer(AIPlayer):
             game_scores=list(self.game_scores),
             round_num=self.round_num,
             legal_moves=legal,
+            feature_version=self.feature_version,
         )
 
         x = torch.from_numpy(features).unsqueeze(0).to(self.device)
@@ -380,8 +383,8 @@ def train_ppo(
     print(f"Device: {device}")
 
     # Load pretrained policy and create actor-critic
-    policy_net = KlaverjasNet()
-    policy_net.load_state_dict(torch.load(model_path, map_location=device, weights_only=True))
+    policy_net = KlaverjasNet.from_state_dict(
+        torch.load(model_path, map_location=device, weights_only=True))  # shape-aware (v1 or v2 inputs)
     print(f"Loaded pretrained policy from {model_path}")
 
     model = KlaverjasActorCritic.from_policy_net(policy_net)

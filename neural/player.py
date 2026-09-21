@@ -2,22 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 try:
     import torch
     _TORCH_AVAILABLE = True
-except ImportError:
+except Exception:  # ImportError, or OSError when a DLL is blocked/broken
     _TORCH_AVAILABLE = False
 
 from klaverjas.core import Card, Trick
-from neural.features import CARD_INDEX, encode_state
+from neural.features import CARD_INDEX, encode_state, feature_version_for_size
 
 # Reverse mapping: index -> card string
 IDX_TO_CARD_STR: dict[int, str] = {v: k for k, v in CARD_INDEX.items()}
 
-# Default model path
-DEFAULT_MODEL_PATH = Path(__file__).resolve().parents[1] / "models" / "neural_best.pt"
+# Default model path.  NEURAL_MODEL_PATH (env) overrides it so a freshly trained
+# checkpoint can be benchmarked / served without touching models/neural_best.pt.
+DEFAULT_MODEL_PATH = Path(
+    os.environ.get("NEURAL_MODEL_PATH")
+    or Path(__file__).resolve().parents[1] / "models" / "neural_best.pt"
+)
 
 # Global model cache so we load the weights only once
 _model_cache: dict[str, object] = {}
@@ -39,6 +44,10 @@ def _get_model(model_path: str | Path):
     Returns None on any failure (missing torch, missing weights, broken
     torch install, mismatched architecture). Failures are cached so the
     heuristic fallback isn't re-attempted on every card.
+
+    The loaded model carries a ``feature_version`` attribute (1 for the
+    original 267-wide layout, 2 for the roem-aware 300-wide layout) derived
+    from the checkpoint's input width, so old and new checkpoints both work.
     """
     if not _TORCH_AVAILABLE:
         return None
@@ -58,14 +67,8 @@ def _get_model(model_path: str | Path):
         device = _get_device()
         state_dict = torch.load(path, map_location=device, weights_only=True)
 
-        linear_keys = sorted(
-            (k for k in state_dict if k.endswith(".weight") and "net." in k),
-            key=lambda k: int(k.split(".")[1]),
-        )
-        hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
-
-        model = KlaverjasNet(hidden_sizes=hidden_sizes)
-        model.load_state_dict(state_dict)
+        model = KlaverjasNet.from_state_dict(state_dict)
+        model.feature_version = feature_version_for_size(model.in_features)
         model.to(device)
         model.eval()
     except Exception:
@@ -108,6 +111,7 @@ def neural_choose_card(
             game_scores=list(player.game_scores),
             round_num=player.round_num,
             legal_moves=legal,
+            feature_version=getattr(model, "feature_version", 1),
         )
 
         x = torch.from_numpy(features).unsqueeze(0).to(device)

@@ -10,7 +10,7 @@ from klaverjas.constants import (
     TRUMP_ORDER,
     TRUMP_STRONGEST_FIRST,
 )
-from klaverjas.core import Card, Trick
+from klaverjas.core import Card, Trick, trick_roem_points
 
 # Canonical card ordering: 32 cards indexed by (suit_idx * 8 + rank_idx).
 CARD_INDEX: dict[str, int] = {}
@@ -20,11 +20,55 @@ for _si, _suit in enumerate(SUITS):
 
 NUM_CARDS = 32
 NUM_SUITS = 4
+
+# Feature layout versions.
+#   v1 (267): the original encoding; every checkpoint trained before the
+#             roem-aware retrain (models/neural_best.pt) expects this.
+#   v2 (300): v1 + 33 trick-roem features appended at the end (see the
+#             "34."/"35." blocks in encode_state).  Offsets of the v1 blocks —
+#             in particular the legal-move mask at 190 — are unchanged, so
+#             tooling that slices the mask keeps working for both versions.
 NUM_FEATURES = 267
+NUM_ROEM_FEATURES = NUM_CARDS + 1
+NUM_FEATURES_V2 = NUM_FEATURES + NUM_ROEM_FEATURES
+FEATURE_SIZES = {1: NUM_FEATURES, 2: NUM_FEATURES_V2}
+LEGAL_MASK_OFFSET = 190
+ROEM_NORM = 100.0
+
+
+def feature_version_for_size(num_features: int) -> int:
+    """Map an input width (e.g. from a checkpoint's first Linear layer) to a
+    feature-layout version.  Raises ValueError for unknown widths."""
+    for version, size in FEATURE_SIZES.items():
+        if size == num_features:
+            return version
+    raise ValueError(f"Unknown feature width {num_features}; known: {FEATURE_SIZES}")
 
 
 def card_to_idx(card: Card) -> int:
     return CARD_INDEX[str(card)]
+
+
+def card_roem_deltas(
+    trick_cards: list[Card],
+    candidates: list[Card],
+    trump: str,
+) -> tuple[np.ndarray, int]:
+    """Per-card roem each candidate would ADD to the trick if played now.
+
+    Returns (deltas[32] in raw points, roem already on the table).  Cards not
+    in *candidates* get 0.  When leading (empty trick) every delta is 0 — a
+    single card never forms roem on its own.
+    """
+    deltas = np.zeros(NUM_CARDS, dtype=np.float32)
+    if not trick_cards:
+        return deltas, 0
+    base = trick_roem_points(trick_cards, trump)
+    for c in candidates:
+        added = trick_roem_points(trick_cards + [c], trump) - base
+        if added:
+            deltas[card_to_idx(c)] = float(added)
+    return deltas, base
 
 
 def encode_state(
@@ -41,11 +85,18 @@ def encode_state(
     game_scores: list[int],
     round_num: int,
     legal_moves: list[Card],
+    feature_version: int = 1,
 ) -> np.ndarray:
-    """Encode the full game state into a float32 feature vector of size NUM_FEATURES."""
+    """Encode the full game state into a float32 feature vector.
+
+    ``feature_version`` selects the layout: 1 -> NUM_FEATURES (267),
+    2 -> NUM_FEATURES_V2 (300, adds the trick-roem block).
+    """
+    if feature_version not in FEATURE_SIZES:
+        raise ValueError(f"Unsupported feature_version {feature_version}")
     team = SEAT_TEAMS[seat_idx]
     opp_team = 1 - team
-    features = np.zeros(NUM_FEATURES, dtype=np.float32)
+    features = np.zeros(FEATURE_SIZES[feature_version], dtype=np.float32)
     offset = 0
 
     # 1. My hand (32)
@@ -260,4 +311,22 @@ def encode_state(
     offset += 1  # 267
 
     assert offset == NUM_FEATURES, f"Feature count mismatch: {offset} != {NUM_FEATURES}"
+    if feature_version == 1:
+        return features
+
+    # ── v2: trick-roem awareness ─────────────────────────────────────────────
+    # 34. Roem each legal card would ADD to the current trick (32), /100.
+    #     e.g. K♥ onto Q♥+J♥ -> 0.20; K-trump onto Q-trump -> 0.20;
+    #     10-J-Q-K of trump -> 0.70 (sequence 50 + stuk 20).
+    trick_cards = [c for _, c in trick]
+    deltas, on_table = card_roem_deltas(trick_cards, legal_moves, trump)
+    features[offset:offset + NUM_CARDS] = deltas / ROEM_NORM
+    offset += NUM_CARDS  # 299
+
+    # 35. Roem already formed on the table (1), /100 — extra value at stake
+    #     for whoever wins this trick.
+    features[offset] = on_table / ROEM_NORM
+    offset += 1  # 300
+
+    assert offset == NUM_FEATURES_V2, f"Feature count mismatch: {offset} != {NUM_FEATURES_V2}"
     return features

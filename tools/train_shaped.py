@@ -46,7 +46,7 @@ import main
 from klaverjas.constants import SEAT_DEFAULTS, SEAT_TEAMS
 from klaverjas.core import Card, Trick, trick_winner_index
 from main import AIPlayer, KlaverjasGame
-from neural.features import CARD_INDEX, NUM_FEATURES, encode_state
+from neural.features import CARD_INDEX, NUM_FEATURES, encode_state, feature_version_for_size
 from neural.model import KlaverjasActorCritic, KlaverjasNet
 from tools.reward_rules import RULES
 
@@ -70,6 +70,8 @@ class PPOPlayer(AIPlayer):
         super().__init__(name, team, seat_idx, rng_seed, signal_profile, ai_strength)
         self.model = model
         self.device = device
+        # Encode with the layout the checkpoint was trained on (267 = v1, 300 = v2)
+        self.feature_version = feature_version_for_size(model.in_features)
         self.temperature = temperature
         self.transitions: list[Transition] = []
         # Track which card was played per transition for shaped rewards
@@ -103,6 +105,7 @@ class PPOPlayer(AIPlayer):
             game_scores=list(self.game_scores),
             round_num=self.round_num,
             legal_moves=legal,
+            feature_version=self.feature_version,
         )
 
         x = torch.from_numpy(features).unsqueeze(0).to(self.device)
@@ -345,8 +348,7 @@ def _collect_game_batch_worker(args):
     main.TRICK_CLEAR_DELAY = 0.0
 
     device = torch.device("cpu")
-    policy_net = KlaverjasNet(hidden_sizes=hidden_sizes)
-    policy_net.load_state_dict(state_dict)
+    policy_net = KlaverjasNet.from_state_dict(state_dict)  # shape-aware (v1 or v2 inputs)
     model = KlaverjasActorCritic.from_policy_net(policy_net)
     model.eval()
     for p in model.parameters():
@@ -588,14 +590,9 @@ def train(
         print(f"  - {rule_fn.__name__} (weight={weight})")
 
     state_dict = torch.load(model_path, map_location=device, weights_only=True)
-    linear_keys = sorted(
-        (k for k in state_dict if k.endswith(".weight") and "net." in k),
-        key=lambda k: int(k.split(".")[1]),
-    )
-    hidden_sizes = tuple(state_dict[k].shape[0] for k in linear_keys[:-1])
-    policy_net = KlaverjasNet(hidden_sizes=hidden_sizes)
-    policy_net.load_state_dict(state_dict)
-    print(f"Loaded pretrained policy from {model_path} (architecture: {hidden_sizes})")
+    policy_net = KlaverjasNet.from_state_dict(state_dict)   # shape-aware (v1 or v2 inputs)
+    print(f"Loaded pretrained policy from {model_path} "
+          f"({policy_net.in_features} inputs, feature layout v{feature_version_for_size(policy_net.in_features)})")
 
     model = KlaverjasActorCritic.from_policy_net(policy_net)
     model.to(device)

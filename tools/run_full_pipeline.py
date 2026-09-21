@@ -1,4 +1,30 @@
-"""Full pipeline: generate expert_v2 data, train, benchmark. Runs unattended."""
+"""Roem-aware neural retrain pipeline. Runs unattended.
+
+Stages (each can be skipped / reused):
+
+  1. generate   Mythos self-play -> imitation data in the roem-aware v2 layout
+                (tools/generate_training_data.py --teacher mythos)
+  2. imitate    supervised training of a fresh 300-input net
+                (tools/train_neural.py)
+  3. selfplay   PPO self-play on the CUDA engine, periodic benchmarks vs Mythos
+                (tools/train_gpu_selfplay.py)
+  4. benchmark  imitation net and self-play net vs Mythos, same bidder on both
+                sides so only card play differs (tools/ai_benchmark.py)
+
+Typical use:
+  python tools/run_full_pipeline.py                       # everything, defaults
+  python tools/run_full_pipeline.py --skip-generate \\
+      --data models/training_data_mythos_v2.npz           # reuse a dataset
+  python tools/run_full_pipeline.py --skip-generate --skip-selfplay --data ...
+
+Nothing here overwrites models/neural_best.pt; pass --promote to copy the
+best-benchmarked checkpoint over it at the end.
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
 import shutil
 import subprocess
 import sys
@@ -12,56 +38,160 @@ ROOT = Path(__file__).resolve().parents[1]
 PY = sys.executable
 
 
-def run(desc, cmd):
-    print(f"\n{'='*60}")
-    print(f"  {desc}")
-    print(f"  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*60}\n")
+def run(desc: str, cmd: list[str], capture: bool = False) -> tuple[int, str]:
+    print(f"\n{'=' * 64}\n  {desc}\n  Started: {time.strftime('%Y-%m-%d %H:%M:%S')}\n{'=' * 64}\n")
+    print("  $ " + " ".join(cmd) + "\n")
     t0 = time.time()
-    result = subprocess.run(cmd, cwd=str(ROOT))
-    elapsed = time.time() - t0
-    print(f"\n  Finished in {elapsed/60:.1f} minutes (exit code {result.returncode})")
-    return result.returncode
+    if capture:
+        result = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True)
+        print(result.stdout)
+        if result.stderr.strip():
+            print(result.stderr[-2000:])
+        out = result.stdout
+    else:
+        result = subprocess.run(cmd, cwd=str(ROOT))
+        out = ""
+    print(f"\n  Finished in {(time.time() - t0) / 60:.1f} minutes (exit code {result.returncode})")
+    return result.returncode, out
 
 
-# Step 1: Generate 100K rounds of expert_v2 data (~3.2 million samples)
-# Estimate: ~13 hours with 16 workers
-rc = run("STEP 1: Generate 100,000 rounds of expert_v2 training data", [
-    PY, "tools/generate_training_data.py",
-    "--rounds", "100000",
-    "--strength", "expert_v2",
-    "--workers", "16",
-    "--output", "models/training_data_v2_100k.npz",
-])
-if rc != 0:
-    print("ERROR: Data generation failed!")
-    sys.exit(1)
+def parse_metrics(text: str) -> dict[str, float]:
+    metrics: dict[str, float] = {}
+    for key in ("win_rate", "avg_point_diff", "declare_success_rate", "rounds", "games"):
+        m = re.search(rf"^{key}=([-\d.]+)", text, re.MULTILINE)
+        if m:
+            metrics[key] = float(m.group(1))
+    return metrics
 
-# Step 2: Train neural network
-rc = run("STEP 2: Train neural network on expert_v2 data", [
-    PY, "tools/train_neural.py",
-    "--data", "models/training_data_v2_100k.npz",
-    "--output", "models/neural_v2_100k.pt",
-    "--epochs", "80",
-    "--batch-size", "512",
-    "--lr", "1e-3",
-    "--patience", "15",
-])
-if rc != 0:
-    print("ERROR: Training failed!")
-    sys.exit(1)
 
-# Step 3: Copy model and benchmark
-shutil.copy(str(ROOT / "models" / "neural_v2_100k.pt"), str(ROOT / "models" / "neural_best.pt"))
+def main_cli() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--rounds", type=int, default=12000, help="Mythos self-play rounds to record.")
+    ap.add_argument("--workers", type=int, default=15, help="CPU workers for generation / benchmarks.")
+    ap.add_argument("--card-budget", type=float, default=1.0, help="AI_CARD_BUDGET for Mythos while recording.")
+    ap.add_argument("--data", nargs="*", default=None,
+                    help="Existing .npz dataset(s) to train on. Skips generation unless "
+                         "--also-generate is given (then the new file is trained on as well).")
+    ap.add_argument("--also-generate", action="store_true",
+                    help="With --data: still run generation and add its output to the datasets.")
+    ap.add_argument("--data-output", default="models/training_data_mythos_v2.npz")
+    ap.add_argument("--imitation-output", default="models/neural_mythos_v2.pt")
+    ap.add_argument("--selfplay-output", default="models/neural_mythos_v2_rl.pt")
+    ap.add_argument("--epochs", type=int, default=80, help="Imitation epochs (early stopping applies).")
+    ap.add_argument("--rl-epochs", type=int, default=300, help="PPO self-play epochs.")
+    ap.add_argument("--bench-rounds", type=int, default=512, help="Rounds per final benchmark vs Mythos.")
+    ap.add_argument("--rl-bench-rounds", type=int, default=256, help="Rounds per periodic RL benchmark.")
+    ap.add_argument("--skip-generate", action="store_true")
+    ap.add_argument("--skip-imitate", action="store_true", help="Reuse --imitation-output as-is.")
+    ap.add_argument("--skip-selfplay", action="store_true")
+    ap.add_argument("--promote", action="store_true",
+                    help="Copy the best-benchmarked checkpoint over models/neural_best.pt.")
+    args = ap.parse_args()
 
-rc = run("STEP 3: Benchmark neural (expert_v2 100K) vs expert - 1024 rounds", [
-    PY, "tools/ai_benchmark.py",
-    "--candidate-strength", "neural",
-    "--baseline-strength", "expert",
-    "--rounds", "1024",
-    "--workers", "16",
-])
+    datasets = list(args.data or [])
+    t_start = time.time()
 
-print(f"\n{'='*60}")
-print(f"  PIPELINE COMPLETE - {time.strftime('%Y-%m-%d %H:%M:%S')}")
-print(f"{'='*60}")
+    # ── 1. generate ──────────────────────────────────────────────────────────
+    generate = not args.skip_generate and (not args.data or args.also_generate)
+    if generate:
+        rc, _ = run(f"STEP 1: record {args.rounds} rounds of Mythos self-play (v2 features)", [
+            PY, "tools/generate_training_data.py",
+            "--teacher", "mythos",
+            "--feature-version", "2",
+            "--rounds", str(args.rounds),
+            "--workers", str(args.workers),
+            "--card-budget", str(args.card_budget),
+            "--output", args.data_output,
+        ])
+        if rc != 0:
+            print("ERROR: data generation failed")
+            return 1
+        datasets.append(args.data_output)
+
+    # ── 2. imitate ───────────────────────────────────────────────────────────
+    if not args.skip_imitate:
+        if not datasets:
+            print("ERROR: no dataset for imitation (pass --data, drop --skip-generate, or --skip-imitate)")
+            return 1
+        rc, _ = run("STEP 2: imitation training (300-input roem-aware net)", [
+            PY, "tools/train_neural.py",
+            "--data", *datasets,
+            "--output", args.imitation_output,
+            "--epochs", str(args.epochs),
+            "--batch-size", "512",
+            "--lr", "1e-3",
+            "--patience", "15",
+        ])
+        if rc != 0:
+            print("ERROR: imitation training failed")
+            return 1
+    elif not (ROOT / args.imitation_output).is_file():
+        print(f"ERROR: --skip-imitate but {args.imitation_output} does not exist")
+        return 1
+
+    results: dict[str, dict[str, float]] = {}   # only successful benchmarks
+    failed: list[str] = []
+
+    def bench(label: str, model: str) -> None:
+        rc, out = run(f"BENCHMARK: {label} (neural card play + Mythos bidder) vs Mythos, "
+                      f"{args.bench_rounds} rounds", [
+            PY, "tools/ai_benchmark.py",
+            "--candidate-strength", "neural_mythosbid",
+            "--baseline-strength", "mythos",
+            "--rounds", str(args.bench_rounds),
+            "--workers", str(args.workers),
+            "--model", model,
+        ], capture=True)
+        metrics = parse_metrics(out) if rc == 0 else {}
+        if "avg_point_diff" in metrics:
+            results[label] = metrics
+        else:
+            failed.append(label)
+            print(f"WARNING: benchmark of {label} failed (exit {rc}); it will not be promoted")
+
+    bench("imitation", args.imitation_output)
+
+    # ── 3. selfplay ──────────────────────────────────────────────────────────
+    if not args.skip_selfplay:
+        rc, _ = run(f"STEP 3: PPO self-play on the CUDA engine ({args.rl_epochs} epochs)", [
+            PY, "tools/train_gpu_selfplay.py",
+            "--model", args.imitation_output,
+            "--output", args.selfplay_output,
+            "--epochs", str(args.rl_epochs),
+            "--benchmark-baseline", "mythos",
+            "--benchmark-candidate", "neural_mythosbid",
+            "--benchmark-rounds", str(args.rl_bench_rounds),
+            "--benchmark-workers", str(args.workers),
+        ])
+        if rc != 0:
+            print("ERROR: self-play training failed")
+            return 1
+        bench("selfplay", args.selfplay_output)
+
+    # ── 4. summary ───────────────────────────────────────────────────────────
+    print(f"\n{'=' * 64}\n  PIPELINE COMPLETE  ({(time.time() - t_start) / 3600:.1f} h)\n{'=' * 64}")
+    print(f"{'model':<12}{'win_rate':>10}{'avg_pt_diff':>13}{'decl_succ':>11}")
+    for label, m in results.items():
+        print(f"{label:<12}{m.get('win_rate', float('nan')):>10.3f}"
+              f"{m.get('avg_point_diff', float('nan')):>13.1f}"
+              f"{m.get('declare_success_rate', float('nan')):>11.3f}")
+
+    for label in failed:
+        print(f"{label:<12}{'benchmark failed':>34}")
+
+    if args.promote:
+        if failed:
+            print("Not promoting: at least one benchmark failed, so the best model is unknown.")
+            return 1
+        if not results:
+            print("Not promoting: no benchmark results.")
+            return 1
+        best_label = max(results, key=lambda k: results[k]["avg_point_diff"])
+        src = args.selfplay_output if best_label == "selfplay" else args.imitation_output
+        shutil.copy(str(ROOT / src), str(ROOT / "models" / "neural_best.pt"))
+        print(f"Promoted {src} -> models/neural_best.pt")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main_cli())
