@@ -13,6 +13,14 @@ Rotterdam rules (strict):
   - If lead suit is trump: must overtrump if possible
   - If can't follow suit: must trump (and overtrump existing trick trump if possible)
 
+Scoring (matches main.py):
+  - Roem (stuk / sequences / four of a kind) is awarded PER TRICK, for the four
+    cards on the table, to the team that wins the trick.
+  - Pit: +100 roem for taking all 162 trick points.
+  - Nat: the declaring team must strictly outscore the opponents on
+    trick points + roem; otherwise it scores 0 and the opponents get
+    162 + all roem.
+
 CUDA-graph friendliness:
   All hot-path mutations use in-place ops or `tensor.copy_(torch.where(...))`,
   and no host syncs (no `.item()`, `.any()` guards) occur in step()/get_state().
@@ -21,9 +29,18 @@ CUDA-graph friendliness:
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
 import torch
 import torch.nn.functional as F
 from torch import Tensor
+
+_ROOT = Path(__file__).resolve().parents[1]
+if str(_ROOT) not in sys.path:
+    sys.path.insert(0, str(_ROOT))
+
+from neural.features import FEATURE_SIZES, NUM_FEATURES_V2  # noqa: E402
 
 # ─── Precomputed constant arrays (rank-indexed, shape [8]) ────────────────────
 
@@ -46,7 +63,7 @@ _TRUMP_PTS = [0, 0, 14, 10, 20, 3, 4, 11]
 _SEAT_TEAM = [0, 1, 0, 1]
 
 NUM_CARDS = 32
-NUM_FEATURES = 267
+NUM_FEATURES = NUM_FEATURES_V2   # default layout: roem-aware v2 (300)
 
 
 class KlaverjasGPUEngine:
@@ -71,11 +88,16 @@ class KlaverjasGPUEngine:
         device: str | torch.device = "cuda",
         score_limit: int = 500,
         bid_threshold: float = 2.75,
+        feature_version: int = 2,
     ):
         self.B = batch_size
         self.device = torch.device(device)
         self.score_limit = score_limit
         self.bid_threshold = bid_threshold
+        if feature_version not in FEATURE_SIZES:
+            raise ValueError(f"Unsupported feature_version {feature_version}")
+        self.feature_version = feature_version
+        self.num_features = FEATURE_SIZES[feature_version]
 
         # ── Constant lookup tensors (registered once) ────────────────────────
         def reg(lst, dtype=torch.long):
@@ -109,6 +131,8 @@ class KlaverjasGPUEngine:
         # captureable; using tensor sources is.
         self._ZERO_B = torch.zeros(batch_size, dtype=torch.float32, device=self.device)
         self._ONE_B  = torch.ones(batch_size, dtype=torch.float32, device=self.device)
+        # Identity over cards: adding candidate card c to a trick presence vector.
+        self._EYE32 = torch.eye(NUM_CARDS, dtype=torch.float32, device=self.device)
 
         # ── Mutable game state (allocated once; only mutated in-place) ───────
         B = self.B
@@ -118,7 +142,6 @@ class KlaverjasGPUEngine:
 
         # Per-round state
         self.hands           = Z(B, 4, NUM_CARDS)   # [B,4,32] binary
-        self.initial_hands   = Z(B, 4, NUM_CARDS)   # [B,4,32] for roem
         self.played          = Z(B, NUM_CARDS)       # [B,32] played this round
         self.opponent_voids  = Z(B, 4, 4)           # [B,seat,suit]
         self.roem_pts        = T(B, 2)
@@ -161,7 +184,7 @@ class KlaverjasGPUEngine:
         self._start_new_round(active)
 
     def get_state(self) -> tuple[Tensor, Tensor]:
-        """Return (features [B,267], legal_mask [B,32]) for current players."""
+        """Return (features [B,num_features], legal_mask [B,32]) for current players."""
         masks = self.legal_mask()
         feats = self.encode_features(masks)
         return feats, masks
@@ -299,9 +322,10 @@ class KlaverjasGPUEngine:
     # ─────────────────────────────────────────────────────────────────────────
 
     def encode_features(self, legal_mask: Tensor | None = None) -> Tensor:
-        """Encode full game state as [B, 267] feature vectors.
+        """Encode full game state as [B, num_features] feature vectors.
 
-        Matches the layout of neural/features.py encode_state() exactly.
+        Matches the layout of neural/features.py encode_state() exactly
+        (v1 = 267 features, v2 = 300 with the trick-roem block appended).
         """
         B = self.B
         ar = self._arange
@@ -313,7 +337,7 @@ class KlaverjasGPUEngine:
         player_hand = self.hands[ar, seat]   # [B, 32]
         card_suits = self.SUIT_OF.unsqueeze(0)   # [1, 32]
 
-        feats = torch.zeros(B, NUM_FEATURES, dtype=torch.float32, device=self.device)
+        feats = torch.zeros(B, self.num_features, dtype=torch.float32, device=self.device)
         o = 0  # offset
 
         # 1. My hand (32)
@@ -525,8 +549,65 @@ class KlaverjasGPUEngine:
         feats[:, o] = legal_mask.sum(1) / 8.0
         o += 1
 
-        assert o == NUM_FEATURES, f"Feature count mismatch: {o}"
+        if self.feature_version >= 2:
+            # 34. Roem each legal card would ADD to the current trick (32), /100
+            trick_presence = self._trick_presence()                            # [B,32]
+            base_roem = self._roem_from_presence(trick_presence, trump_suit)    # [B]
+            cand = (trick_presence.unsqueeze(1) + self._EYE32.unsqueeze(0)).clamp(max=1.0)  # [B,32,32]
+            cand_roem = self._roem_from_presence(
+                cand, trump_suit.unsqueeze(1).expand(B, NUM_CARDS))             # [B,32]
+            delta = (cand_roem - base_roem.unsqueeze(1)).float()
+            delta = delta * legal_mask * has_trick.unsqueeze(1).float()
+            feats[:, o:o+32] = delta / 100.0
+            o += 32
+
+            # 35. Roem already formed on the table (1), /100
+            feats[:, o] = base_roem.float() / 100.0
+            o += 1
+
+        assert o == self.num_features, f"Feature count mismatch: {o}"
         return feats
+
+    def _trick_presence(self) -> Tensor:
+        """[B,32] 0/1 presence of the cards currently on the table."""
+        valid = (self.trick_cards >= 0).float()                                          # [B,4]
+        oh = F.one_hot(self.trick_cards.clamp(min=0), num_classes=NUM_CARDS).float()     # [B,4,32]
+        return (oh * valid.unsqueeze(2)).sum(dim=1)
+
+    def _roem_from_presence(self, presence: Tensor, trump: Tensor) -> Tensor:
+        """Roem points of a card set (matches klaverjas.core.find_roem for a trick).
+
+        presence: [..., 32] 0/1;  trump: [...] suit index (same leading shape).
+        Returns int32 [...].  Intended for trick-sized sets (<= 4 cards), where
+        a suit holds at most one run of 3+ so the longest run is the only one.
+        """
+        lead_shape = presence.shape[:-1]
+        P = presence.reshape(-1, NUM_CARDS).bool()
+        N = P.shape[0]
+        t = trump.reshape(-1)
+        ar = torch.arange(N, device=self.device)
+        by_suit = P.view(N, 4, 8)
+
+        # Four of a kind: rank present in every suit (200 for Jacks, else 100)
+        rank_count = by_suit.int().sum(dim=1)                                  # [N,8]
+        foak = ((rank_count == 4).int() * self._FOAK_PTS).sum(dim=1)           # [N]
+
+        # Stuk: K + Q of trump (rank idx 6 and 5)
+        stuk = (P[ar, t * 8 + 6] & P[ar, t * 8 + 5]).int() * 20                # [N]
+
+        # Sequences: longest run of consecutive ranks per suit
+        run = torch.zeros(N, 4, dtype=torch.int32, device=self.device)
+        best = torch.zeros(N, 4, dtype=torch.int32, device=self.device)
+        for r in range(8):
+            cur = by_suit[:, :, r]
+            run = torch.where(cur, run + 1, torch.zeros_like(run))
+            best = torch.maximum(best, run)
+        seq_pts = torch.where(best >= 5, torch.full_like(best, 100),
+                  torch.where(best == 4, torch.full_like(best, 50),
+                  torch.where(best == 3, torch.full_like(best, 20),
+                              torch.zeros_like(best))))
+        total = foak + stuk + seq_pts.sum(dim=1)
+        return total.reshape(lead_shape)
 
     # ─────────────────────────────────────────────────────────────────────────
     # Internal helpers
@@ -598,11 +679,16 @@ class KlaverjasGPUEngine:
         last_trick = (self.trick_num == 7)
         trick_total = trick_total + (last_trick.long() * 10).int()
 
-        # Distribute trick points to winning team (in-place +=)
+        # Roem formed by the four cards on the table goes to the trick winner
+        trick_roem = self._roem_from_presence(self._trick_presence(), trump_suit)  # [B]
+
+        # Distribute trick points and roem to winning team (in-place +=)
         for t in range(2):
             mask = active & (winner_team == t)
             self.trick_pts[ar, t] += torch.where(mask, trick_total,
                                                   torch.zeros_like(trick_total))
+            self.roem_pts[ar, t] += torch.where(mask, trick_roem,
+                                                 torch.zeros_like(trick_roem))
 
         # Advance trick counter (in-place add)
         self.trick_num.add_(active.long())
@@ -650,7 +736,8 @@ class KlaverjasGPUEngine:
         opp_roem   = opp_roem  + torch.where(opp_pit,  pit_bonus, zero_roem)
         total_roem = decl_roem + opp_roem
 
-        is_nat  = active & (decl_trick <= 81)
+        # Nat: declarer must STRICTLY outscore on trick points + roem (pit included)
+        is_nat  = active & ((decl_trick + decl_roem) <= (opp_trick + opp_roem))
 
         normal_decl = decl_trick + decl_roem
         normal_opp  = opp_trick  + opp_roem
@@ -703,7 +790,7 @@ class KlaverjasGPUEngine:
         return torch.where(active, reward, torch.zeros_like(reward))
 
     def _start_new_round(self, active: Tensor) -> None:
-        """Reset round state, deal hands, bid, compute roem for active games.
+        """Reset round state, deal hands and bid for active games.
         Sync-free; all updates masked by `active`."""
         # Reset round counters in-place (masked)
         self.trick_num.masked_fill_(active, 0)
@@ -727,10 +814,7 @@ class KlaverjasGPUEngine:
         # Bidding (runs unconditionally; masked inside)
         self._bidding(active)
 
-        # Roem scoring
-        roem = self._compute_roem_batch(self.initial_hands, self.trump)  # [B, 2]
-        self.roem_pts.copy_(torch.where(
-            active.unsqueeze(1), roem, self.roem_pts))
+        # (Roem is awarded per trick in _resolve_trick; nothing to do here.)
 
         # First trick leader = player left of dealer
         first_bidder = (self.dealer + 1) % 4
@@ -758,7 +842,6 @@ class KlaverjasGPUEngine:
 
         mask = active.view(B, 1, 1)
         self.hands.copy_(torch.where(mask, new_hands, self.hands))
-        self.initial_hands.copy_(torch.where(mask, new_hands, self.initial_hands))
 
     def _bid_score(self, hand: Tensor, suit: Tensor) -> Tensor:
         """Compute bid strength score for each active game.
@@ -851,58 +934,3 @@ class KlaverjasGPUEngine:
         # Commit to state (masked in-place)
         self.trump.copy_(torch.where(active, trump, self.trump))
         self.declaring_team.copy_(torch.where(active, decl_team, self.declaring_team))
-
-    def _compute_roem_batch(self, hands: Tensor, trump: Tensor) -> Tensor:
-        """Compute roem for all seats, return [B, 2] team totals."""
-        B = hands.shape[0]
-        ar = torch.arange(B, device=self.device)
-        roem = torch.zeros(B, 2, dtype=torch.int32, device=self.device)
-
-        K_idx = trump * 8 + 6
-        Q_idx = trump * 8 + 5
-
-        for seat in range(4):
-            team = _SEAT_TEAM[seat]
-            hand = hands[:, seat]  # [B, 32]
-
-            # Stuk (K+Q of trump = 20 pts)
-            stuk = (hand[ar, K_idx] * hand[ar, Q_idx] * 20).int()
-            roem[:, team] += stuk
-
-            # 4-of-a-kind (vectorized): [B,32] → [B,4,8] → sum over suits → [B,8]
-            by_suit = hand.view(B, 4, 8)
-            rank_count = by_suit.sum(dim=1)  # [B, 8]
-            foak = ((rank_count == 4).int() * self._FOAK_PTS).sum(dim=1)
-            roem[:, team] += foak
-
-            # Sequences per suit (3+=20, 4=50, 5+=100)
-            for suit_idx in range(4):
-                suit_hand = hand[:, suit_idx*8:(suit_idx+1)*8].int()  # [B, 8]
-
-                # Scan run lengths
-                run_len = torch.zeros(B, 8, dtype=torch.int32, device=self.device)
-                prev = torch.zeros(B, dtype=torch.int32, device=self.device)
-                for r in range(8):
-                    cur = suit_hand[:, r]
-                    run_len[:, r] = torch.where(cur.bool(), prev + 1,
-                                                torch.zeros_like(prev))
-                    prev = run_len[:, r]
-
-                # End-of-run indicator: card present, next card absent (or end)
-                next_cur = torch.cat([
-                    suit_hand[:, 1:],
-                    torch.zeros(B, 1, dtype=torch.int32, device=self.device),
-                ], dim=1)
-                is_end = suit_hand.bool() & ~next_cur.bool()
-
-                seq_pts = torch.where(run_len >= 5,
-                             torch.full_like(run_len, 100),
-                             torch.where(run_len == 4,
-                                torch.full_like(run_len, 50),
-                                torch.where(run_len == 3,
-                                   torch.full_like(run_len, 20),
-                                   torch.zeros_like(run_len))))
-                awarded = (is_end.int() * seq_pts).sum(dim=1)
-                roem[:, team] += awarded
-
-        return roem

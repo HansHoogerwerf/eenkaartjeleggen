@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from neural.features import feature_version_for_size
 from neural.model import KlaverjasActorCritic, KlaverjasNet
 from tools.gpu_engine import KlaverjasGPUEngine
 
@@ -56,7 +57,7 @@ def safe_copy(src: str, dst: str) -> None:
 @dataclass
 class RolloutBuffer:
     """Flat GPU tensor buffer for one collection phase."""
-    states:     torch.Tensor   # [T, 267]
+    states:     torch.Tensor   # [T, num_features]
     actions:    torch.Tensor   # [T] long
     log_probs:  torch.Tensor   # [T] float
     values:     torch.Tensor   # [T] float
@@ -84,9 +85,10 @@ def collect_rollout(
     our policy actually made.
     """
     B = engine.B
+    NF = engine.num_features
     is_ours_per_seat = (engine.SEAT_TEAM == our_team)  # [4] bool
 
-    all_states    = torch.zeros(steps, B, 267, dtype=torch.float32, device=device)
+    all_states    = torch.zeros(steps, B, NF, dtype=torch.float32, device=device)
     all_actions   = torch.zeros(steps, B, dtype=torch.long, device=device)
     all_log_probs = torch.zeros(steps, B, dtype=torch.float32, device=device)
     all_values    = torch.zeros(steps, B, dtype=torch.float32, device=device)
@@ -133,7 +135,7 @@ def collect_rollout(
 
     T = steps * B
     return RolloutBuffer(
-        states    = all_states.reshape(T, 267),
+        states    = all_states.reshape(T, NF),
         actions   = all_actions.reshape(T),
         log_probs = all_log_probs.reshape(T),
         values    = all_values.reshape(T),
@@ -173,6 +175,7 @@ class GraphRollout:
         self.steps  = steps
         self.device = device
         self.B      = engine.B
+        self.NF     = engine.num_features
 
         # Temperature as a tensor so callers can update it without re-capturing
         self._temp = torch.tensor(temperature, dtype=torch.float32, device=device)
@@ -183,7 +186,7 @@ class GraphRollout:
 
         S, B = steps, self.B
         # Output buffers (pre-allocated, static memory addresses)
-        self.states    = torch.zeros(S, B, 267, dtype=torch.float32, device=device)
+        self.states    = torch.zeros(S, B, self.NF, dtype=torch.float32, device=device)
         self.actions   = torch.zeros(S, B, dtype=torch.long, device=device)
         self.log_probs = torch.zeros(S, B, dtype=torch.float32, device=device)
         self.values    = torch.zeros(S, B, dtype=torch.float32, device=device)
@@ -268,7 +271,7 @@ class GraphRollout:
         S, B = self.steps, self.B
         T = S * B
         return RolloutBuffer(
-            states    = self.states.reshape(T, 267),
+            states    = self.states.reshape(T, self.NF),
             actions   = self.actions.reshape(T),
             log_probs = self.log_probs.reshape(T),
             values    = self.values.reshape(T),
@@ -403,13 +406,25 @@ def ppo_update(
 
 # ─── Benchmarking ─────────────────────────────────────────────────────────────
 
-def benchmark_vs_expert_v2(model_path: str, rounds: int = 256) -> dict | None:
+def benchmark_model(
+    model_path: str,
+    rounds: int = 256,
+    baseline: str = "expert_v2",
+    candidate: str = "neural",
+    workers: int = 16,
+) -> dict | None:
+    """Run tools/ai_benchmark.py for *model_path* and parse its key=value output.
+
+    ``candidate`` is the player wrapping the checkpoint: ``neural`` (stock
+    heuristic bidder) or ``neural_mythosbid`` (Mythos's MC bidder; use this
+    when ``baseline`` is ``mythos`` so only card play differs).
+    """
     result = subprocess.run(
         [PY, "tools/ai_benchmark.py",
-         "--candidate-strength", "neural",
-         "--baseline-strength", "expert_v2",
+         "--candidate-strength", candidate,
+         "--baseline-strength", baseline,
          "--rounds", str(rounds),
-         "--workers", "16",
+         "--workers", str(workers),
          "--model", model_path],
         cwd=str(ROOT),
         capture_output=True, text=True,
@@ -452,19 +467,21 @@ def train_gpu_selfplay(
     lam: float = 0.95,
     benchmark_interval: int = 25,
     benchmark_rounds: int = 2048,
+    benchmark_baseline: str = "expert_v2",
+    benchmark_candidate: str = "neural",
+    benchmark_workers: int = 16,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     if device.type == "cpu":
         print("  WARNING: running on CPU — consider using --batch-size 64 for speed")
 
-    # Load pretrained policy — auto-detect hidden sizes from checkpoint
+    # Load pretrained policy — shape (hidden sizes AND feature width) comes
+    # from the checkpoint, so v1 (267) and roem-aware v2 (300) nets both work.
     ckpt = torch.load(model_path, map_location=device, weights_only=True)
-    linear_weights = [v for k, v in ckpt.items() if k.endswith(".weight") and v.ndim == 2]
-    hidden_sizes = tuple(w.shape[0] for w in linear_weights[:-1])
-    print(f"Checkpoint hidden sizes: {hidden_sizes}")
-    policy_net = KlaverjasNet(hidden_sizes=hidden_sizes)
-    policy_net.load_state_dict(ckpt)
+    policy_net = KlaverjasNet.from_state_dict(ckpt)
+    feature_version = feature_version_for_size(policy_net.in_features)
+    print(f"Checkpoint: in_features={policy_net.in_features} (feature layout v{feature_version})")
     print(f"Loaded pretrained policy from {model_path}")
 
     # Build actor-critic
@@ -476,10 +493,11 @@ def train_gpu_selfplay(
     # --opponent to ladder against a stronger frozen checkpoint.
     opp_path = opponent_path or model_path
     opp_ckpt = torch.load(opp_path, map_location=device, weights_only=True)
-    opp_linear = [v for k, v in opp_ckpt.items() if k.endswith(".weight") and v.ndim == 2]
-    opp_hidden = tuple(w.shape[0] for w in opp_linear[:-1])
-    opp_net = KlaverjasNet(hidden_sizes=opp_hidden)
-    opp_net.load_state_dict(opp_ckpt)
+    opp_net = KlaverjasNet.from_state_dict(opp_ckpt)
+    if opp_net.in_features != policy_net.in_features:
+        raise SystemExit(
+            f"Opponent checkpoint uses {opp_net.in_features} features but the policy uses "
+            f"{policy_net.in_features}; both must share one feature layout.")
     ref_model = KlaverjasActorCritic.from_policy_net(opp_net)
     ref_model.to(device)
     ref_model.eval()
@@ -496,8 +514,9 @@ def train_gpu_selfplay(
     print(f"Settings: lr={lr}  temp={temperature}  clip={clip_eps}  "
           f"entropy={entropy_coeff}  kl={kl_coeff}  gamma={gamma}")
 
-    # GPU game engine
-    engine = KlaverjasGPUEngine(batch_size=batch_size, device=device)
+    # GPU game engine (feature layout follows the checkpoint)
+    engine = KlaverjasGPUEngine(batch_size=batch_size, device=device,
+                                feature_version=feature_version)
     engine.reset()
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -519,9 +538,13 @@ def train_gpu_selfplay(
             print(f"CUDA graph capture failed ({exc!r}); falling back to eager rollout")
             graph_rollout = None
 
+    def run_benchmark(path: str) -> dict | None:
+        return benchmark_model(path, rounds=benchmark_rounds, baseline=benchmark_baseline,
+                               candidate=benchmark_candidate, workers=benchmark_workers)
+
     # Initial benchmark baseline
-    print("\n--- Initial benchmark vs expert_v2 ---")
-    bench0 = benchmark_vs_expert_v2(model_path, rounds=benchmark_rounds)
+    print(f"\n--- Initial benchmark: {benchmark_candidate} vs {benchmark_baseline} ---")
+    bench0 = run_benchmark(model_path)
     best_diff = float(bench0.get("avg_point_diff", -9999)) if bench0 else -9999
     if bench0:
         print(f"  win_rate={bench0.get('win_rate', '?')}  "
@@ -587,8 +610,8 @@ def train_gpu_selfplay(
             export = model.export_policy_net()
             torch.save(export.state_dict(), current_path)
 
-            print(f"\n--- Benchmark vs expert_v2 (epoch {epoch}) ---")
-            bench_cur = benchmark_vs_expert_v2(current_path, rounds=benchmark_rounds)
+            print(f"\n--- Benchmark vs {benchmark_baseline} (epoch {epoch}) ---")
+            bench_cur = run_benchmark(current_path)
             cur_diff = float(bench_cur.get("avg_point_diff", -9999)) if bench_cur else -9999
             if bench_cur:
                 print(f"  current: win_rate={bench_cur.get('win_rate', '?')}  "
@@ -615,8 +638,8 @@ def train_gpu_selfplay(
     final_path = output_path.replace(".pt", "_final.pt")
     torch.save(final_net.state_dict(), final_path)
 
-    print(f"\n--- Final benchmark vs expert_v2 ---")
-    bench_f = benchmark_vs_expert_v2(final_path, rounds=benchmark_rounds)
+    print(f"\n--- Final benchmark vs {benchmark_baseline} ---")
+    bench_f = run_benchmark(final_path)
     final_diff = float(bench_f.get("avg_point_diff", -9999)) if bench_f else -9999
     if bench_f:
         print(f"  win_rate={bench_f.get('win_rate', '?')}  "
@@ -663,7 +686,15 @@ def main_cli() -> None:
     parser.add_argument("--lam",              type=float, default=0.95)
     parser.add_argument("--benchmark-interval", type=int, default=25)
     parser.add_argument("--benchmark-rounds",   type=int, default=2048,
-                        help="Rounds per benchmark run (more = lower variance, slower).")
+                        help="Rounds per benchmark run (more = lower variance, slower). "
+                             "Use ~256-512 for the slow search baselines (mythos/opus).")
+    parser.add_argument("--benchmark-baseline", default="expert_v2",
+                        help="Baseline for periodic benchmarks: an internal profile or "
+                             "mythos / opus / neural_mythosbid.")
+    parser.add_argument("--benchmark-candidate", default="neural",
+                        help="Player wrapping the checkpoint under test: neural (stock bidder) "
+                             "or neural_mythosbid (Mythos bidder; pair with --benchmark-baseline mythos).")
+    parser.add_argument("--benchmark-workers", type=int, default=16)
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -686,6 +717,9 @@ def main_cli() -> None:
         lam=args.lam,
         benchmark_interval=args.benchmark_interval,
         benchmark_rounds=args.benchmark_rounds,
+        benchmark_baseline=args.benchmark_baseline,
+        benchmark_candidate=args.benchmark_candidate,
+        benchmark_workers=args.benchmark_workers,
     )
 
 

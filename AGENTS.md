@@ -41,7 +41,17 @@ Important distinctions:
 - `AI_CARD_BUDGET` (env, seconds per card decision, default 1.0) bounds the
   Opus/Mythos search; lower it on weak hardware. The `neural` opponent is not
   search-bound. Neural card play needs PyTorch + `models/neural_best.pt`; it
-  falls back to heuristic play if unavailable.
+  falls back to heuristic play if unavailable. `NEURAL_MODEL_PATH` (env)
+  points the neural opponents at another checkpoint.
+- Two neural feature layouts exist (`neural/features.py`): v1 = 267 inputs
+  (all older checkpoints) and v2 = 300 inputs (adds trick-roem features). The
+  width is read from the checkpoint, so both load. New training data and
+  models should use v2; see `docs/neural-roem-retrain.md`.
+- Trick roem (stuk / sequences / four of a kind, awarded per trick to the
+  trick winner) is scored by the heuristic card play, the endgame solver, the
+  lookahead and the CUDA engine (`tools/gpu_engine.py`). The neural path also
+  runs `AIPlayer._roem_guard` after the net picks a card. Keep it that way:
+  `tests/test_ai_roem.py` and `tests/test_gpu_engine_roem.py` guard it.
 
 ## Important Runtime Patterns
 
@@ -92,11 +102,24 @@ The benchmark baseline may need recalibration after AI strength changes. Note
 that `tools/ci_quality_gate.py` benchmarks the engine-internal profiles
 (`expert` vs `advanced`), which are no longer what the lobby exposes — the
 public opponents (`opus`/`mythos`/`neural`) are the drop-in model players and
-are not covered by the quality gate.
+are not covered by the quality gate. `tools/ai_benchmark.py` does accept the
+drop-ins (`mythos`, `opus`, `neural_mythosbid`) as candidate or baseline, e.g.
+`--candidate-strength neural_mythosbid --baseline-strength mythos --model <ckpt>`
+compares card play with the same bidder on both sides.
+
+Training tooling: `tools/generate_training_data.py --teacher mythos` records
+imitation data (v2 features), `tools/train_neural.py` trains from one or more
+`.npz` files, `tools/train_gpu_selfplay.py` runs PPO self-play on the CUDA
+engine, and `tools/run_full_pipeline.py` chains them. PyTorch is only needed
+from the training step onwards.
 
 ## Deployment Notes
 
-- Docker image uses `python:3.12-slim`.
+- Docker image uses `python:3.12-slim`. Runtime dependencies in
+  `requirements.txt` are pinned on purpose: the VPS rebuilds the image on
+  every deploy, and an unpinned gunicorn upgrade (26.x moved `packaging` into
+  its `gevent` extra) once broke the acceptance deploy. Bump pins
+  deliberately and keep `gunicorn[gevent]`.
 - GitHub Actions uses Python 3.11.
 - Production deploy goes through `scripts/deploy.sh`.
 - Gunicorn must use one worker because WebSocket connections and rooms are process-local.
