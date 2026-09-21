@@ -115,7 +115,11 @@ from the training step onwards.
 
 ## Deployment Notes
 
-- Docker image uses `python:3.12-slim`.
+- Docker image uses `python:3.12-slim`. Runtime dependencies in
+  `requirements.txt` are pinned on purpose: the VPS rebuilds the image on
+  every deploy, and an unpinned gunicorn upgrade (26.x moved `packaging` into
+  its `gevent` extra) once broke the acceptance deploy. Bump pins
+  deliberately and keep `gunicorn[gevent]`.
 - GitHub Actions uses Python 3.11.
 - Production deploy goes through `scripts/deploy.sh`.
 - Gunicorn must use one worker because WebSocket connections and rooms are process-local.
