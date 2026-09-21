@@ -32,3 +32,8 @@ points per game, so a change needs to move both seeds to count.
 | 01:25 | dense-reward self-play from `neural_best.pt`, 300 epochs, snapshots every 25 | running on GPU |
 | 01:30 | baseline seed 11 | 0.375 / −103 |
 | 01:50 | solver v2, 3 cards, 8 deals | seed 7: 0.53 / **+62** (nats 51 vs 52); seed 11: 0.625 / **+143** (nats 38 vs 52) → mean +102 vs baseline −42 |
+| 02:20 | solver v2, 4 cards, 8 deals | seed 7: 0.66 / **+204** (nats 34 vs 61); seed 11: 0.50 / +31 (nats 42 vs 47) → mean +118; not separable from 3 cards at 512 rounds |
+| 02:40 | alpha-beta + strongest-first ordering in the solver | 4× faster: 3 cards 0.13 s/round, 4 cards 1.1 s/round (4 players, under load), 5 cards 14 s/round (too slow without an int-encoded port) |
+| 02:45 | dense self-play snapshots, seed 7, 256 rounds, solver v2 (3) | ep100 −30, **ep200 +150**, ep300 −2, final −87 (shipped net same setup: +62 at 512) |
+| 03:05 | hybrid option `NEURAL_ENDGAME_ENGINE=mythos`: Mythos's int-encoded alpha-beta (nat/pit terminal, ≤10 sampled deals, time-budgeted) finishes the round from `endgame_cards` | timing under load: 4 cards 0.7 s/round, 5 cards 2.8 s/round (4 players) → benchmarks queued |
+| 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |

@@ -34,8 +34,22 @@ class NeuralMythosBidPlayer(MythosPlayer):
         # solver takes over at, and how many consistent deals it averages.
         self.endgame_cards = int(os.environ.get("NEURAL_ENDGAME_CARDS", self.endgame_cards))
         self.endgame_samples = int(os.environ.get("NEURAL_ENDGAME_SAMPLES", self.endgame_samples))
+        # Which exact endgame engine finishes the round once the hand is down to
+        # `endgame_cards`: "solver" = AIPlayer's sampled nat-aware minimax,
+        # "mythos" = MythosPlayer's int-encoded, time-budgeted alpha-beta
+        # (exact to the end of the round at <= 5 cards, up to 10 sampled deals).
+        self.endgame_engine = os.environ.get("NEURAL_ENDGAME_ENGINE", "solver")
         self.random_mistake_rate = 0.0
 
     def _strategy(self, legal, trick, trump):
-        # Use the base engine's card play (neural), not Mythos's search.
+        if (self.endgame_engine == "mythos" and self.use_endgame_solver
+                and len(self.hand) <= self.endgame_cards and len(legal) > 1):
+            self.current_trump = trump
+            try:
+                card = self._search_choice(legal, trick, trump)
+                if card is not None:
+                    return card
+            except Exception:
+                pass
+        # Use the base engine's card play (neural + its endgame solver), not Mythos's search.
         return main.AIPlayer._strategy(self, legal, trick, trump)

@@ -262,7 +262,17 @@ When the AI needs to estimate whether a card will win a trick that has not yet b
 
 ## Endgame Exact Solver
 
-Enabled at all public levels. Activates when **≤3 cards** remain in hand.
+Enabled at all public levels. Activates when **≤ `endgame_cards`** (default 3)
+cards remain in hand. Since the v2 solver (Sept 2026) it no longer trusts a
+single reconstruction of the hidden hands: it draws up to `endgame_samples`
+(default 8) distinct deals consistent with every inference, solves each one
+exactly, and averages the value per candidate card (the backtracking
+determinization below is the fallback when sampling fails). Its terminal
+value is the *round outcome* — points plus roem with pit and nat applied
+exactly as the game scores them — so in the last tricks it fights to make
+or break nat instead of merely maximising points. The hybrid neural
+opponent honours `NEURAL_ENDGAME_CARDS` / `NEURAL_ENDGAME_SAMPLES` for
+experiments.
 
 ### Hand Determinization (`_determinize_endgame_hands`)
 
@@ -277,9 +287,9 @@ When only a few cards remain, the AI attempts to reconstruct the exact hands of 
 
 With complete information determinized, the AI runs **full-tree minimax** over the remaining tricks:
 
-- The AI's team maximizes point gain.
-- Opponents minimize it.
-- Each completed trick scores its card points **plus the trick's roem** (`trick_roem_points`), matching the real scoring; the last trick adds the 10-point bonus.
+- The AI's team maximizes the round outcome, opponents minimize it.
+- Each completed trick adds its card points **plus the trick's roem** (`trick_roem_points`) to the winner's accumulator; the last trick adds the 10-point bonus.
+- At the end of the round `_endgame_round_value` adds the totals known so far, awards pit (+100 roem for all 162 trick points) and applies nat (a declaring team that does not strictly outscore the opponents on points + roem scores 0 while the opponents take 162 + all roem).
 - Memoization is applied per (hand state, trick state, next seat) tuple.
 
 ### Card Selection

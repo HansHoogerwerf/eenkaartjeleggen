@@ -1796,12 +1796,15 @@ class AIPlayer(Player):
         trump: str,
         memo: dict,
         acc: tuple[int, int, int, int] = (0, 0, 0, 0),
+        alpha: float = float("-inf"),
+        beta: float = float("inf"),
     ) -> float:
-        """Full-tree minimax over the remaining cards of one determinized deal.
+        """Alpha-beta minimax over the remaining cards of one determinized deal.
 
         Values are end-of-round point differentials with pit and nat applied
         (see _endgame_round_value), so the solver fights for or against nat in
-        the last tricks instead of maximising raw points.
+        the last tricks instead of maximising raw points.  Only exact (uncut)
+        values are memoised; moves are ordered strongest-first for pruning.
         """
         if len(trick_cards) == 4:
             sim_trick = [
@@ -1817,7 +1820,7 @@ class AIPlayer(Player):
                 acc = (acc[0] + trick_pts + last_bonus, acc[1] + trick_roem, acc[2], acc[3])
             else:
                 acc = (acc[0], acc[1], acc[2] + trick_pts + last_bonus, acc[3] + trick_roem)
-            return self._endgame_minimax(hands, [], winner_seat, trump, memo, acc)
+            return self._endgame_minimax(hands, [], winner_seat, trump, memo, acc, alpha, beta)
 
         if all(len(h) == 0 for h in hands.values()):
             return self._endgame_round_value(acc)
@@ -1830,9 +1833,12 @@ class AIPlayer(Player):
         if not legal:
             memo[key] = 0.0
             return 0.0
+        if len(legal) > 1:
+            legal = sorted(legal, key=lambda c: (c.strength(trump), c.points(trump)), reverse=True)
 
         is_max = SEAT_TEAMS[next_seat] == self.team
         best = float("-inf") if is_max else float("inf")
+        cutoff = False
 
         for card in legal:
             new_hands = {seat: list(cards) for seat, cards in hands.items()}
@@ -1848,13 +1854,23 @@ class AIPlayer(Player):
 
             new_trick = trick_cards + [(next_seat, card)]
             nxt = (next_seat + 1) % 4
-            val = self._endgame_minimax(new_hands, new_trick, nxt, trump, memo, acc)
+            val = self._endgame_minimax(new_hands, new_trick, nxt, trump, memo, acc, alpha, beta)
             if is_max:
-                best = max(best, val)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
             else:
-                best = min(best, val)
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+            if alpha >= beta:
+                cutoff = True
+                break
 
-        memo[key] = best
+        if not cutoff:
+            memo[key] = best
         return best
 
     def _endgame_deals(self, trick: Trick) -> list[dict[int, list[Card]]]:
