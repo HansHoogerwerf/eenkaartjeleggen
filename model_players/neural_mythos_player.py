@@ -13,6 +13,8 @@ the stock heuristic bidder.
 
 from __future__ import annotations
 
+import os
+
 import main
 from model_players.mythos_player import MythosPlayer
 
@@ -27,7 +29,11 @@ class NeuralMythosBidPlayer(MythosPlayer):
         self.ai_strength = "neural"
         self.use_neural_play = True
         self.use_lookahead = False
-        self.use_endgame_solver = True  # net still defers ≤3 cards to exact solve
+        self.use_endgame_solver = True  # net still defers the last cards to the exact solver
+        # Experiment knobs (see docs/neural-v3-campaign.md): how many cards the
+        # solver takes over at, and how many consistent deals it averages.
+        self.endgame_cards = int(os.environ.get("NEURAL_ENDGAME_CARDS", self.endgame_cards))
+        self.endgame_samples = int(os.environ.get("NEURAL_ENDGAME_SAMPLES", self.endgame_samples))
         self.random_mistake_rate = 0.0
 
     def _strategy(self, legal, trick, trump):

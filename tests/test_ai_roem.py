@@ -191,6 +191,62 @@ class TestEndgameSolverCountsRoem(unittest.TestCase):
             self.assertEqual(str(chosen), "K♥")
 
 
+class TestEndgameSolverV2(unittest.TestCase):
+    def test_round_value_applies_nat_and_pit(self):
+        ai = _ai(0, trick_pts=[70, 60], roem_pts=[0, 20], declaring_team=0)
+        # We declared and finish level on points+roem (90+10 vs 80+20): nat ->
+        # we lose 162 + all roem (their 20 + the 10 we make in the search).
+        self.assertEqual(ai._endgame_round_value((20, 10, 20, 0)), -(162 + 30))
+        # One point more and it is a normal round: +1.
+        self.assertEqual(ai._endgame_round_value((21, 10, 20, 0)), 1)
+        # Opponents declared and end level: they go nat, we get 162 + all roem.
+        ai.declaring_team = 1
+        self.assertEqual(ai._endgame_round_value((20, 10, 20, 0)), 162 + 30)
+        # Pit: all 162 trick points give +100 roem.
+        ai = _ai(0, trick_pts=[140, 0], roem_pts=[0, 0], declaring_team=0)
+        self.assertEqual(ai._endgame_round_value((22, 0, 0, 0)), 162 + 100)
+
+    def test_solver_forces_opponents_nat_over_raw_points(self):
+        # Opponents declared and lead 72 vs 70 on totals; two cards each.
+        # Trump ♠.  South leads.  Line A: lead A♣ (wins 11+0+0+0 = 11, then
+        # K♥ loses the last trick 4+11+... to W's A♥): we end 70+11 = 81 vs
+        # opp 72 + last trick.  Line B: lead K♥ first ... whichever line the
+        # solver picks must be the one maximising the nat-aware value, so we
+        # only assert consistency: the chosen card's averaged value is the max.
+        ai = _ai(0, rng_seed=5, trick_num=6, current_trump="♠", declaring_team=1,
+                 trick_pts=[70, 72], roem_pts=[0, 0])
+        ai.hand = [Card("♣", "A"), Card("♥", "K")]
+        others = {1: {"A♥", "7♣"}, 2: {"8♣", "9♥"}, 3: {"Q♥", "9♣"}}
+        unplayed = {str(c) for c in ai.hand} | set().union(*others.values())
+        ai.played_cards = ALL_CARDS - unplayed
+        ai.possible_cards_by_seat = {0: {str(c) for c in ai.hand}, **others}
+        legal = ai.legal_moves([], "♠")
+        chosen = ai._endgame_exact_choice(legal, [], "♠")
+        self.assertIsNotNone(chosen)
+        # Leading A♣ wins 11 (W 7♣, N 8♣, E 9♣) -> 81 vs 72; then K♥ loses to
+        # A♥ (4 + 11 + 0 + 3 + 10 bonus = 28 to them) -> 81 vs 100: no nat.
+        # Leading K♥ first: W must play A♥ and wins 4+11+0+3 = 18 -> 70 vs 90;
+        # W then leads 7♣, we win with A♣ (11+0+0+0 +10) -> 91 vs 90: they go
+        # NAT and we score 162.  Points-only search would lead the A♣.
+        self.assertEqual(str(chosen), "K♥")
+
+    def test_endgame_deals_sample_distinct_consistent_layouts(self):
+        ai = _ai(0, rng_seed=2, trick_num=5, current_trump="♠")
+        ai.hand = [Card("♣", "A"), Card("♥", "K"), Card("♦", "7")]
+        unseen = {"A♥", "7♣", "8♣", "9♥", "Q♥", "9♣", "10♦", "J♦", "8♠"}
+        ai.played_cards = ALL_CARDS - unseen - {str(c) for c in ai.hand}
+        ai.possible_cards_by_seat = {0: {str(c) for c in ai.hand}, 1: set(unseen), 2: set(unseen), 3: set(unseen)}
+        deals = ai._endgame_deals([])
+        self.assertGreater(len(deals), 1)
+        for hands in deals:
+            self.assertEqual(sorted(str(c) for s in (1, 2, 3) for c in hands[s]), sorted(unseen))
+            self.assertTrue(all(len(hands[s]) == 3 for s in range(4)))
+        # Exact possible sets -> exactly one deal.
+        ai.possible_cards_by_seat = {0: {str(c) for c in ai.hand}, 1: {"A♥", "7♣", "8♣"},
+                                     2: {"9♥", "Q♥", "9♣"}, 3: {"10♦", "J♦", "8♠"}}
+        self.assertEqual(len(ai._endgame_deals([])), 1)
+
+
 class TestRoemFeatures(unittest.TestCase):
     def _encode(self, hand, trick, legal, trump, version):
         return encode_state(
