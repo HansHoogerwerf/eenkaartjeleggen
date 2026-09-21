@@ -10,10 +10,12 @@ Rotterdam rules (vs Amsterdam):
   - Bidding: a random suit is offered; players decide in turn (round 1);
     if all pass, a second random suit is offered (round 2);
     if all pass again, the first player is forced to declare the round-2 suit
-  - Nat (pit): based on trick points only — must score > 81 trick pts
-    If nat: declarer scores 0; opponents receive all 162 + all roem
+  - Nat: the declaring team must strictly outscore the opponents on
+    trick points + roem; if not, the declarer scores 0 and the opponents
+    receive all 162 + all roem
 
-Roem (honours) scored at start of each round:
+Roem (honours) is awarded per trick, to the team that wins the trick, for the
+four cards on the table (plus a +100 "pit" for winning every trick):
   Stuk (K+Q of trump)        20 pts
   Sequence of 3 (same suit)  20 pts
   Sequence of 4 (same suit)  50 pts
@@ -49,7 +51,7 @@ from klaverjas.constants import (
     TRUMP_STRONGEST_FIRST,
     WIN_SCORE,
 )
-from klaverjas.core import Card, Deck, Trick, find_roem, trick_winner_index
+from klaverjas.core import Card, Deck, Trick, find_roem, trick_roem_points, trick_winner_index
 
 
 # ─── Thread offloading ────────────────────────────────────────────────────────
@@ -433,6 +435,7 @@ class AIPlayer(Player):
         self.TRICK_WIN_SIM_SAMPLES = int(profile["trick_win_sim_samples"])
         self.use_neural_play = bool(profile.get("use_neural_play", profile.get("use_neural", False)))
         self.neural_model_path: str | None = None  # override via benchmark/training tools
+        self.neural_roem_guard: bool = True        # veto net picks that gift roem on a lost trick
 
         # Updated by KlaverjasGame._bidding before each choose_trump call
         self.bid_position: int = 0   # 0-3, position in current bidding round
@@ -768,6 +771,8 @@ class AIPlayer(Player):
                                       **({'model_path': self.neural_model_path}
                                          if self.neural_model_path else {}))
             if card is not None:
+                if self.neural_roem_guard:
+                    card = self._roem_guard(card, legal, trick, trump)
                 return card
             # Fall through to heuristic if model not available
         if self.use_lookahead and len(self.hand) > 3:
@@ -780,6 +785,36 @@ class AIPlayer(Player):
         if trick[wi][0].team == self.team:
             return self._discard_for_partner(legal, trick, trump)
         return self._try_win(legal, trick, trump)
+
+    def _roem_guard(self, card: Card, legal: list[Card], trick: Trick, trump: str) -> Card:
+        """Veto a card that completes roem on a trick we will probably lose.
+
+        Imitation-trained nets tend to "save" a high card by throwing the low
+        card that happens to complete the opponents' sequence / stuk (e.g. Q of
+        trump next to their K to keep the 10: 3 + 20 roem instead of 10).  When
+        the chosen card adds roem, our team is unlikely to win the trick, and a
+        roem-free legal card is clearly cheaper in expectation, play that one.
+        Only fires on decisions where roem is at stake, so the net's play is
+        untouched elsewhere.
+        """
+        if not trick or len(legal) < 2:
+            return card
+        added = self._roem_added_by(card, trick, trump)
+        if added <= 0:
+            return card
+        p_win = self._estimate_team_trick_win_prob(trick, card, trump)
+        if p_win >= 0.5:
+            return card
+        expected_loss = (1.0 - p_win) * (card.points(trump) + added)
+        best, best_loss = card, expected_loss
+        for alt in legal:
+            if alt is card or self._roem_added_by(alt, trick, trump) > 0:
+                continue
+            p_alt = self._estimate_team_trick_win_prob(trick, alt, trump)
+            alt_loss = (1.0 - p_alt) * alt.points(trump)
+            if alt_loss + 3.0 < best_loss or (best is not card and alt_loss < best_loss):
+                best, best_loss = alt, alt_loss
+        return best
 
     def _pick_card(self, scores: list[tuple[Card, float]]) -> Card:
         if self.random_mistake_rate > 0.0 and len(scores) > 1 and self.rng.random() < self.random_mistake_rate:
@@ -1044,6 +1079,8 @@ class AIPlayer(Player):
             score = 0.0
             schmear_weight = (0.25 if trick_value < 8 else 0.38) + max(0.0, pressure) * 0.18
             score += c.points(trump) * schmear_weight
+            # Partner is winning: roem we complete on the table is ours too.
+            score += self._roem_added_by(c, trick, trump) * schmear_weight
             score -= suit_count * 0.4
             if self._is_same_suit_signal_card(c, trump):
                 score += 0.5
@@ -1073,6 +1110,12 @@ class AIPlayer(Player):
             # When we are likely losing this trick, leaking points is very costly.
             leak_weight = (2.2 + trick_value * 0.08) - pressure * 0.35
             score -= c.points(trump) * leak_weight
+            roem_added = self._roem_added_by(c, trick, trump)
+            if roem_added:
+                # Completing a sequence / stuk / four-of-a-kind hands that roem
+                # to whoever wins the trick — usually the opponents here.
+                score -= roem_added * (1.0 - win_prob) * leak_weight
+                score += roem_added * win_prob * 0.35
             score -= self._point_leak_penalty(c, trump) * (1.1 - 0.20 * pressure)
             score -= (1.0 - win_prob) * c.points(trump) * (0.8 - 0.15 * pressure)
             if self.trick_num <= 3:
@@ -1088,6 +1131,24 @@ class AIPlayer(Player):
         """Total points currently in the trick."""
         return sum(c.points(trump) for _, c in trick)
 
+    def _trick_roem_on_table(self, trick: Trick | None, trump: str) -> int:
+        """Roem already formed by the cards on the table (goes to the trick winner)."""
+        if not trick:
+            return 0
+        return trick_roem_points([c for _, c in trick], trump)
+
+    def _roem_added_by(self, card: Card, trick: Trick | None, trump: str) -> int:
+        """Roem points *card* would add to the trick if played now.
+
+        Zero when leading — a single card never forms roem on its own.  Lets
+        discards avoid completing an opponent's sequence / stuk / four-of-a-kind
+        and lets schmears prefer completing one for the partner.
+        """
+        if not trick:
+            return 0
+        cards = [c for _, c in trick]
+        return trick_roem_points(cards + [card], trump) - trick_roem_points(cards, trump)
+
     def _try_win(self, legal: list[Card], trick: Trick, trump: str) -> Card:
         wi = trick_winner_index(trick, trump)
         winning_card = trick[wi][1]
@@ -1096,15 +1157,17 @@ class AIPlayer(Player):
             if (c.suit == trump and winning_card.suit != trump)
             or (c.suit == winning_card.suit and c.strength(trump) > winning_card.strength(trump))
         ]
+        # Roem already on the table goes to whoever wins the trick, so it
+        # raises the stakes exactly like card points do.
+        trick_value = self._trick_point_value(trick, trump) + self._trick_roem_on_table(trick, trump)
         if not beaters:
             return self._play_safe_discard(
                 legal,
                 trump,
-                trick_value=self._trick_point_value(trick, trump),
+                trick_value=trick_value,
                 trick=trick,
             )
 
-        trick_value = self._trick_point_value(trick, trump)
         is_last_trick = self.trick_num == 7
         pressure = self._score_pressure()
         beater_scores: list[tuple[Card, float]] = []
@@ -1112,8 +1175,13 @@ class AIPlayer(Player):
         for c in beaters:
             win_prob = self._estimate_team_trick_win_prob(trick, c, trump)
             survives = self._beater_likely_holds(c, trick, trump)
-            score = win_prob * (6.5 + trick_value * 0.30 + pressure * 1.4)
+            roem_added = self._roem_added_by(c, trick, trump)
+            value = trick_value + roem_added
+            score = win_prob * (6.5 + value * 0.30 + pressure * 1.4)
             score += trick_value * 0.20
+            # Roem we complete but then fail to win is a gift to the opponents
+            # (e.g. K-trump onto their Q-trump under an outstanding J).
+            score -= roem_added * (1.0 - win_prob) * 0.6
             if survives:
                 score += 1.6
             else:
@@ -1495,7 +1563,8 @@ class AIPlayer(Player):
             winner_seat = trick_cards[wi][0]
             trick_pts = sum(card.points(trump) for _, card in trick_cards)
             last_bonus = 10 if sum(len(h) for h in hands.values()) == 0 else 0
-            gain = trick_pts + last_bonus
+            trick_roem = trick_roem_points([card for _, card in trick_cards], trump)
+            gain = trick_pts + last_bonus + trick_roem
             delta = gain if SEAT_TEAMS[winner_seat] == self.team else -gain
 
             if tricks_remaining <= 1 or all(len(h) == 0 for h in hands.values()):
@@ -1705,7 +1774,8 @@ class AIPlayer(Player):
             winner_seat = trick_cards[wi][0]
             trick_pts = sum(card.points(trump) for _, card in trick_cards)
             last_bonus = 10 if sum(len(h) for h in hands.values()) == 0 else 0
-            gain = trick_pts + last_bonus
+            trick_roem = trick_roem_points([card for _, card in trick_cards], trump)
+            gain = trick_pts + last_bonus + trick_roem
             delta = gain if SEAT_TEAMS[winner_seat] == self.team else -gain
             return delta + self._endgame_minimax(hands, [], winner_seat, trump, memo)
 

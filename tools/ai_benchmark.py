@@ -13,6 +13,25 @@ if str(ROOT) not in sys.path:
 import main
 from main import AIPlayer, KlaverjasGame
 
+INTERNAL_STRENGTHS = ("beginner", "advanced", "expert", "expert_v2", "neural")
+# Drop-in model players (model_players/): the public lobby opponents.
+DROP_IN_STRENGTHS = ("mythos", "opus", "neural_mythosbid")
+ALL_STRENGTHS = INTERNAL_STRENGTHS + DROP_IN_STRENGTHS
+
+
+def _make_player(strength: str, name: str, team: int, seat: int, rng_seed: int):
+    if strength == "mythos":
+        from model_players.mythos_player import MythosPlayer
+        return MythosPlayer(name, team, seat_idx=seat, rng_seed=rng_seed)
+    if strength == "opus":
+        from model_players.opus_player import OpusPlayer
+        return OpusPlayer(name, team, seat_idx=seat, rng_seed=rng_seed)
+    if strength == "neural_mythosbid":
+        from model_players.neural_mythos_player import NeuralMythosBidPlayer
+        return NeuralMythosBidPlayer(name, team, seat_idx=seat, rng_seed=rng_seed)
+    return AIPlayer(name, team, seat_idx=seat, rng_seed=rng_seed,
+                    signal_profile="core", ai_strength=strength)
+
 
 @dataclass
 class BenchStats:
@@ -38,15 +57,8 @@ def _make_players(
     for seat in range(4):
         team = main.SEAT_TEAMS[seat]
         strength = candidate_strength if team == candidate_team else baseline_strength
-        p = AIPlayer(
-            f"Bench {main.SEAT_DEFAULTS[seat]}",
-            team,
-            seat_idx=seat,
-            rng_seed=seed_base + seat,
-            signal_profile="core",
-            ai_strength=strength,
-        )
-        if team == candidate_team and candidate_model and p.use_neural_play:
+        p = _make_player(strength, f"Bench {main.SEAT_DEFAULTS[seat]}", team, seat, seed_base + seat)
+        if team == candidate_team and candidate_model and getattr(p, "use_neural_play", False):
             p.neural_model_path = candidate_model
         players.append(p)
     return players
@@ -102,6 +114,8 @@ def _play_game(
         baseline_strength=baseline_strength,
         candidate_model=candidate_model,
     )
+    for p in game.players:
+        p.rules_variant = game.rules_variant
     game.play()
 
     points_for = game.scores[candidate_team]
@@ -208,10 +222,13 @@ def main_cli() -> None:
     parser = argparse.ArgumentParser(description="Benchmark AI strengths against a baseline profile.")
     parser.add_argument("--rounds", type=int, default=10_000, help="Target number of played rounds.")
     parser.add_argument("--seed", type=int, default=42, help="Random seed.")
-    parser.add_argument("--candidate-strength", default="expert", choices=["beginner", "advanced", "expert", "expert_v2", "neural"])
-    parser.add_argument("--baseline-strength", default="advanced", choices=["beginner", "advanced", "expert", "expert_v2", "neural"])
+    parser.add_argument("--candidate-strength", default="expert", choices=ALL_STRENGTHS,
+                        help="Internal profile or drop-in player (mythos / opus / neural_mythosbid).")
+    parser.add_argument("--baseline-strength", default="advanced", choices=ALL_STRENGTHS)
     parser.add_argument("--workers", type=int, default=0, help="Number of parallel workers (default: cpu_count-1).")
-    parser.add_argument("--model", default=None, help="Path to neural model .pt file (overrides neural_best.pt).")
+    parser.add_argument("--model", default=None,
+                        help="Neural checkpoint for the candidate (neural / expert / neural_mythosbid); "
+                             "overrides models/neural_best.pt.")
     args = parser.parse_args()
 
     print(f"Running benchmark: candidate_strength={args.candidate_strength}, baseline_strength={args.baseline_strength}, target_rounds={args.rounds}, workers={args.workers}"

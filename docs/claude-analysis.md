@@ -186,7 +186,7 @@ Notes:
 | Numeric dependency | NumPy |
 | Neural inference | PyTorch-compatible `.pt` models; `torch` is optional at runtime and not listed in `requirements.txt` |
 
-`neural/player.py` gracefully returns `None` if `torch` or the model file is unavailable. The AI then falls back to heuristic play.
+`neural/player.py` gracefully returns `None` if `torch` or the model file is unavailable (including a blocked `torch.dll`). The AI then falls back to heuristic play. Checkpoints may use the 267-input (v1) or 300-input roem-aware (v2) feature layout; the width is read from the file. See `docs/neural-roem-retrain.md`.
 
 ### Frontend
 

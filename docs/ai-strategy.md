@@ -98,7 +98,8 @@ Is this the last 3 cards and endgame solver enabled?
   → Yes: use exact minimax solver (_endgame_exact_choice)
 
 Is neural play enabled?
-  → Yes: use neural_choose_card; if unavailable, continue
+  → Yes: use neural_choose_card, then apply the roem guard (_roem_guard);
+         if the model is unavailable, continue
 
 Is lookahead enabled and more than 3 cards remain? (Advanced)
   → Yes: use 3-trick sampled minimax (_lookahead_choice)
@@ -146,6 +147,7 @@ When our teammate is winning the trick, the AI plays a supporting discard.
 **If the partner's win is secure:**
 - Score each non-trump card for its *schmear value* (dumping point cards on partner's trick):
   - Point cards are weighted by `schmear_weight` (0.25–0.38 depending on trick value, scaled up under pressure)
+  - Roem the card completes on the table (sequence, stuk, four of a kind) is schmeared with the same weight — it goes to the partner's trick too
   - Prefer not to break long suits (penalty for short suits doesn't apply as strongly)
   - Small bonus for playing a "same-suit signal card" (7/8/9 while holding Ace or 10 in the suit)
 
@@ -164,8 +166,10 @@ When opponents are winning and the AI can beat them:
 **If no beaters exist:** fall through to safe-discard mode.
 
 **Score each beater:**
-- `win_prob × (6.5 + trick_value × 0.30 + pressure × 1.4)` — weighted by estimated chance the beater survives
+- `trick_value` = card points on the table **plus roem already formed there** (it goes to the trick winner)
+- `win_prob × (6.5 + (trick_value + roem_added) × 0.30 + pressure × 1.4)` — weighted by estimated chance the beater survives; `roem_added` is the roem this beater would complete
 - `trick_value × 0.20` — bonus for valuable tricks
+- `-roem_added × (1 - win_prob) × 0.6` — roem we complete but then lose is a gift (e.g. K-trump onto their Q-trump under an outstanding J)
 - +1.6 if the beater is expected to hold (no known threats remain in suit)
 - -1.2 if the beater is unlikely to hold
 - `-card.points × (0.60 - 0.12 × pressure)` — penalty for using valuable trump to win cheap tricks
@@ -187,6 +191,7 @@ Used when the AI cannot or should not win the trick. Goal: minimise points leake
 **Scoring per card:**
 - `win_prob × (6.0 + trick_value × 0.25 + pressure × 1.3)` — marginal cases where we may still win
 - `-card.points × leak_weight` — cost of giving away points (leak_weight ~2.2, higher for bigger tricks)
+- `-roem_added × (1 - win_prob) × leak_weight` — never complete the opponents' sequence / stuk / four of a kind with a "free" card (a 0-point 9 that makes 7-8-9 costs 20)
 - Point-leak penalty (double-punishes risky point cards)
 - Early game (tricks 0–3): bonus for discarding from short suits (create voids sooner)
 - Late game: weaker suit-shortening bonus
@@ -274,7 +279,7 @@ With complete information determinized, the AI runs **full-tree minimax** over t
 
 - The AI's team maximizes point gain.
 - Opponents minimize it.
-- Terminal nodes: trick point total + 10-point last-trick bonus.
+- Each completed trick scores its card points **plus the trick's roem** (`trick_roem_points`), matching the real scoring; the last trick adds the 10-point bonus.
 - Memoization is applied per (hand state, trick state, next seat) tuple.
 
 ### Card Selection
@@ -303,7 +308,7 @@ Multiple independent samples (default: 5) provide coverage over the uncertainty 
 
 Identical in structure to the endgame minimax, but with two critical differences:
 
-1. **Depth limit**: the search terminates after `lookahead_depth` complete tricks (default: 3) rather than playing to the end of the round. The accumulated point differential at that point is the leaf evaluation.
+1. **Depth limit**: the search terminates after `lookahead_depth` complete tricks (default: 3) rather than playing to the end of the round. The accumulated point-plus-roem differential at that point is the leaf evaluation.
 2. **Move pruning**: at each internal node, if there are more than 3 legal moves, only the top 3 are explored (ranked by a fast heuristic: card strength + suit matching + point value). This caps the branching factor at 3, making 3^12 = ~530K the worst-case tree size per sample — feasible with memoization.
 
 ### Card Selection (`_lookahead_choice`)
@@ -385,6 +390,29 @@ Before committing a trump or high card to win a trick, the AI checks whether it 
 - Otherwise check outstanding stronger cards in the same suit.
 
 ---
+
+## Trick Roem Awareness
+
+Roem is awarded per trick to the team that wins it, for the four cards on the
+table. Two helpers on `AIPlayer` make every card-play path see this:
+
+- `_trick_roem_on_table(trick, trump)` — roem already formed by the cards played so far (raises the stakes of the trick).
+- `_roem_added_by(card, trick, trump)` — roem *this card* would complete (0 when leading).
+
+Discards are penalised for completing the opponents' roem, schmears are
+rewarded for completing the partner's, beaters that add roem but are unlikely
+to hold are penalised, and both minimax searches score trick roem.
+
+The neural path has a **roem guard** (`_roem_guard`, on by default via
+`neural_roem_guard`): when the net's card completes roem on a trick the team
+will probably lose (Monte-Carlo trick-win estimate below 0.5) and a roem-free
+legal card is clearly cheaper in expected points, that card is played instead.
+It only touches decisions where roem is at stake; in a 96-round audit it cut
+the deployed net's avoidable roem gifts from 430 to 60 points. Before this
+(see `tests/test_ai_roem.py`) the heuristics were roem-blind and gifted 20–100
+roem on a coin flip whenever two discards had equal card points. The neural
+player inherited that blind spot through imitation; see
+[neural-roem-retrain.md](neural-roem-retrain.md).
 
 ## Summary: Key Design Principles
 

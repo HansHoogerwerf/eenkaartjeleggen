@@ -7,17 +7,42 @@ from neural.bid_features import NUM_BID_FEATURES
 from neural.features import NUM_CARDS, NUM_FEATURES
 
 
+def infer_net_shape(state_dict: dict) -> tuple[tuple[int, ...], int]:
+    """Return (hidden_sizes, in_features) of a saved KlaverjasNet state dict.
+
+    Works for any checkpoint written by this project: the Linear layers live
+    under ``net.<i>.weight`` and the first one's second dim is the feature
+    width (267 for v1 checkpoints, 300 for roem-aware v2 ones).
+    """
+    linear_keys = sorted(
+        (k for k in state_dict if k.startswith("net.") and k.endswith(".weight")
+         and state_dict[k].ndim == 2),
+        key=lambda k: int(k.split(".")[1]),
+    )
+    if not linear_keys:
+        raise ValueError("state dict has no net.<i>.weight layers")
+    hidden_sizes = tuple(int(state_dict[k].shape[0]) for k in linear_keys[:-1])
+    in_features = int(state_dict[linear_keys[0]].shape[1])
+    return hidden_sizes, in_features
+
+
 class KlaverjasNet(nn.Module):
     """MLP that predicts which card to play given encoded game state.
 
-    Input:  game state vector (NUM_FEATURES = 267)
+    Input:  game state vector (``in_features``: 267 for the v1 layout,
+            300 for the roem-aware v2 layout — see neural/features.py)
     Output: logits over 32 cards (masked to legal moves before selection)
     """
 
-    def __init__(self, hidden_sizes: tuple[int, ...] = (512, 256, 128)):
+    def __init__(
+        self,
+        hidden_sizes: tuple[int, ...] = (512, 256, 128),
+        in_features: int = NUM_FEATURES,
+    ):
         super().__init__()
+        self.in_features = int(in_features)
         layers: list[nn.Module] = []
-        in_size = NUM_FEATURES
+        in_size = self.in_features
         for i, h in enumerate(hidden_sizes):
             layers.append(nn.Linear(in_size, h))
             layers.append(nn.ReLU())
@@ -45,6 +70,14 @@ class KlaverjasNet(nn.Module):
         logits = logits.masked_fill(legal_mask == 0, float("-inf"))
         return logits.argmax(dim=-1)
 
+    @classmethod
+    def from_state_dict(cls, state_dict: dict) -> "KlaverjasNet":
+        """Build a net whose shape matches *state_dict* and load it."""
+        hidden_sizes, in_features = infer_net_shape(state_dict)
+        net = cls(hidden_sizes=hidden_sizes, in_features=in_features)
+        net.load_state_dict(state_dict)
+        return net
+
 
 class KlaverjasActorCritic(nn.Module):
     """Actor-critic model for PPO training.
@@ -54,11 +87,16 @@ class KlaverjasActorCritic(nn.Module):
     state value estimate.
     """
 
-    def __init__(self, hidden_sizes: tuple[int, ...] = (512, 256, 128)):
+    def __init__(
+        self,
+        hidden_sizes: tuple[int, ...] = (512, 256, 128),
+        in_features: int = NUM_FEATURES,
+    ):
         super().__init__()
+        self.in_features = int(in_features)
         # Shared backbone
         backbone: list[nn.Module] = []
-        in_size = NUM_FEATURES
+        in_size = self.in_features
         for i, h in enumerate(hidden_sizes[:-1]):
             backbone.append(nn.Linear(in_size, h))
             backbone.append(nn.ReLU())
@@ -108,7 +146,8 @@ class KlaverjasActorCritic(nn.Module):
         """
         src_layers = [m for m in policy_net.net if isinstance(m, nn.Linear)]
         hidden_sizes = tuple(l.out_features for l in src_layers[:-1])
-        ac = KlaverjasActorCritic(hidden_sizes=hidden_sizes)
+        ac = KlaverjasActorCritic(hidden_sizes=hidden_sizes,
+                                  in_features=src_layers[0].in_features)
 
         src_layers = [m for m in policy_net.net if isinstance(m, nn.Linear)]
         dst_backbone = [m for m in ac.backbone if isinstance(m, nn.Linear)]
@@ -131,7 +170,8 @@ class KlaverjasActorCritic(nn.Module):
 
         # Infer hidden_sizes: backbone output sizes + first policy head output size
         hidden_sizes = tuple(l.out_features for l in src_backbone) + (src_policy[0].out_features,)
-        net = KlaverjasNet(hidden_sizes=hidden_sizes)
+        net = KlaverjasNet(hidden_sizes=hidden_sizes,
+                           in_features=src_backbone[0].in_features)
 
         dst_layers = [m for m in net.net if isinstance(m, nn.Linear)]
         n_backbone = len(src_backbone)
