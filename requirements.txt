@@ -1,6 +1,12 @@
+# Runtime dependencies (the Docker image installs exactly these; torch CPU is
+# added separately in the Dockerfile).  Versions are pinned so a rebuild on the
+# VPS cannot drift: gunicorn 26.x moved `packaging` into its optional `gevent`
+# extra while its gevent worker still imports it, which broke an unpinned
+# acceptance build (ModuleNotFoundError: No module named 'packaging').
 flask==3.1.2
-flask-socketio
-gevent
-gevent-websocket
-gunicorn
-numpy
+flask-socketio==5.6.0
+gevent==25.9.1
+gevent-websocket==0.10.1
+gunicorn[gevent]==25.1.0
+numpy==2.4.3
+packaging>=24,<27
