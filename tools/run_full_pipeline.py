@@ -70,8 +70,10 @@ def main_cli() -> int:
     ap.add_argument("--workers", type=int, default=15, help="CPU workers for generation / benchmarks.")
     ap.add_argument("--card-budget", type=float, default=1.0, help="AI_CARD_BUDGET for Mythos while recording.")
     ap.add_argument("--data", nargs="*", default=None,
-                    help="Existing .npz dataset(s) to train on (implies --skip-generate unless "
-                         "generation output is also wanted).")
+                    help="Existing .npz dataset(s) to train on. Skips generation unless "
+                         "--also-generate is given (then the new file is trained on as well).")
+    ap.add_argument("--also-generate", action="store_true",
+                    help="With --data: still run generation and add its output to the datasets.")
     ap.add_argument("--data-output", default="models/training_data_mythos_v2.npz")
     ap.add_argument("--imitation-output", default="models/neural_mythos_v2.pt")
     ap.add_argument("--selfplay-output", default="models/neural_mythos_v2_rl.pt")
@@ -90,7 +92,8 @@ def main_cli() -> int:
     t_start = time.time()
 
     # ── 1. generate ──────────────────────────────────────────────────────────
-    if not args.skip_generate and not (args.data and not args.rounds):
+    generate = not args.skip_generate and (not args.data or args.also_generate)
+    if generate:
         rc, _ = run(f"STEP 1: record {args.rounds} rounds of Mythos self-play (v2 features)", [
             PY, "tools/generate_training_data.py",
             "--teacher", "mythos",
@@ -104,12 +107,12 @@ def main_cli() -> int:
             print("ERROR: data generation failed")
             return 1
         datasets.append(args.data_output)
-    if not datasets:
-        print("ERROR: no dataset (pass --data or drop --skip-generate)")
-        return 1
 
     # ── 2. imitate ───────────────────────────────────────────────────────────
     if not args.skip_imitate:
+        if not datasets:
+            print("ERROR: no dataset for imitation (pass --data, drop --skip-generate, or --skip-imitate)")
+            return 1
         rc, _ = run("STEP 2: imitation training (300-input roem-aware net)", [
             PY, "tools/train_neural.py",
             "--data", *datasets,
@@ -122,8 +125,12 @@ def main_cli() -> int:
         if rc != 0:
             print("ERROR: imitation training failed")
             return 1
+    elif not (ROOT / args.imitation_output).is_file():
+        print(f"ERROR: --skip-imitate but {args.imitation_output} does not exist")
+        return 1
 
-    results: dict[str, dict[str, float]] = {}
+    results: dict[str, dict[str, float]] = {}   # only successful benchmarks
+    failed: list[str] = []
 
     def bench(label: str, model: str) -> None:
         rc, out = run(f"BENCHMARK: {label} (neural card play + Mythos bidder) vs Mythos, "
@@ -135,7 +142,12 @@ def main_cli() -> int:
             "--workers", str(args.workers),
             "--model", model,
         ], capture=True)
-        results[label] = parse_metrics(out) if rc == 0 else {}
+        metrics = parse_metrics(out) if rc == 0 else {}
+        if "avg_point_diff" in metrics:
+            results[label] = metrics
+        else:
+            failed.append(label)
+            print(f"WARNING: benchmark of {label} failed (exit {rc}); it will not be promoted")
 
     bench("imitation", args.imitation_output)
 
@@ -164,11 +176,20 @@ def main_cli() -> int:
               f"{m.get('avg_point_diff', float('nan')):>13.1f}"
               f"{m.get('declare_success_rate', float('nan')):>11.3f}")
 
-    if args.promote and results:
-        best_label = max(results, key=lambda k: results[k].get("avg_point_diff", -1e9))
+    for label in failed:
+        print(f"{label:<12}{'benchmark failed':>34}")
+
+    if args.promote:
+        if failed:
+            print("Not promoting: at least one benchmark failed, so the best model is unknown.")
+            return 1
+        if not results:
+            print("Not promoting: no benchmark results.")
+            return 1
+        best_label = max(results, key=lambda k: results[k]["avg_point_diff"])
         src = args.selfplay_output if best_label == "selfplay" else args.imitation_output
         shutil.copy(str(ROOT / src), str(ROOT / "models" / "neural_best.pt"))
-        print(f"\nPromoted {src} -> models/neural_best.pt")
+        print(f"Promoted {src} -> models/neural_best.pt")
     return 0
 
 
