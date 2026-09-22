@@ -165,6 +165,75 @@ python tools/train_gpu_selfplay.py --model models/neural_best_v2pad.pt \
     --benchmark-rounds 384 --benchmark-baseline mythos --benchmark-candidate neural_mythosbid
 ```
 
+## 4b. Neural v3 (22 Sept 2026): nat-aware search endgame for the hybrid
+
+Full log with every benchmark: [neural-v3-campaign.md](neural-v3-campaign.md).
+
+The biggest lever turned out not to be the net but what finishes the round
+for it. The shipped hybrid solved the last 3 cards with a points-only
+minimax over a single guessed layout of the hidden cards. Replacing that:
+
+| Endgame of the hybrid (net + Mythos bidder, `neural_best.pt` unchanged) | vs Mythos, 512 rounds, pts/game, seeds 7 / 11 / 13 / 17 | mean |
+|---|---|---|
+| old solver (3 cards, points only, first consistent deal) | +19 / −103 / −66 / +82 | −17 |
+| solver v2, 3 cards (sampled deals, nat/pit terminal, alpha-beta) | +62 / +143 / −14 / +131 | +81 |
+| solver v2, 4 cards | +204 / +31 / +81 / +99 | +104 |
+| **Mythos search from 5 cards** (`NEURAL_ENDGAME_ENGINE=mythos`, now the default) | **+220 / +129 / +146 / +61** | **+139** |
+| default again, 1024 rounds each on fresh seeds 29 / 31 | +119 / +49 | +84 |
+| same, unpruned at 5 cards (`NEURAL_ENDGAME_EXACT=1`) | +90 / +89 / +71 / +107 (seeds 7 / 11 / 19 / 23) | +89 |
+| same, from 6 cards (depth-limited there) | +116 / −30 / · / · | +43 |
+
+Mythos's int-encoded alpha-beta searches to the end of the round at ≤ 5
+cards, averages up to `NEURAL_ENDGAME_SAMPLES` (default 10) sampled
+consistent deals and applies nat and pit at the terminal; the hybrid hands
+it the round from 5 cards down. It is exact from 4 cards; at 5 cards inner
+nodes keep Mythos's 3-reply pruning. `NEURAL_ENDGAME_EXACT=1` removes that
+pruning (pruned search as fallback when no deal finishes inside
+`AI_CARD_BUDGET`, the net as last resort), but under a per-card budget the
+unpruned search completes fewer deals and measured +89 vs +139 over four
+seeds, so it is off. Cost under load: ~0.3 s at 5 cards (0.7 s unpruned),
+~0.15 s at 4, milliseconds below. `AIPlayer._endgame_minimax` (the Python solver) got
+the same ideas — sampled deals, nat/pit-aware terminal, alpha-beta — and
+stays the engine for the internal profiles and as the fallback.
+
+What did **not** help, each checked on two seeds at 512 rounds: PPO
+self-play from the shipped net with dense per-trick rewards (`--dense-rewards`,
+best snapshot +25 vs +102 for the unchanged net in the same setup), a ladder
+run from that snapshot at a lower learning rate, and a sparse-reward control
+at the lower rate. The net itself is therefore unchanged in v3; the tooling
+(dense rewards, `--save-every` snapshots) stays for future runs.
+
+Knobs on the hybrid (environment): `NEURAL_ENDGAME_ENGINE` (mythos | solver),
+`NEURAL_ENDGAME_CARDS`, `NEURAL_ENDGAME_SAMPLES`, and the experimental
+`NEURAL_MIDGAME=search` (net ranks, Mythos search picks among the top
+`NEURAL_MIDGAME_TOPK` within `NEURAL_MIDGAME_BUDGET` seconds). The latter
+scored +48 vs +175 for the plain net on the same two seeds: the net's
+early-trick choices beat a short search, so leave it off.
+`NEURAL_BID_SUCCESS_MIN` / `NEURAL_BID_EV_MIN` raise or lower Mythos's
+marginal-declaration thresholds for the hybrid only (defaults 0.62 / 3.0);
+0.70 scored +78 and 0.55 scored +54 against +175 at the default, with no
+better declare-success rate either (0.82–0.84 / 0.78–0.84 vs 0.84–0.85).
+
+## 4c. Neural v4 (22 Sept 2026): imitate Mythos, then self-improve — no new net
+
+Full log: [neural-v4-campaign.md](neural-v4-campaign.md). Gentle Mythos
+fine-tunes (3200 / 6400 rounds), an anchored variant, a 600-epoch PPO run and
+a distillation of search-improved self-play all failed to beat the current
+net in paired benchmarks; the net is unchanged. Two things came out of it:
+
+* **Net-rollout PIMC** (`neural/pimc.py`, `model_players/pimc_player.py`,
+  benchmark candidate `pimc`): the net as the rollout policy of a
+  64-deal determinized search on the CUDA engine, CUDA-graph captured
+  (~0.25 s per decision). As a *player* it beat the plain hybrid by
+  +180 / +127 / +11 in three paired 512-round runs — but it needs a GPU, so
+  it is not the lobby opponent. Recording it (`--teacher pimc`) and
+  distilling 4000 rounds into the net did not transfer the edge.
+* **Benchmark protocol:** results vs Mythos move by ±100 per game with
+  machine load (the same hybrid scored +220 quiet and −14 under 30
+  processes on one seed). Compare only back-to-back pairs under equal load or
+  one sequential tournament (`tools/screen_checkpoints.py`), never against
+  numbers from another day.
+
 ## 5. Verifying the CUDA engine
 
 `tests/test_gpu_engine_roem.py` pins the tensor implementation to the Python

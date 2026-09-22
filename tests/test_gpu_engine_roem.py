@@ -127,6 +127,35 @@ class TestGpuEngineRoemParity(unittest.TestCase):
         self.assertEqual(int(eng._last_round_pts[0, 0]), 0)
         self.assertEqual(int(eng._last_round_pts[0, 1]), 162 + 70)
 
+    def test_dense_rewards_sum_to_the_sparse_round_reward(self):
+        from tools.gpu_engine import KlaverjasGPUEngine
+        torch.manual_seed(11)
+        eng = KlaverjasGPUEngine(batch_size=16, device="cpu", feature_version=2, dense_rewards=True)
+        eng.reset()
+        rng = torch.Generator().manual_seed(5)
+        acc = torch.zeros(eng.B)
+        checked = 0
+        for _ in range(32 * 6):   # ~6 rounds per game
+            masks = eng.legal_mask()
+            actions = torch.multinomial(masks / masks.sum(1, keepdim=True), 1, generator=rng).squeeze(1)
+            rewards, round_done = eng.step(actions)
+            acc += rewards
+            if round_done.any():
+                sparse = (eng._last_round_pts[:, 0] - eng._last_round_pts[:, 1]).float() / 162.0
+                for b in torch.nonzero(round_done).flatten().tolist():
+                    self.assertAlmostEqual(float(acc[b]), float(sparse[b]), places=5)
+                    acc[b] = 0.0
+                    checked += 1
+        self.assertGreater(checked, 16)
+        # Sparse engine never pays before the round ends.
+        eng2 = KlaverjasGPUEngine(batch_size=4, device="cpu", feature_version=2)
+        eng2.reset()
+        for _ in range(3):
+            masks = eng2.legal_mask()
+            actions = torch.multinomial(masks / masks.sum(1, keepdim=True), 1, generator=rng).squeeze(1)
+            rewards, _ = eng2.step(actions)
+            self.assertEqual(float(rewards.abs().sum()), 0.0)
+
     def test_v1_engine_still_emits_267_features(self):
         from tools.gpu_engine import KlaverjasGPUEngine
         eng = KlaverjasGPUEngine(batch_size=4, device="cpu", feature_version=1)

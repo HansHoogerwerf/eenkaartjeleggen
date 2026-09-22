@@ -89,11 +89,17 @@ class KlaverjasGPUEngine:
         score_limit: int = 500,
         bid_threshold: float = 2.75,
         feature_version: int = 2,
+        dense_rewards: bool = False,
     ):
         self.B = batch_size
         self.device = torch.device(device)
         self.score_limit = score_limit
         self.bid_threshold = bid_threshold
+        # Dense rewards: every completed trick pays (points + roem won, team-0
+        # frame) / 162 immediately and the round end pays only the remainder
+        # (nat / pit adjustments), so the per-round return is unchanged but
+        # credit reaches the card that won or gifted the trick.
+        self.dense_rewards = bool(dense_rewards)
         if feature_version not in FEATURE_SIZES:
             raise ValueError(f"Unsupported feature_version {feature_version}")
         self.feature_version = feature_version
@@ -165,6 +171,10 @@ class KlaverjasGPUEngine:
 
         # Round reward storage (filled by _score_round, read by training loop)
         self._last_round_pts = T(B, 2)
+        # Dense-reward bookkeeping: value of the trick just resolved and the
+        # running sum of trick values paid out this round (team-0 frame, points)
+        self._last_trick_delta = Z(B)
+        self._round_dense_sum  = Z(B)
 
         self._arange = torch.arange(B, device=self.device)
 
@@ -180,6 +190,8 @@ class KlaverjasGPUEngine:
         self.dealer.random_(0, 4)
         self.done.zero_()
         self._last_round_pts.zero_()
+        self._last_trick_delta.zero_()
+        self._round_dense_sum.zero_()
         active = torch.ones(B, dtype=torch.bool, device=self.device)
         self._start_new_round(active)
 
@@ -228,6 +240,7 @@ class KlaverjasGPUEngine:
 
         # ── Resolve complete tricks; compute rewards (always run) ────────────
         trick_complete = (self.cards_in_trick == 4)
+        self._last_trick_delta.zero_()
         round_done = self._resolve_trick(trick_complete)
         rewards    = self._compute_round_rewards(round_done, seat)
 
@@ -690,6 +703,11 @@ class KlaverjasGPUEngine:
             self.roem_pts[ar, t] += torch.where(mask, trick_roem,
                                                  torch.zeros_like(trick_roem))
 
+        # Value of this trick in the team-0 frame (points + roem), for dense rewards
+        trick_value = (trick_total + trick_roem).float()
+        signed = torch.where(winner_team == 0, trick_value, -trick_value)
+        self._last_trick_delta.copy_(torch.where(active, signed, torch.zeros_like(signed)))
+
         # Advance trick counter (in-place add)
         self.trick_num.add_(active.long())
 
@@ -776,7 +794,13 @@ class KlaverjasGPUEngine:
         self._start_new_round(active)
 
     def _compute_round_rewards(self, active: Tensor, seat: Tensor) -> Tensor:
-        """Return per-game reward = (team0_pts - team1_pts) / 162.
+        """Return per-game reward in the team-0 frame, scaled by 162.
+
+        Sparse (default): (team0_pts - team1_pts) / 162 at round end only.
+        Dense: every completed trick pays its points + roem immediately and
+        the round end pays the remainder (final diff minus what the tricks
+        already paid), so nat and pit corrections still arrive.  The sum over
+        a round equals the sparse reward in both modes.
 
         Team-0 perspective is invariant to which seat ended the round, so the
         signal is valid whether the training policy or the frozen opponent
@@ -786,8 +810,21 @@ class KlaverjasGPUEngine:
         ar = self._arange
         team0_pts = self._last_round_pts[ar, 0].float()
         team1_pts = self._last_round_pts[ar, 1].float()
-        reward = (team0_pts - team1_pts) / 162.0
-        return torch.where(active, reward, torch.zeros_like(reward))
+        final_diff = team0_pts - team1_pts
+        if not self.dense_rewards:
+            reward = final_diff / 162.0
+            return torch.where(active, reward, torch.zeros_like(reward))
+
+        # _last_trick_delta is non-zero only where a trick just completed; the
+        # running sum includes it before the remainder is computed.
+        trick_delta = self._last_trick_delta
+        self._round_dense_sum.add_(trick_delta)
+        remainder = torch.where(active, final_diff - self._round_dense_sum,
+                                torch.zeros_like(final_diff))
+        # Start the next round's sum from zero where a round just ended.
+        self._round_dense_sum.copy_(torch.where(active, torch.zeros_like(final_diff),
+                                                self._round_dense_sum))
+        return (trick_delta + remainder) / 162.0
 
     def _start_new_round(self, active: Tensor) -> None:
         """Reset round state, deal hands and bid for active games.

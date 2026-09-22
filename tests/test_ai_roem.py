@@ -191,6 +191,141 @@ class TestEndgameSolverCountsRoem(unittest.TestCase):
             self.assertEqual(str(chosen), "K♥")
 
 
+class TestEndgameSolverV2(unittest.TestCase):
+    def test_round_value_applies_nat_and_pit(self):
+        ai = _ai(0, trick_pts=[70, 60], roem_pts=[0, 20], declaring_team=0)
+        # We declared and finish level on points+roem (90+10 vs 80+20): nat ->
+        # we lose 162 + all roem (their 20 + the 10 we make in the search).
+        self.assertEqual(ai._endgame_round_value((20, 10, 20, 0)), -(162 + 30))
+        # One point more and it is a normal round: +1.
+        self.assertEqual(ai._endgame_round_value((21, 10, 20, 0)), 1)
+        # Opponents declared and end level: they go nat, we get 162 + all roem.
+        ai.declaring_team = 1
+        self.assertEqual(ai._endgame_round_value((20, 10, 20, 0)), 162 + 30)
+        # Pit: all 162 trick points give +100 roem.
+        ai = _ai(0, trick_pts=[140, 0], roem_pts=[0, 0], declaring_team=0)
+        self.assertEqual(ai._endgame_round_value((22, 0, 0, 0)), 162 + 100)
+
+    def test_solver_forces_opponents_nat_over_raw_points(self):
+        # Opponents declared and lead 72 vs 70 on totals; two cards each.
+        # Trump ♠.  South leads.  Line A: lead A♣ (wins 11+0+0+0 = 11, then
+        # K♥ loses the last trick 4+11+... to W's A♥): we end 70+11 = 81 vs
+        # opp 72 + last trick.  Line B: lead K♥ first ... whichever line the
+        # solver picks must be the one maximising the nat-aware value, so we
+        # only assert consistency: the chosen card's averaged value is the max.
+        ai = _ai(0, rng_seed=5, trick_num=6, current_trump="♠", declaring_team=1,
+                 trick_pts=[70, 72], roem_pts=[0, 0])
+        ai.hand = [Card("♣", "A"), Card("♥", "K")]
+        others = {1: {"A♥", "7♣"}, 2: {"8♣", "9♥"}, 3: {"Q♥", "9♣"}}
+        unplayed = {str(c) for c in ai.hand} | set().union(*others.values())
+        ai.played_cards = ALL_CARDS - unplayed
+        ai.possible_cards_by_seat = {0: {str(c) for c in ai.hand}, **others}
+        legal = ai.legal_moves([], "♠")
+        chosen = ai._endgame_exact_choice(legal, [], "♠")
+        self.assertIsNotNone(chosen)
+        # Leading A♣ wins 11 (W 7♣, N 8♣, E 9♣) -> 81 vs 72; then K♥ loses to
+        # A♥ (4 + 11 + 0 + 3 + 10 bonus = 28 to them) -> 81 vs 100: no nat.
+        # Leading K♥ first: W must play A♥ and wins 4+11+0+3 = 18 -> 70 vs 90;
+        # W then leads 7♣, we win with A♣ (11+0+0+0 +10) -> 91 vs 90: they go
+        # NAT and we score 162.  Points-only search would lead the A♣.
+        self.assertEqual(str(chosen), "K♥")
+
+    def test_endgame_deals_sample_distinct_consistent_layouts(self):
+        ai = _ai(0, rng_seed=2, trick_num=5, current_trump="♠")
+        ai.hand = [Card("♣", "A"), Card("♥", "K"), Card("♦", "7")]
+        unseen = {"A♥", "7♣", "8♣", "9♥", "Q♥", "9♣", "10♦", "J♦", "8♠"}
+        ai.played_cards = ALL_CARDS - unseen - {str(c) for c in ai.hand}
+        ai.possible_cards_by_seat = {0: {str(c) for c in ai.hand}, 1: set(unseen), 2: set(unseen), 3: set(unseen)}
+        deals = ai._endgame_deals([])
+        self.assertGreater(len(deals), 1)
+        for hands in deals:
+            self.assertEqual(sorted(str(c) for s in (1, 2, 3) for c in hands[s]), sorted(unseen))
+            self.assertTrue(all(len(hands[s]) == 3 for s in range(4)))
+        # Exact possible sets -> exactly one deal.
+        ai.possible_cards_by_seat = {0: {str(c) for c in ai.hand}, 1: {"A♥", "7♣", "8♣"},
+                                     2: {"9♥", "Q♥", "9♣"}, 3: {"10♦", "J♦", "8♠"}}
+        self.assertEqual(len(ai._endgame_deals([])), 1)
+
+
+class TestHybridEndgameEngine(unittest.TestCase):
+    def _hybrid(self, env: dict):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, env, clear=False):
+            from model_players.neural_mythos_player import NeuralMythosBidPlayer
+            p = NeuralMythosBidPlayer("H", 0, 0, rng_seed=1)
+        p.start_round()
+        p.use_neural_play = False       # keep the test independent of torch / checkpoints
+        p.hand = [Card("♥", "K"), Card("♥", "9"), Card("♣", "7"), Card("♦", "8"), Card("♠", "8")]
+        return p
+
+    def test_mythos_engine_takes_the_endgame_from_endgame_cards(self):
+        from unittest import mock
+        p = self._hybrid({"NEURAL_ENDGAME_ENGINE": "mythos", "NEURAL_ENDGAME_CARDS": "5"})
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("mythos", 5))
+        legal = list(p.hand)
+        with mock.patch.object(p, "_search_choice", return_value=p.hand[2]) as search:
+            self.assertEqual(str(p._strategy(legal, [], "♠")), "7♣")
+            search.assert_called_once()
+        # Above the threshold the search is not used.
+        p.hand.append(Card("♠", "7"))
+        with mock.patch.object(p, "_search_choice") as search:
+            p._strategy(list(p.hand), [], "♠")
+            search.assert_not_called()
+
+    def test_mythos_engine_from_five_cards_is_the_default(self):
+        from unittest import mock
+        p = self._hybrid({"NEURAL_ENDGAME_ENGINE": "", "NEURAL_ENDGAME_CARDS": ""})
+        # (empty env values are treated like unset by the player)
+        p = self._hybrid({})
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("mythos", 5))
+        # The Python solver stays selectable and then takes over at its own depth.
+        p = self._hybrid({"NEURAL_ENDGAME_ENGINE": "solver"})
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("solver", 3))
+        with mock.patch.object(p, "_search_choice") as search:
+            p.hand = p.hand[:3]
+            p._strategy(list(p.hand), [], "♠")
+            search.assert_not_called()
+
+
+class TestNeuralGuidedMidgame(unittest.TestCase):
+    def test_guided_search_uses_the_nets_top_candidates(self):
+        from unittest import mock
+        import os
+        with mock.patch.dict(os.environ, {"NEURAL_MIDGAME": "search", "NEURAL_MIDGAME_TOPK": "2"}):
+            from model_players.neural_mythos_player import NeuralMythosBidPlayer
+            p = NeuralMythosBidPlayer("H", 0, 0, rng_seed=1)
+        p.start_round()
+        p.hand = [Card("♥", "K"), Card("♥", "9"), Card("♣", "7"), Card("♦", "8"), Card("♠", "8"), Card("♣", "A")]
+        legal = list(p.hand)
+        ranked = [p.hand[2], p.hand[5], p.hand[0], p.hand[1], p.hand[3], p.hand[4]]
+        with mock.patch("neural.player.neural_rank_cards", return_value=ranked),              mock.patch.object(p, "_search_choice", return_value=p.hand[5]) as search:
+            self.assertEqual(str(p._strategy(legal, [], "♠")), "A♣")
+            cands = search.call_args[0][0]
+            self.assertEqual([str(c) for c in cands], ["7♣", "A♣"])   # net's top-2 only
+        # Without a net ranking the hybrid falls back to the base strategy.
+        p.use_neural_play = False
+        with mock.patch("neural.player.neural_rank_cards", return_value=None),              mock.patch.object(p, "_search_choice") as search:
+            p._strategy(legal, [], "♠")
+            search.assert_not_called()
+
+    def test_rank_cards_agrees_with_choose_card(self):
+        try:
+            import torch  # noqa: F401
+        except Exception:
+            self.skipTest("torch not importable")
+        from neural.player import DEFAULT_MODEL_PATH, _get_model, neural_choose_card, neural_rank_cards
+        if _get_model(DEFAULT_MODEL_PATH) is None:
+            self.skipTest("no checkpoint")
+        ai = _ai(0, trick_num=2, current_trump="♠", declaring_team=0)
+        ai.hand = [Card("♥", "K"), Card("♥", "9"), Card("♣", "7"), Card("♦", "8"), Card("♠", "8")]
+        trick = [(_seat(1), Card("♥", "A")), (_seat(2), Card("♥", "7")), (_seat(3), Card("♥", "8"))]
+        legal = ai.legal_moves(trick, "♠")
+        ranked = neural_rank_cards(ai, legal, trick, "♠")
+        self.assertEqual(sorted(str(c) for c in ranked), sorted(str(c) for c in legal))
+        self.assertEqual(str(ranked[0]), str(neural_choose_card(ai, legal, trick, "♠")))
+
+
 class TestRoemFeatures(unittest.TestCase):
     def _encode(self, hand, trick, legal, trump, version):
         return encode_state(

@@ -470,6 +470,8 @@ def train_gpu_selfplay(
     benchmark_baseline: str = "expert_v2",
     benchmark_candidate: str = "neural",
     benchmark_workers: int = 16,
+    dense_rewards: bool = False,
+    save_every: int = 0,
 ) -> None:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
@@ -516,8 +518,10 @@ def train_gpu_selfplay(
 
     # GPU game engine (feature layout follows the checkpoint)
     engine = KlaverjasGPUEngine(batch_size=batch_size, device=device,
-                                feature_version=feature_version)
+                                feature_version=feature_version,
+                                dense_rewards=dense_rewards)
     engine.reset()
+    print(f"Rewards: {'dense (per trick + round remainder)' if dense_rewards else 'sparse (round end)'}")
 
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     reward_history: list[float] = []
@@ -563,9 +567,8 @@ def train_gpu_selfplay(
             buf = collect_rollout(
                 engine, model, ref_model, steps_per_epoch, temperature, device)
 
-        # Unbiased round-end average: reward is team-0 perspective regardless
-        # of which seat ended the round, so averaging across all non-zero
-        # rewards gives one sample per round without the valid-mask bias.
+        # Progress signal: mean reward per non-zero step (round ends, or every
+        # resolved trick in dense mode), team-0 perspective.
         round_end_rewards = buf.rewards[buf.rewards != 0]
         avg_reward = round_end_rewards.mean().item() if round_end_rewards.numel() > 0 else 0.0
         reward_history.append(avg_reward)
@@ -604,6 +607,12 @@ def train_gpu_selfplay(
             f"H={stats['entropy']:.4f}  kl={stats['kl_div']:.4f}  "
             f"trans={transitions_per_epoch:,}"
         )
+
+        # ── Periodic snapshot (evaluate later, cleanly, on several seeds) ───
+        if save_every and epoch % save_every == 0:
+            snap = output_path.replace(".pt", f"_epoch{epoch:03d}.pt")
+            torch.save(model.export_policy_net().state_dict(), snap)
+            print(f"  snapshot -> {snap}")
 
         # ── Periodic benchmark ───────────────────────────────────────────────
         if epoch % benchmark_interval == 0:
@@ -695,6 +704,11 @@ def main_cli() -> None:
                         help="Player wrapping the checkpoint under test: neural (stock bidder) "
                              "or neural_mythosbid (Mythos bidder; pair with --benchmark-baseline mythos).")
     parser.add_argument("--benchmark-workers", type=int, default=16)
+    parser.add_argument("--save-every", type=int, default=0,
+                        help="Also save a policy snapshot every N epochs (<output>_epochNNN.pt).")
+    parser.add_argument("--dense-rewards", action="store_true",
+                        help="Pay each resolved trick's points + roem immediately (round end pays "
+                             "the nat/pit remainder) instead of one round-end reward.")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -720,6 +734,8 @@ def main_cli() -> None:
         benchmark_baseline=args.benchmark_baseline,
         benchmark_candidate=args.benchmark_candidate,
         benchmark_workers=args.benchmark_workers,
+        dense_rewards=args.dense_rewards,
+        save_every=args.save_every,
     )
 
 

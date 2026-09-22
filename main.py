@@ -324,6 +324,8 @@ class AIPlayer(Player):
     SIGNAL_MAX_CONFIDENCE = 1.0
     TRICK_WIN_SIM_SAMPLES = 20
     LOOKAHEAD_BRANCH_LIMIT = 3
+    ENDGAME_CARDS = 3        # exact solver takes over at <= this many cards in hand
+    ENDGAME_SAMPLES = 8      # consistent deals averaged by the solver
 
     BID_WEIGHTS = {
         "trump_j": 1.85,
@@ -434,6 +436,8 @@ class AIPlayer(Player):
         self.TIE_BREAK_DELTA = float(profile["tie_break_delta"])
         self.TRICK_WIN_SIM_SAMPLES = int(profile["trick_win_sim_samples"])
         self.use_neural_play = bool(profile.get("use_neural_play", profile.get("use_neural", False)))
+        self.endgame_cards = int(profile.get("endgame_cards", self.ENDGAME_CARDS))
+        self.endgame_samples = int(profile.get("endgame_samples", self.ENDGAME_SAMPLES))
         self.neural_model_path: str | None = None  # override via benchmark/training tools
         self.neural_roem_guard: bool = True        # veto net picks that gift roem on a lost trick
 
@@ -761,7 +765,7 @@ class AIPlayer(Player):
 
     def _strategy(self, legal: list[Card], trick: Trick, trump: str) -> Card:
         self.current_trump = trump
-        if self.use_endgame_solver and len(self.hand) <= 3:
+        if self.use_endgame_solver and len(self.hand) <= self.endgame_cards:
             solved = self._endgame_exact_choice(legal, trick, trump)
             if solved is not None:
                 return solved
@@ -1749,13 +1753,40 @@ class AIPlayer(Player):
         hands: dict[int, list[Card]],
         trick_cards: list[tuple[int, Card]],
         next_seat: int,
+        acc: tuple[int, int, int, int] = (0, 0, 0, 0),
     ) -> tuple:
         hand_key = tuple(
             tuple(sorted(str(c) for c in hands[seat]))
             for seat in range(4)
         )
         trick_key = tuple((seat, str(card)) for seat, card in trick_cards)
-        return hand_key, trick_key, next_seat
+        return hand_key, trick_key, next_seat, acc
+
+    def _endgame_round_value(self, acc: tuple[int, int, int, int]) -> float:
+        """Value of a finished round from our team's perspective.
+
+        ``acc`` = (my trick pts, my roem, opp trick pts, opp roem) gained inside
+        the search; the round totals known so far (trick_pts / roem_pts) are
+        added, then pit (+100 roem for all 162 trick points) and nat (the
+        declaring team must strictly outscore the opponents on points + roem,
+        or scores 0 while the opponents take 162 + all roem) are applied
+        exactly like KlaverjasGame does.  Returns our round points minus theirs.
+        """
+        mt = self.trick_pts[self.team] + acc[0]
+        mr = self.roem_pts[self.team] + acc[1]
+        ot = self.trick_pts[1 - self.team] + acc[2]
+        orr = self.roem_pts[1 - self.team] + acc[3]
+        if mt >= TRICK_CARD_TOTAL:
+            mr += 100
+        if ot >= TRICK_CARD_TOTAL:
+            orr += 100
+        my_total = mt + mr
+        op_total = ot + orr
+        if self.declaring_team == self.team and my_total <= op_total:
+            return float(-(TRICK_CARD_TOTAL + mr + orr))
+        if self.declaring_team == 1 - self.team and op_total <= my_total:
+            return float(TRICK_CARD_TOTAL + mr + orr)
+        return float(my_total - op_total)
 
     def _endgame_minimax(
         self,
@@ -1764,7 +1795,17 @@ class AIPlayer(Player):
         next_seat: int,
         trump: str,
         memo: dict,
+        acc: tuple[int, int, int, int] = (0, 0, 0, 0),
+        alpha: float = float("-inf"),
+        beta: float = float("inf"),
     ) -> float:
+        """Alpha-beta minimax over the remaining cards of one determinized deal.
+
+        Values are end-of-round point differentials with pit and nat applied
+        (see _endgame_round_value), so the solver fights for or against nat in
+        the last tricks instead of maximising raw points.  Only exact (uncut)
+        values are memoised; moves are ordered strongest-first for pruning.
+        """
         if len(trick_cards) == 4:
             sim_trick = [
                 (SimpleNamespace(seat_idx=seat, team=SEAT_TEAMS[seat]), card)
@@ -1775,14 +1816,16 @@ class AIPlayer(Player):
             trick_pts = sum(card.points(trump) for _, card in trick_cards)
             last_bonus = 10 if sum(len(h) for h in hands.values()) == 0 else 0
             trick_roem = trick_roem_points([card for _, card in trick_cards], trump)
-            gain = trick_pts + last_bonus + trick_roem
-            delta = gain if SEAT_TEAMS[winner_seat] == self.team else -gain
-            return delta + self._endgame_minimax(hands, [], winner_seat, trump, memo)
+            if SEAT_TEAMS[winner_seat] == self.team:
+                acc = (acc[0] + trick_pts + last_bonus, acc[1] + trick_roem, acc[2], acc[3])
+            else:
+                acc = (acc[0], acc[1], acc[2] + trick_pts + last_bonus, acc[3] + trick_roem)
+            return self._endgame_minimax(hands, [], winner_seat, trump, memo, acc, alpha, beta)
 
         if all(len(h) == 0 for h in hands.values()):
-            return 0.0
+            return self._endgame_round_value(acc)
 
-        key = self._endgame_state_key(hands, trick_cards, next_seat)
+        key = self._endgame_state_key(hands, trick_cards, next_seat, acc)
         if key in memo:
             return memo[key]
 
@@ -1790,9 +1833,12 @@ class AIPlayer(Player):
         if not legal:
             memo[key] = 0.0
             return 0.0
+        if len(legal) > 1:
+            legal = sorted(legal, key=lambda c: (c.strength(trump), c.points(trump)), reverse=True)
 
         is_max = SEAT_TEAMS[next_seat] == self.team
         best = float("-inf") if is_max else float("inf")
+        cutoff = False
 
         for card in legal:
             new_hands = {seat: list(cards) for seat, cards in hands.items()}
@@ -1808,35 +1854,80 @@ class AIPlayer(Player):
 
             new_trick = trick_cards + [(next_seat, card)]
             nxt = (next_seat + 1) % 4
-            val = self._endgame_minimax(new_hands, new_trick, nxt, trump, memo)
+            val = self._endgame_minimax(new_hands, new_trick, nxt, trump, memo, acc, alpha, beta)
             if is_max:
-                best = max(best, val)
+                if val > best:
+                    best = val
+                if best > alpha:
+                    alpha = best
             else:
-                best = min(best, val)
+                if val < best:
+                    best = val
+                if best < beta:
+                    beta = best
+            if alpha >= beta:
+                cutoff = True
+                break
 
-        memo[key] = best
+        if not cutoff:
+            memo[key] = best
         return best
 
+    def _endgame_deals(self, trick: Trick) -> list[dict[int, list[Card]]]:
+        """Distinct deals of the unseen cards consistent with all inferences.
+
+        Draws up to ``endgame_samples`` random consistent deals (the same
+        sampler the lookahead uses) and falls back to the exact backtracking
+        determinization when sampling keeps failing.  Averaging the solver
+        over several deals stops it from committing to one arbitrary layout
+        of the opponents' hidden cards.
+        """
+        deals: list[dict[int, list[Card]]] = []
+        seen: set[tuple] = set()
+        for _ in range(max(1, self.endgame_samples) * 2):
+            if len(deals) >= max(1, self.endgame_samples):
+                break
+            hands = self._sample_hands(trick)
+            if not hands:
+                continue
+            key = tuple(tuple(sorted(str(c) for c in hands[s])) for s in range(4))
+            if key in seen:
+                continue
+            seen.add(key)
+            deals.append(hands)
+        if not deals:
+            hands = self._determinize_endgame_hands(trick)
+            if hands:
+                deals.append(hands)
+        return deals
+
     def _endgame_exact_choice(self, legal: list[Card], trick: Trick, trump: str) -> Card | None:
-        hands = self._determinize_endgame_hands(trick)
-        if not hands:
+        deals = self._endgame_deals(trick)
+        if not deals:
             return None
 
-        scores: list[tuple[Card, float]] = []
-        for card in legal:
-            test_hands = {seat: list(cards) for seat, cards in hands.items()}
-            cs = str(card)
-            removed = False
-            for i, c in enumerate(test_hands[self.seat_idx]):
-                if str(c) == cs:
-                    del test_hands[self.seat_idx][i]
-                    removed = True
-                    break
-            if not removed:
-                continue
-            trick_cards = [(p.seat_idx, c) for p, c in trick] + [(self.seat_idx, card)]
-            score = self._endgame_minimax(test_hands, trick_cards, (self.seat_idx + 1) % 4, trump, memo={})
-            scores.append((card, score))
+        totals: dict[str, float] = {}
+        counts: dict[str, int] = {}
+        by_str = {str(c): c for c in legal}
+        trick_prefix = [(p.seat_idx, c) for p, c in trick]
+        next_seat = (self.seat_idx + 1) % 4
+        for hands in deals:
+            for card in legal:
+                test_hands = {seat: list(cards) for seat, cards in hands.items()}
+                cs = str(card)
+                removed = False
+                for i, c in enumerate(test_hands[self.seat_idx]):
+                    if str(c) == cs:
+                        del test_hands[self.seat_idx][i]
+                        removed = True
+                        break
+                if not removed:
+                    continue
+                score = self._endgame_minimax(
+                    test_hands, trick_prefix + [(self.seat_idx, card)], next_seat, trump, memo={})
+                totals[cs] = totals.get(cs, 0.0) + score
+                counts[cs] = counts.get(cs, 0) + 1
+        scores = [(by_str[cs], totals[cs] / counts[cs]) for cs in totals if counts[cs]]
         if not scores:
             return None
         return self._pick_card(scores)
