@@ -79,6 +79,49 @@ def _get_model(model_path: str | Path):
     return model
 
 
+def neural_rank_cards(
+    player,  # AIPlayer instance
+    legal: list[Card],
+    trick: Trick,
+    trump: str,
+    model_path: str | Path = DEFAULT_MODEL_PATH,
+) -> list[Card] | None:
+    """Return the legal cards ordered from the net's most to least preferred.
+
+    Returns None if the model is not available.  Used by the hybrid's
+    neural-guided midgame search, which lets a short exact search decide
+    among the net's top candidates.
+    """
+    model = _get_model(model_path)
+    if model is None:
+        return None
+    try:
+        device = _get_device()
+        features = encode_state(
+            hand=list(player.hand),
+            trick=trick,
+            trump=trump,
+            played_cards=set(player.played_cards),
+            seat_idx=player.seat_idx,
+            trick_num=player.trick_num,
+            trick_pts=list(player.trick_pts),
+            roem_pts=list(player.roem_pts),
+            declaring_team=player.declaring_team,
+            opponent_voids={k: set(v) for k, v in player.opponent_voids.items()},
+            game_scores=list(player.game_scores),
+            round_num=player.round_num,
+            legal_moves=legal,
+            feature_version=getattr(model, "feature_version", 1),
+        )
+        x = torch.from_numpy(features).unsqueeze(0).to(device)
+        with torch.no_grad():
+            logits = model(x)[0]
+        scored = sorted(legal, key=lambda c: float(logits[CARD_INDEX[str(c)]]), reverse=True)
+        return scored
+    except Exception:
+        return None
+
+
 def neural_choose_card(
     player,  # AIPlayer instance
     legal: list[Card],
