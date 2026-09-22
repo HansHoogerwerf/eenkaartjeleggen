@@ -37,7 +37,7 @@ from neural.model import KlaverjasNet, infer_net_shape
 
 
 def load_datasets(
-    specs: list[str], val_split: float = 0.1, seed: int | None = None,
+    specs: list[str], val_split: float = 0.1, seed: int | None = None, min_hand: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load one or more datasets and return (X_train, y_train, X_val, y_val).
 
@@ -45,16 +45,28 @@ def load_datasets(
     repeated k times (oversampling a small, high-value set such as Mythos
     roem decisions next to a large heuristic set).  The train/val split is
     made per dataset before repetition, so no sample leaks into validation.
+
+    ``min_hand`` keeps only decisions made with at least that many cards in
+    hand (the own-hand one-hot is the first 32 features).  The deployed hybrid
+    hands the last tricks to the Mythos endgame search, so for it only the
+    early-trick decisions of a dataset matter.
     """
     rng = np.random.default_rng(seed)
-    tr_x, tr_y, va_x, va_y = [], [], [], []
+    tr_x, tr_y, va_x, va_y, tr_v, va_v = [], [], [], [], [], []
     for spec in specs:
         path, _, rep = spec.partition("@")
         repeat = int(rep) if rep else 1
         data = np.load(path)
         X, y = data["features"], data["labels"]
+        # Per-decision search values (32 floats, NaN where the teacher scored
+        # no card), the soft targets of --soft-temp; all-NaN without them.
+        V = data["values"] if "values" in data.files else np.full((X.shape[0], 32), np.nan, np.float32)
         version = int(data["feature_version"]) if "feature_version" in data.files else 1
         teacher = str(data["teacher"]) if "teacher" in data.files else "?"
+        if min_hand > 1:
+            keep = X[:, :32].sum(axis=1) >= min_hand
+            print(f"  {path}: keeping {int(keep.sum())} of {X.shape[0]} decisions with >= {min_hand} cards in hand")
+            X, y, V = X[keep], y[keep], V[keep]
         n = X.shape[0]
         perm = rng.permutation(n)
         val_n = int(n * val_split)
@@ -64,13 +76,16 @@ def load_datasets(
         for _ in range(repeat):
             tr_x.append(X[tr_idx])
             tr_y.append(y[tr_idx])
+            tr_v.append(V[tr_idx])
         va_x.append(X[va_idx])
         va_y.append(y[va_idx])
+        va_v.append(V[va_idx])
     widths = {X.shape[1] for X in tr_x}
     if len(widths) != 1:
         raise ValueError(f"Datasets have different feature widths: {sorted(widths)}")
     return (np.concatenate(tr_x), np.concatenate(tr_y),
-            np.concatenate(va_x), np.concatenate(va_y))
+            np.concatenate(va_x), np.concatenate(va_y),
+            np.concatenate(tr_v), np.concatenate(va_v))
 
 
 def warm_start(state_dict: dict, num_features: int) -> KlaverjasNet:
@@ -104,11 +119,16 @@ def train(
     hidden_sizes: tuple[int, ...] = (512, 256, 128),
     init_path: str | None = None,
     weight_decay: float = 0.0,
+    save_every_epoch: bool = False,
+    min_hand: int = 0,
+    soft_temp: float = 0.0,
+    split_seed: int | None = None,
 ) -> None:
     # Load data (one or more files; width decides the feature layout).
     # The train/val split happens per dataset inside load_datasets.
     paths = [data_path] if isinstance(data_path, str) else list(data_path)
-    X_tr, y_tr, X_va, y_va = load_datasets(paths, val_split=val_split)
+    X_tr, y_tr, X_va, y_va, V_tr, V_va = load_datasets(paths, val_split=val_split, seed=split_seed,
+                                                       min_hand=min_hand)
     num_features = X_tr.shape[1]
     feature_version = feature_version_for_size(num_features)
     print(f"Loaded {X_tr.shape[0]} train + {X_va.shape[0]} val samples, "
@@ -125,7 +145,59 @@ def train(
     y_train = torch.from_numpy(y_tr).to(device)
     X_val   = torch.from_numpy(X_va).to(device)
     y_val   = torch.from_numpy(y_va).to(device)
-    del X_tr, y_tr, X_va, y_va
+    # Soft targets: softmax(values / T) over the cards the search scored; rows
+    # without at least two scored cards fall back to the one-hot label.
+    T_train = _soft_targets(V_tr, y_tr, soft_temp, device)
+    # Search argmax per validation row (-1 where the teacher scored < 2 cards):
+    # with a PIMC override margin the played card is often the net's own
+    # choice, so agreement with the search's best card is the metric that
+    # tells whether distillation moves the net toward the search.
+    y_val_search = _search_argmax(V_va, device)
+    # Regret: search points lost by the card the net picks vs the search's best
+    # card (the top cards are often near-ties, so regret, not argmax agreement,
+    # measures what a policy loses).  Cards the search did not score count as
+    # the worst scored card.
+    V_val = torch.from_numpy(np.ascontiguousarray(V_va)).to(device)
+    del X_tr, y_tr, X_va, y_va, V_tr, V_va
+    y_train_search = None
+    if T_train is not None:
+        print(f"Soft targets (T={soft_temp}) on {int(T_train[1].sum())} of {T_train[0].size(0)} train samples")
+        T_train = T_train[0]
+        y_train_search = T_train.argmax(dim=-1)   # the search's best card (label on hard rows)
+    has_search = bool((y_val_search >= 0).any())
+
+    def validate() -> tuple[float, float, float, float]:
+        model.eval()
+        v_loss = torch.tensor(0.0, device=device)
+        v_correct = torch.tensor(0, device=device)
+        s_correct = torch.tensor(0, device=device)
+        s_n = torch.tensor(0, device=device)
+        regret_sum = torch.tensor(0.0, device=device)
+        with torch.no_grad():
+            for start in range(0, n_val, batch_size):
+                xb = X_val[start:start + batch_size]
+                yb = y_val[start:start + batch_size]
+                sb = y_val_search[start:start + batch_size]
+                vb = V_val[start:start + batch_size]
+                mask_b = legal_mask_val[start:start + batch_size]
+                logits = model(xb)
+                v_loss += criterion(logits, yb) * xb.size(0)
+                pred = logits.masked_fill(mask_b == 0, float("-inf")).argmax(dim=-1)
+                v_correct += (pred == yb).sum()
+                scored = sb >= 0
+                s_correct += ((pred == sb) & scored).sum()
+                s_n += scored.sum()
+                if bool(scored.any()):
+                    vv = vb[scored]
+                    best = vv.nan_to_num(nan=float("-inf")).max(dim=1).values
+                    worst = vv.nan_to_num(nan=float("inf")).min(dim=1).values
+                    chosen = vv.gather(1, pred[scored][:, None]).squeeze(1)
+                    chosen = torch.where(torch.isnan(chosen), worst, chosen)
+                    regret_sum += (best - chosen).sum()
+        n_s = max(1, int(s_n))
+        return ((v_loss / n_val).item(), (v_correct / n_val).item(),
+                (s_correct / n_s).item(), (regret_sum / n_s).item())
+
     legal_mask_train = X_train[:, legal_mask_offset:legal_mask_offset + 32]
     legal_mask_val   = X_val[:,   legal_mask_offset:legal_mask_offset + 32]
 
@@ -147,7 +219,11 @@ def train(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss()
 
-    best_val_acc = 0.0
+    if has_search:
+        _, a0, s0, r0 = validate()
+        print(f"Epoch   0/{epochs}  val_acc={a0:.4f}  val_search_acc={s0:.4f}  val_regret={r0:.2f}")
+
+    best_val_acc = float("-inf")
     no_improve = 0
 
     for epoch in range(1, epochs + 1):
@@ -162,44 +238,41 @@ def train(
             xb, yb, mask_b = X_train[idx], y_train[idx], legal_mask_train[idx]
 
             logits = model(xb)
-            loss = criterion(logits, yb)
+            if T_train is not None:
+                loss = -(T_train[idx] * torch.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+            else:
+                loss = criterion(logits, yb)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
             train_loss += loss.detach() * idx.size(0)
             masked_logits = logits.detach().masked_fill(mask_b == 0, float("-inf"))
-            train_correct += (masked_logits.argmax(dim=-1) == yb).sum()
+            pred = masked_logits.argmax(dim=-1)
+            train_correct += (pred == (y_train_search[idx] if y_train_search is not None else yb)).sum()
 
         scheduler.step()
         train_loss = (train_loss / n_train).item()
         train_acc = (train_correct / n_train).item()
 
         # Validate
-        model.eval()
-        val_loss = torch.tensor(0.0, device=device)
-        val_correct = torch.tensor(0, device=device)
-
-        with torch.no_grad():
-            for start in range(0, n_val, batch_size):
-                xb = X_val[start:start + batch_size]
-                yb = y_val[start:start + batch_size]
-                mask_b = legal_mask_val[start:start + batch_size]
-                logits = model(xb)
-                val_loss += criterion(logits, yb) * xb.size(0)
-                masked_logits = logits.masked_fill(mask_b == 0, float("-inf"))
-                val_correct += (masked_logits.argmax(dim=-1) == yb).sum()
-
-        val_loss = (val_loss / n_val).item()
-        val_acc = (val_correct / n_val).item()
+        val_loss, hard_acc, search_acc, regret = validate()
+        # Model selection: lowest regret vs the search when values exist,
+        # otherwise agreement with the label.
+        val_acc = (-regret) if has_search else hard_acc
 
         lr_now = scheduler.get_last_lr()[0]
         print(
             f"Epoch {epoch:3d}/{epochs}  "
             f"train_loss={train_loss:.4f}  train_acc={train_acc:.4f}  "
-            f"val_loss={val_loss:.4f}  val_acc={val_acc:.4f}  "
-            f"lr={lr_now:.6f}"
+            f"val_loss={val_loss:.4f}  val_acc={hard_acc:.4f}  "
+            + (f"val_search_acc={search_acc:.4f}  val_regret={regret:.2f}  " if has_search else "")
+            + f"lr={lr_now:.6f}"
         )
+
+        if save_every_epoch:
+            snap = str(Path(output_path).with_suffix("")) + f"_epoch{epoch:03d}.pt"
+            torch.save(model.state_dict(), snap)
 
         # Early stopping
         if val_acc > best_val_acc:
@@ -215,6 +288,30 @@ def train(
 
     print(f"\nBest validation accuracy: {best_val_acc:.4f}")
     print(f"Model saved to: {output_path}")
+
+
+def _search_argmax(V: np.ndarray, device) -> torch.Tensor:
+    """Index of the teacher's best-valued card per row, -1 where < 2 cards were scored."""
+    V = torch.from_numpy(np.ascontiguousarray(V)).to(device)
+    scored = ~torch.isnan(V)
+    best = V.nan_to_num(nan=float("-inf")).argmax(dim=-1)
+    return torch.where(scored.sum(dim=1) >= 2, best, torch.full_like(best, -1))
+
+
+def _soft_targets(V: np.ndarray, y: np.ndarray, temp: float, device) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Return (targets [N,32], is_soft [N]) or None when soft targets are off/absent."""
+    if temp <= 0:
+        return None
+    V = torch.from_numpy(np.ascontiguousarray(V)).to(device)
+    scored = ~torch.isnan(V)
+    is_soft = scored.sum(dim=1) >= 2
+    if not bool(is_soft.any()):
+        return None
+    logits = torch.where(scored, V / temp, torch.full_like(V, float("-inf")))
+    soft = torch.softmax(logits.nan_to_num(nan=float("-inf")), dim=-1)
+    hard = torch.nn.functional.one_hot(torch.from_numpy(y).to(device), 32).to(soft.dtype)
+    targets = torch.where(is_soft[:, None], soft, hard)
+    return targets, is_soft
 
 
 def main_cli() -> None:
@@ -233,6 +330,18 @@ def main_cli() -> None:
     parser.add_argument("--init", default=None,
                         help="Warm-start from this checkpoint (a 267-input net is zero-padded to the data width).")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="AdamW weight decay.")
+    parser.add_argument("--save-every-epoch", action="store_true",
+                        help="Also write <output>_epochNNN.pt after every epoch, so checkpoints can be "
+                             "picked by benchmark instead of validation accuracy.")
+    parser.add_argument("--min-hand", type=int, default=0,
+                        help="Train only on decisions with at least this many cards in hand "
+                             "(e.g. 6 for the tricks the hybrid plays with the net).")
+    parser.add_argument("--split-seed", type=int, default=None,
+                        help="Seed of the train/val split (fixed seed = comparable runs).")
+    parser.add_argument("--soft-temp", type=float, default=0.0,
+                        help="Distil from the teacher's per-card search values (datasets with a "
+                             "'values' array, e.g. --teacher pimc): the target is "
+                             "softmax(values / T) in round points instead of the one-hot label.")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +356,10 @@ def main_cli() -> None:
         hidden_sizes=tuple(args.hidden_sizes),
         init_path=args.init,
         weight_decay=args.weight_decay,
+        save_every_epoch=args.save_every_epoch,
+        min_hand=args.min_hand,
+        soft_temp=args.soft_temp,
+        split_seed=args.split_seed,
     )
 
 

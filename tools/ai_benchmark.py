@@ -15,7 +15,7 @@ from main import AIPlayer, KlaverjasGame
 
 INTERNAL_STRENGTHS = ("beginner", "advanced", "expert", "expert_v2", "neural")
 # Drop-in model players (model_players/): the public lobby opponents.
-DROP_IN_STRENGTHS = ("mythos", "opus", "neural_mythosbid")
+DROP_IN_STRENGTHS = ("mythos", "opus", "neural_mythosbid", "pimc")
 ALL_STRENGTHS = INTERNAL_STRENGTHS + DROP_IN_STRENGTHS
 
 
@@ -29,6 +29,9 @@ def _make_player(strength: str, name: str, team: int, seat: int, rng_seed: int):
     if strength == "neural_mythosbid":
         from model_players.neural_mythos_player import NeuralMythosBidPlayer
         return NeuralMythosBidPlayer(name, team, seat_idx=seat, rng_seed=rng_seed)
+    if strength == "pimc":
+        from model_players.pimc_player import PIMCNetPlayer
+        return PIMCNetPlayer(name, team, seat_idx=seat, rng_seed=rng_seed)
     return AIPlayer(name, team, seat_idx=seat, rng_seed=rng_seed,
                     signal_profile="core", ai_strength=strength)
 
