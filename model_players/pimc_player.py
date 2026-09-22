@@ -6,20 +6,36 @@ with the player's inferences, each played to the end of the round by the
 net itself, batched on the GPU engine; the card with the best mean outcome
 is played.  Bidding and the endgame are inherited from NeuralMythosBidPlayer.
 
-Environment knobs: NEURAL_PIMC_DEALS (default 32), NEURAL_PIMC_MAXCANDS (8),
-NEURAL_PIMC_MINCARDS (only search with at least this many cards in hand,
-default endgame_cards + 1).
+Environment knobs: NEURAL_PIMC_DEALS (default 64 on CUDA, 32 on the CPU),
+NEURAL_PIMC_MAXCANDS (8), NEURAL_PIMC_MINCARDS (only search with at least
+this many cards in hand, default endgame_cards + 1), NEURAL_PIMC_MARGIN
+(round points the search must gain before it overrides the net, default 8),
+NEURAL_PIMC_BUDGET (seconds per decision, default AI_CARD_BUDGET: when a
+decision takes longer the player halves its deals, down to 8, and grows
+them back when decisions are fast again, so a slow CPU stays responsive).
 """
 
 from __future__ import annotations
 
 import os
+import time
 
 import main
 from model_players.neural_mythos_player import NeuralMythosBidPlayer, _env
 from neural.player import DEFAULT_MODEL_PATH
 
 _EVALUATORS: dict[tuple, object] = {}
+
+
+def _cuda_available() -> bool:
+    dev = os.environ.get("NEURAL_PIMC_DEVICE", "").strip().lower()
+    if dev:
+        return dev.startswith("cuda")
+    try:
+        import torch
+        return bool(torch.cuda.is_available())
+    except Exception:
+        return False
 
 
 def _evaluator(model_path, deals: int, max_cands: int):
@@ -35,12 +51,14 @@ def _evaluator(model_path, deals: int, max_cands: int):
 class PIMCNetPlayer(NeuralMythosBidPlayer):
     def __init__(self, name="PIMC", team=0, seat_idx=0, rng_seed=None, **kw):
         super().__init__(name, team, seat_idx=seat_idx, rng_seed=rng_seed, **kw)
-        self.pimc_deals = int(_env("NEURAL_PIMC_DEALS", "32"))
+        self.pimc_deals_max = int(_env("NEURAL_PIMC_DEALS", 64 if _cuda_available() else 32))
+        self.pimc_deals = self.pimc_deals_max
         self.pimc_max_candidates = int(_env("NEURAL_PIMC_MAXCANDS", "8"))
         self.pimc_min_cards = int(_env("NEURAL_PIMC_MINCARDS", self.endgame_cards + 1))
         # Only override the net's own choice when the search's best candidate
         # beats it by at least this many round points (noise guard).
-        self.pimc_margin = float(_env("NEURAL_PIMC_MARGIN", "0"))
+        self.pimc_margin = float(_env("NEURAL_PIMC_MARGIN", "8"))
+        self.pimc_budget = float(_env("NEURAL_PIMC_BUDGET", _env("AI_CARD_BUDGET", "1.0")))
         self.pimc_calls = 0
         self.pimc_overrides = 0   # decisions where the search picked another card than the net
         # Search values of the last decision (card str -> mean round points), or
@@ -63,7 +81,9 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
             ev = _evaluator(model_path, self.pimc_deals, self.pimc_max_candidates)
             ranked = neural_rank_cards(self, legal, trick, trump, model_path=model_path) or list(legal)
             self.current_trump = trump
+            t0 = time.perf_counter()
             values = ev.evaluate(self, ranked, trick, trump)
+            self._adapt_deals(time.perf_counter() - t0)
         except Exception:
             return None
         if not values:
@@ -80,6 +100,15 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
             if str(c) == best:
                 return c
         return None
+
+    def _adapt_deals(self, seconds: float) -> None:
+        """Keep one decision near the budget: halve the deals when it is slow, grow back when fast."""
+        if self.pimc_budget <= 0:
+            return
+        if seconds > self.pimc_budget and self.pimc_deals > 8:
+            self.pimc_deals = max(8, self.pimc_deals // 2)
+        elif seconds < self.pimc_budget / 4 and self.pimc_deals < self.pimc_deals_max:
+            self.pimc_deals = min(self.pimc_deals_max, self.pimc_deals * 2)
 
 
 PLAYER_CLASS = PIMCNetPlayer
