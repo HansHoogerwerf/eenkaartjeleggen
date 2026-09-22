@@ -10,8 +10,9 @@ Every change is kept only if it holds up on **two** 512-round benchmarks
 roem audit (`neural card play + Mythos bidder`, guard off).
 
 Baseline (shipped `neural_best.pt`, unmodified develop code in a separate worktree):
-seed 7 → 0.53 / +19, seed 11 → 0.375 / −103 (mean −42). Seed spread is ~120
-points per game, so a change needs to move both seeds to count.
+seed 7 → 0.53 / +19, seed 11 → 0.375 / −103, seed 13 → 0.41 / −66, seed 17 → 0.59 / +82
+(mean −17). Seed spread is ~180 points per game, so a change needs to move
+every seed to count.
 
 ## Plan
 
@@ -44,4 +45,10 @@ points per game, so a change needs to move both seeds to count.
 | 05:40 | ladder snapshots, seed 7, 256 rounds, 3-card solver | ep100 +44, ep150 +86, ep200 +32 — same band as the shipped net (+62): no RL candidate |
 | 06:00 | neural-guided midgame (`NEURAL_MIDGAME=search`: net ranks, Mythos search picks among top-3 in 0.4 s) + 5-card Mythos endgame | ~0.3 s/decision under load; 2-seed benchmark queued |
 | 06:30 | hybrid + Mythos engine from 5 cards, extra seeds | seed 13: 0.56 / +146; seed 17: 0.56 / +61 → **4-seed mean +139** (solver v2 4 cards +104, 3 cards +81) → **new hybrid default: engine=mythos, endgame_cards=5** |
+| 06:55 | low-LR dense snapshot ep100, seed 7, 256 rounds — **note: from here screens use the new default (Mythos engine, 5 cards)**, reference = unchanged net +220 on this seed | 0.56 / +203 → on par |
+| 07:10 | roem audit, new default (Mythos engine 5 cards), guard off, 96 rounds | 80 pts gifted (4 events, 20 of them inside the endgame search); shipped config 20 (1 event); Mythos itself 160 (5 events); **guard on: 20 (1 event)** |
+| 07:30 | low-LR dense snapshots ep150 / ep200, seed 7 screen (reference +220) | +75 / +81 → no RL candidate from this run either |
+| 08:00 | neural-guided midgame (top-3, 0.4 s) + 5-card Mythos endgame | seed 7: 0.59 / +71; seed 11: 0.56 / +24 → mean +48 vs +175 for the plain net: **worse**; the net's early-trick play beats a short search, option stays off |
+| 08:20 | sparse low-LR control snapshots ep100 / ep200, seed 7 screen (reference +220) | **+248** / +168 → ep100 gets a 2-seed 512-round check |
+| 08:45 | shipped baseline, seeds 13 / 17 (worktree of develop) | −66 / +82 → 4-seed mean **−17** (new default +139: **+156 per game**) |
 | 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |

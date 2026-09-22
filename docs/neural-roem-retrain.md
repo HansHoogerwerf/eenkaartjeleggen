@@ -175,7 +175,7 @@ minimax over a single guessed layout of the hidden cards. Replacing that:
 
 | Endgame of the hybrid (net + Mythos bidder, `neural_best.pt` unchanged) | vs Mythos, 512 rounds, pts/game, seeds 7 / 11 / 13 / 17 | mean |
 |---|---|---|
-| old solver (3 cards, points only, first consistent deal) | +19 / −103 / · / · | −42 |
+| old solver (3 cards, points only, first consistent deal) | +19 / −103 / −66 / +82 | −17 |
 | solver v2, 3 cards (sampled deals, nat/pit terminal, alpha-beta) | +62 / +143 / −14 / +131 | +81 |
 | solver v2, 4 cards | +204 / +31 / +81 / +99 | +104 |
 | **Mythos search from 5 cards** (`NEURAL_ENDGAME_ENGINE=mythos`, now the default) | **+220 / +129 / +146 / +61** | **+139** |
@@ -197,7 +197,9 @@ at the lower rate. The net itself is therefore unchanged in v3; the tooling
 Knobs on the hybrid (environment): `NEURAL_ENDGAME_ENGINE` (mythos | solver),
 `NEURAL_ENDGAME_CARDS`, `NEURAL_ENDGAME_SAMPLES`, and the experimental
 `NEURAL_MIDGAME=search` (net ranks, Mythos search picks among the top
-`NEURAL_MIDGAME_TOPK` within `NEURAL_MIDGAME_BUDGET` seconds).
+`NEURAL_MIDGAME_TOPK` within `NEURAL_MIDGAME_BUDGET` seconds). The latter
+scored +48 vs +175 for the plain net on the same two seeds: the net's
+early-trick choices beat a short search, so leave it off.
 
 ## 5. Verifying the CUDA engine
 
