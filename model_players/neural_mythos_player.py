@@ -56,6 +56,11 @@ class NeuralMythosBidPlayer(MythosPlayer):
         # budget the unpruned search finishes fewer deals and measured +89 vs
         # +139 pts/game for the pruned search over four seeds.
         self.endgame_exact = _env("NEURAL_ENDGAME_EXACT", "0") in ("1", "true", "yes")
+        # Bidding (Mythos's MC bidder): raise the required success probability /
+        # expected gain for marginal declarations to trade points for a higher
+        # declare success rate.
+        self.bid_success_min = float(_env("NEURAL_BID_SUCCESS_MIN", self.bid_success_min))
+        self.bid_ev_min = float(_env("NEURAL_BID_EV_MIN", self.bid_ev_min))
         # Neural-guided midgame search (experiment): before the endgame, let
         # the net rank the legal cards and have Mythos's short determinized
         # search pick among the top `midgame_topk` under `midgame_budget`

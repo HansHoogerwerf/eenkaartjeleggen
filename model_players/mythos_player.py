@@ -165,6 +165,12 @@ class MythosPlayer(AIPlayer):
         self.time_budget = float(os.environ.get("AI_CARD_BUDGET", "1.0"))
         self.max_samples = 14
         self.max_samples_full = 10
+        # Bidding thresholds for marginal hands (see _decide_bid): minimum
+        # Monte-Carlo probability of making the contract and minimum expected
+        # point differential.  Subclasses may raise them to declare less often
+        # but succeed more often.
+        self.bid_success_min = 0.62
+        self.bid_ev_min = 3.0
 
         # Per-move search state
         self._t = 0
@@ -494,8 +500,8 @@ class MythosPlayer(AIPlayer):
                 return False
 
             succ, ev = self._estimate_declare(_SUIT_IDX[suit], samples=18)
-            need_s = 0.62 - 0.08 * pressure
-            need_ev = 3.0 - 12.0 * pressure
+            need_s = self.bid_success_min - 0.08 * pressure
+            need_ev = self.bid_ev_min - 12.0 * pressure
             if self.bid_round == 2:
                 if self.bid_position in (1, 3):
                     # Our pass can end with an OPPONENT forced to declare.
