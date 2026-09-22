@@ -273,15 +273,19 @@ class TestHybridEndgameEngine(unittest.TestCase):
             p._strategy(list(p.hand), [], "♠")
             search.assert_not_called()
 
-    def test_solver_engine_is_the_default(self):
+    def test_mythos_engine_from_five_cards_is_the_default(self):
         from unittest import mock
+        p = self._hybrid({"NEURAL_ENDGAME_ENGINE": "", "NEURAL_ENDGAME_CARDS": ""})
+        # (empty env values are treated like unset by the player)
         p = self._hybrid({})
-        self.assertIn(p.endgame_engine, ("solver", "mythos"))
-        if p.endgame_engine == "solver":
-            with mock.patch.object(p, "_search_choice") as search:
-                p.hand = p.hand[:3]
-                p._strategy(list(p.hand), [], "♠")
-                search.assert_not_called()
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("mythos", 5))
+        # The Python solver stays selectable and then takes over at its own depth.
+        p = self._hybrid({"NEURAL_ENDGAME_ENGINE": "solver"})
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("solver", 3))
+        with mock.patch.object(p, "_search_choice") as search:
+            p.hand = p.hand[:3]
+            p._strategy(list(p.hand), [], "♠")
+            search.assert_not_called()
 
 
 class TestNeuralGuidedMidgame(unittest.TestCase):

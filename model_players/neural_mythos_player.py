@@ -19,6 +19,12 @@ import main
 from model_players.mythos_player import MythosPlayer
 
 
+def _env(name: str, default):
+    """Environment override; unset *or empty* values fall back to the default."""
+    value = os.environ.get(name)
+    return value if value not in (None, "") else default
+
+
 class NeuralMythosBidPlayer(MythosPlayer):
     """Neural card play + Mythos's Monte-Carlo nat-aware bidding."""
 
@@ -29,23 +35,26 @@ class NeuralMythosBidPlayer(MythosPlayer):
         self.ai_strength = "neural"
         self.use_neural_play = True
         self.use_lookahead = False
-        self.use_endgame_solver = True  # net still defers the last cards to the exact solver
-        # Experiment knobs (see docs/neural-v3-campaign.md): how many cards the
-        # solver takes over at, and how many consistent deals it averages.
-        self.endgame_cards = int(os.environ.get("NEURAL_ENDGAME_CARDS", self.endgame_cards))
-        self.endgame_samples = int(os.environ.get("NEURAL_ENDGAME_SAMPLES", self.endgame_samples))
-        # Which exact endgame engine finishes the round once the hand is down to
-        # `endgame_cards`: "solver" = AIPlayer's sampled nat-aware minimax,
-        # "mythos" = MythosPlayer's int-encoded, time-budgeted alpha-beta
-        # (exact to the end of the round at <= 5 cards, up to 10 sampled deals).
-        self.endgame_engine = os.environ.get("NEURAL_ENDGAME_ENGINE", "solver")
+        self.use_endgame_solver = True  # net defers the last cards to an exact search
+        # Endgame (see docs/neural-v3-campaign.md): from `endgame_cards` cards in
+        # hand the round is finished by an exact, nat/pit-aware search over
+        # sampled consistent deals.  "mythos" = MythosPlayer's int-encoded,
+        # time-budgeted alpha-beta (exact to the end of the round at <= 5
+        # cards, up to 10 deals); "solver" = AIPlayer's Python minimax (use
+        # with 3-4 cards).  Defaults chosen on four 512-round seeds vs Mythos:
+        # mythos/5 -> +139 pts/game, solver/4 -> +104, solver/3 -> +81, the
+        # previous solver/3 without nat awareness -> -42.
+        self.endgame_engine = _env("NEURAL_ENDGAME_ENGINE", "mythos")
+        self.endgame_cards = int(_env("NEURAL_ENDGAME_CARDS",
+                                      5 if self.endgame_engine == "mythos" else self.endgame_cards))
+        self.endgame_samples = int(_env("NEURAL_ENDGAME_SAMPLES", self.endgame_samples))
         # Neural-guided midgame search (experiment): before the endgame, let
         # the net rank the legal cards and have Mythos's short determinized
         # search pick among the top `midgame_topk` under `midgame_budget`
         # seconds.  "net" = plain neural play (default).
-        self.midgame_engine = os.environ.get("NEURAL_MIDGAME", "net")
-        self.midgame_topk = int(os.environ.get("NEURAL_MIDGAME_TOPK", "3"))
-        self.midgame_budget = float(os.environ.get("NEURAL_MIDGAME_BUDGET", "0.4"))
+        self.midgame_engine = _env("NEURAL_MIDGAME", "net")
+        self.midgame_topk = int(_env("NEURAL_MIDGAME_TOPK", "3"))
+        self.midgame_budget = float(_env("NEURAL_MIDGAME_BUDGET", "0.4"))
         self.random_mistake_rate = 0.0
 
     def _strategy(self, legal, trick, trump):

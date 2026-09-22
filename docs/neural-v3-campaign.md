@@ -43,4 +43,5 @@ points per game, so a change needs to move both seeds to count.
 | 05:05 | hybrid + Mythos engine from 4 cards | seed 7: 0.53 / +63; seed 11: 0.69 / +170 → mean +116 (5 cards: +175) |
 | 05:40 | ladder snapshots, seed 7, 256 rounds, 3-card solver | ep100 +44, ep150 +86, ep200 +32 — same band as the shipped net (+62): no RL candidate |
 | 06:00 | neural-guided midgame (`NEURAL_MIDGAME=search`: net ranks, Mythos search picks among top-3 in 0.4 s) + 5-card Mythos endgame | ~0.3 s/decision under load; 2-seed benchmark queued |
+| 06:30 | hybrid + Mythos engine from 5 cards, extra seeds | seed 13: 0.56 / +146; seed 17: 0.56 / +61 → **4-seed mean +139** (solver v2 4 cards +104, 3 cards +81) → **new hybrid default: engine=mythos, endgame_cards=5** |
 | 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |
