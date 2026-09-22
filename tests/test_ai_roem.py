@@ -247,6 +247,43 @@ class TestEndgameSolverV2(unittest.TestCase):
         self.assertEqual(len(ai._endgame_deals([])), 1)
 
 
+class TestHybridEndgameEngine(unittest.TestCase):
+    def _hybrid(self, env: dict):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, env, clear=False):
+            from model_players.neural_mythos_player import NeuralMythosBidPlayer
+            p = NeuralMythosBidPlayer("H", 0, 0, rng_seed=1)
+        p.start_round()
+        p.use_neural_play = False       # keep the test independent of torch / checkpoints
+        p.hand = [Card("♥", "K"), Card("♥", "9"), Card("♣", "7"), Card("♦", "8"), Card("♠", "8")]
+        return p
+
+    def test_mythos_engine_takes_the_endgame_from_endgame_cards(self):
+        from unittest import mock
+        p = self._hybrid({"NEURAL_ENDGAME_ENGINE": "mythos", "NEURAL_ENDGAME_CARDS": "5"})
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("mythos", 5))
+        legal = list(p.hand)
+        with mock.patch.object(p, "_search_choice", return_value=p.hand[2]) as search:
+            self.assertEqual(str(p._strategy(legal, [], "♠")), "7♣")
+            search.assert_called_once()
+        # Above the threshold the search is not used.
+        p.hand.append(Card("♠", "7"))
+        with mock.patch.object(p, "_search_choice") as search:
+            p._strategy(list(p.hand), [], "♠")
+            search.assert_not_called()
+
+    def test_solver_engine_is_the_default(self):
+        from unittest import mock
+        p = self._hybrid({})
+        self.assertIn(p.endgame_engine, ("solver", "mythos"))
+        if p.endgame_engine == "solver":
+            with mock.patch.object(p, "_search_choice") as search:
+                p.hand = p.hand[:3]
+                p._strategy(list(p.hand), [], "♠")
+                search.assert_not_called()
+
+
 class TestRoemFeatures(unittest.TestCase):
     def _encode(self, hand, trick, legal, trump, version):
         return encode_state(

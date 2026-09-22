@@ -36,4 +36,9 @@ points per game, so a change needs to move both seeds to count.
 | 02:40 | alpha-beta + strongest-first ordering in the solver | 4× faster: 3 cards 0.13 s/round, 4 cards 1.1 s/round (4 players, under load), 5 cards 14 s/round (too slow without an int-encoded port) |
 | 02:45 | dense self-play snapshots, seed 7, 256 rounds, solver v2 (3) | ep100 −30, **ep200 +150**, ep300 −2, final −87 (shipped net same setup: +62 at 512) |
 | 03:05 | hybrid option `NEURAL_ENDGAME_ENGINE=mythos`: Mythos's int-encoded alpha-beta (nat/pit terminal, ≤10 sampled deals, time-budgeted) finishes the round from `endgame_cards` | timing under load: 4 cards 0.7 s/round, 5 cards 2.8 s/round (4 players) → benchmarks queued |
+| 03:25 | solver v2, 3 cards, extra seeds | seed 13: 0.59 / −14; seed 17: 0.66 / +131 → 4-seed mean **+81** (baseline 2-seed mean −42) |
+| 03:50 | solver v2, 4 cards, extra seeds | seed 13: 0.53 / +81; seed 17: 0.59 / +99 → 4-seed mean **+104**, own nats 34/42/37/38 vs 51/38/44/44 for 3 cards → provisional default 4 |
+| 04:20 | dense RL ep200 net, two seeds, 3-card solver | seed 7: 0.50 / +1; seed 11: 0.56 / +50 → mean +25 vs shipped net +102 in the same setup: **RL did not improve the net**; its +150 screen was noise |
+| 04:50 | hybrid + Mythos engine from 5 cards | seed 7: 0.72 / **+220** (nats 39 vs 62); seed 11: 0.50 / **+129** (nats 41 vs 52) → 2-seed mean +175 (solver v2 4 cards: +118, 3 cards: +102) |
+| 05:05 | hybrid + Mythos engine from 4 cards | seed 7: 0.53 / +63; seed 11: 0.69 / +170 → mean +116 (5 cards: +175) |
 | 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |
