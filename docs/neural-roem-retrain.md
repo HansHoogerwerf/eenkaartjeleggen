@@ -165,6 +165,40 @@ python tools/train_gpu_selfplay.py --model models/neural_best_v2pad.pt \
     --benchmark-rounds 384 --benchmark-baseline mythos --benchmark-candidate neural_mythosbid
 ```
 
+## 4b. Neural v3 (22 Sept 2026): exact, nat-aware endgame for the hybrid
+
+Full log with every benchmark: [neural-v3-campaign.md](neural-v3-campaign.md).
+
+The biggest lever turned out not to be the net but what finishes the round
+for it. The shipped hybrid solved the last 3 cards with a points-only
+minimax over a single guessed layout of the hidden cards. Replacing that:
+
+| Endgame of the hybrid (net + Mythos bidder, `neural_best.pt` unchanged) | vs Mythos, 512 rounds, pts/game, seeds 7 / 11 / 13 / 17 | mean |
+|---|---|---|
+| old solver (3 cards, points only, first consistent deal) | +19 / −103 / · / · | −42 |
+| solver v2, 3 cards (sampled deals, nat/pit terminal, alpha-beta) | +62 / +143 / −14 / +131 | +81 |
+| solver v2, 4 cards | +204 / +31 / +81 / +99 | +104 |
+| **Mythos search from 5 cards** (`NEURAL_ENDGAME_ENGINE=mythos`, now the default) | **+220 / +129 / +146 / +61** | **+139** |
+
+Mythos's int-encoded alpha-beta is exact to the end of the round at ≤ 5
+cards, averages up to 10 sampled consistent deals and applies nat and pit
+at the terminal; the hybrid now hands it the round from 5 cards down
+(~0.3 s per decision). `AIPlayer._endgame_minimax` (the Python solver) got
+the same ideas — sampled deals, nat/pit-aware terminal, alpha-beta — and
+stays the engine for the internal profiles and as the fallback.
+
+What did **not** help, each checked on two seeds at 512 rounds: PPO
+self-play from the shipped net with dense per-trick rewards (`--dense-rewards`,
+best snapshot +25 vs +102 for the unchanged net in the same setup), a ladder
+run from that snapshot at a lower learning rate, and a sparse-reward control
+at the lower rate. The net itself is therefore unchanged in v3; the tooling
+(dense rewards, `--save-every` snapshots) stays for future runs.
+
+Knobs on the hybrid (environment): `NEURAL_ENDGAME_ENGINE` (mythos | solver),
+`NEURAL_ENDGAME_CARDS`, `NEURAL_ENDGAME_SAMPLES`, and the experimental
+`NEURAL_MIDGAME=search` (net ranks, Mythos search picks among the top
+`NEURAL_MIDGAME_TOPK` within `NEURAL_MIDGAME_BUDGET` seconds).
+
 ## 5. Verifying the CUDA engine
 
 `tests/test_gpu_engine_roem.py` pins the tensor implementation to the Python

@@ -23,7 +23,7 @@ by `app.py`):
 |---|---|
 | `opus` | `model_players/opus_player.py` — PIMC double-dummy card play + its own MC nat-aware bidder |
 | `mythos` | `model_players/mythos_player.py` — determinized alpha-beta card play + MC nat-aware bidder |
-| `neural` (default) | `model_players/neural_mythos_player.py` — neural-net card play + **Mythos's** MC bidder |
+| `neural` (default) | `model_players/neural_mythos_player.py` — neural-net card play for the first tricks, **Mythos's** exact nat-aware search from 5 cards down, Mythos's MC bidder |
 
 Only `opus`, `mythos`, and `neural` should be exposed by the app or accepted
 through `CONFIG.room.allowed_ai_strengths`.
@@ -52,6 +52,12 @@ Important distinctions:
   lookahead and the CUDA engine (`tools/gpu_engine.py`). The neural path also
   runs `AIPlayer._roem_guard` after the net picks a card. Keep it that way:
   `tests/test_ai_roem.py` and `tests/test_gpu_engine_roem.py` guard it.
+- The hybrid's endgame is exact and nat-aware: from 5 cards in hand Mythos's
+  search finishes the round (`NEURAL_ENDGAME_ENGINE=mythos`, default); the
+  Python solver (`AIPlayer._endgame_minimax`, sampled deals + alpha-beta +
+  nat/pit terminal) serves the internal profiles. This is worth ~+180
+  points per game vs Mythos compared with the old points-only 3-card solver;
+  see `docs/neural-v3-campaign.md` before changing it.
 
 ## Important Runtime Patterns
 
