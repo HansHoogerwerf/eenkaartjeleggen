@@ -93,15 +93,9 @@ class NetRolloutEvaluator:
         torch.cuda.synchronize()
 
     def _rollout(self) -> torch.Tensor:
-        if self.use_graph:
-            if self._graph is None:
-                try:
-                    self._capture()
-                except Exception:
-                    self.use_graph = False
-            if self._graph is not None:
-                self._graph.replay()
-                return self._total
+        if self.use_graph and self._graph is not None:
+            self._graph.replay()
+            return self._total
         with torch.no_grad():
             self._rollout_body()
         return self._total
@@ -201,6 +195,16 @@ class NetRolloutEvaluator:
             return {}
         first, n = self._load_states(player, deals, trick, trump, candidates)
         self._first.copy_(first)
+        if self.use_graph and self._graph is None:
+            # Capturing runs the rollout (and so consumes the loaded state):
+            # capture once, then load the state again before the real replay.
+            try:
+                self._capture()
+            except Exception:
+                self.use_graph = False
+            else:
+                first, n = self._load_states(player, deals, trick, trump, candidates)
+                self._first.copy_(first)
         total = self._rollout()
         sign = 1.0 if SEAT_TEAMS[player.seat_idx] == 0 else -1.0
         vals = (total[:n] * sign * 162.0).view(len(candidates), len(deals)).mean(dim=1)
