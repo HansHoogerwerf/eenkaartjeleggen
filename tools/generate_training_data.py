@@ -11,6 +11,8 @@ Teachers
                     search that scores trick roem, nat and pit (default).
   opus              model_players/opus_player.py  - PIMC double-dummy search.
   neural_mythosbid  the current net + Mythos bidder (for distillation).
+  pimc              the current net improved by net-rollout search on the
+                    GPU (expert iteration; run with --workers 2-4).
   expert / advanced / beginner / expert_v2 / neural
                     engine-internal AIPlayer strength profiles.
 
@@ -51,7 +53,7 @@ from main import AIPlayer, KlaverjasGame
 from neural.features import CARD_INDEX, FEATURE_SIZES, encode_state
 
 INTERNAL_PROFILES = tuple(AIPlayer.AI_STRENGTH_PROFILES)
-DROP_IN_TEACHERS = ("mythos", "opus", "neural_mythosbid")
+DROP_IN_TEACHERS = ("mythos", "opus", "neural_mythosbid", "pimc")
 TEACHERS = DROP_IN_TEACHERS + INTERNAL_PROFILES
 
 # Module-level list that workers append to.  Each worker process gets its
@@ -107,6 +109,11 @@ def _teacher_base_class(teacher: str):
     if teacher == "neural_mythosbid":
         from model_players.neural_mythos_player import NeuralMythosBidPlayer
         return NeuralMythosBidPlayer
+    if teacher == "pimc":
+        # Net-rollout search over the current net (GPU); use few workers, each
+        # owns a CUDA engine.  NEURAL_PIMC_* env knobs apply.
+        from model_players.pimc_player import PIMCNetPlayer
+        return PIMCNetPlayer
     if teacher in INTERNAL_PROFILES:
         return AIPlayer
     raise ValueError(f"Unknown teacher {teacher!r}; choose from {TEACHERS}")
