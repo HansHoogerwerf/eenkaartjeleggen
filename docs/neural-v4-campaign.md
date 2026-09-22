@@ -82,6 +82,7 @@ campaign up to the reopen ran 08:08–13:30 and the reopened attempt from 13:30.
 | 52 | 17:06 **shipped**: `NEURAL_SEARCH=1` default in the registry, adaptive budget floored at 32 deals with a pause rule, docs (AGENTS.md, ai-strategy.md, .env.example); full suite 103 tests OK; pushed, PR #61 updated | – |
 | 53 | 17:12 **reopened again** (goal check: weights unchanged). Search self-consistency at 128 / 256 / 512 deals on the GPU: argmax agreement 45 / 61 / 60 %, value correlation 0.63 / 0.91 / 0.84, best-second gap 3 points | the top cards are genuine near-ties, so *agreement with the argmax* was the wrong metric; the right one is **regret** (search points lost by the chosen card vs the best card) |
 | 54 | 17:12 `train_neural.py`: `val_regret` metric, fixed `--split-seed`, model selection by regret. Soft distillation on the 3750-round values set (early tricks, warm start): base net regret **6.13** points/decision; T 3 lr 1e-4 → 5.9; T 3 lr 1e-3 → **5.54** (epoch 9); T 1 lr 3e-4 → 5.56 | −9 % held-out regret, the first training signal of the campaign that moved; `v4_regret_soft.pt` (T 3, lr 1e-3, epoch 9) head-to-head vs the current net (plain hybrids, seeds 7 / 11) running; a 256-deal values recording (cleaner targets) started |
+| 55 | 17:18 `v4_regret_soft.pt` vs the current net, head-to-head plain hybrids, seeds 7 / 11 | **+3 / +20** → a tie within noise: a 9 % regret reduction on the search's own values does not show up as strength. Last open avenue: cleaner targets from a 256-deal recording (running, ~5 h for 8000 rounds; ETA 322 min at 4 GPU workers) |
 
 ## Outcome
 
@@ -95,7 +96,7 @@ default, `NEURAL_SEARCH=0` restores the plain net).
 | Imitate Mythos, anchored | own guarded self-play (2M) + Mythos ×4 | inside noise |
 | Improve by itself (PPO) | 600 epochs, lr 3e-5, dense rewards, snapshots | noise around the start |
 | Improve by itself (search) | **net-rollout search**: the net as playout policy of a 64-deal determinized search (`neural/pimc.py`), CPU or CUDA | **+92 / +88 / +167 / +140 per game** head-to-head vs the plain net on four seeds (mean +122); 128 deals on CUDA +118 / +137; 32 deals ≈ +25, 16 deals worse than no search |
-| Distil the search into the net | hard labels (mixed, search-only, early-trick-only), soft targets from the search's per-card values (T = 0.5–10), learning curve 2000 → 3750 rounds | held-out agreement with the search stays 45–50 % (+1.5 points per data doubling, all memorisation); the search agrees with itself only 67 % of the time |
+| Distil the search into the net | hard labels (mixed, search-only, early-trick-only), soft targets from the search's per-card values (T = 0.5–10), learning curve 2000 → 3750 rounds; regret-selected soft distillation | held-out agreement with the search stays 45–50 %; the search's top cards are near-ties (self-agreement 60–67 % even at 512 deals), so regret is the right metric: soft distillation cuts it 9 % (6.13 → 5.54 points/decision) but that is a tie in play (+3 / +20 head-to-head) |
 
 Why the weights could not be improved: the net's early-trick play is already
 better than Mythos's (imitating Mythos pulls it down), self-play has been at a
