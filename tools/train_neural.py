@@ -146,10 +146,18 @@ def train(
     # Soft targets: softmax(values / T) over the cards the search scored; rows
     # without at least two scored cards fall back to the one-hot label.
     T_train = _soft_targets(V_tr, y_tr, soft_temp, device)
+    # Search argmax per validation row (-1 where the teacher scored < 2 cards):
+    # with a PIMC override margin the played card is often the net's own
+    # choice, so agreement with the search's best card is the metric that
+    # tells whether distillation moves the net toward the search.
+    y_val_search = _search_argmax(V_va, device)
     del X_tr, y_tr, X_va, y_va, V_tr, V_va
+    y_train_search = None
     if T_train is not None:
         print(f"Soft targets (T={soft_temp}) on {int(T_train[1].sum())} of {T_train[0].size(0)} train samples")
         T_train = T_train[0]
+        y_train_search = T_train.argmax(dim=-1)   # the search's best card (label on hard rows)
+    has_search = bool((y_val_search >= 0).any())
     legal_mask_train = X_train[:, legal_mask_offset:legal_mask_offset + 32]
     legal_mask_val   = X_val[:,   legal_mask_offset:legal_mask_offset + 32]
 
@@ -196,7 +204,8 @@ def train(
 
             train_loss += loss.detach() * idx.size(0)
             masked_logits = logits.detach().masked_fill(mask_b == 0, float("-inf"))
-            train_correct += (masked_logits.argmax(dim=-1) == yb).sum()
+            pred = masked_logits.argmax(dim=-1)
+            train_correct += (pred == (y_train_search[idx] if y_train_search is not None else yb)).sum()
 
         scheduler.step()
         train_loss = (train_loss / n_train).item()
@@ -206,26 +215,35 @@ def train(
         model.eval()
         val_loss = torch.tensor(0.0, device=device)
         val_correct = torch.tensor(0, device=device)
+        search_correct = torch.tensor(0, device=device)
+        search_n = torch.tensor(0, device=device)
 
         with torch.no_grad():
             for start in range(0, n_val, batch_size):
                 xb = X_val[start:start + batch_size]
                 yb = y_val[start:start + batch_size]
+                sb = y_val_search[start:start + batch_size]
                 mask_b = legal_mask_val[start:start + batch_size]
                 logits = model(xb)
                 val_loss += criterion(logits, yb) * xb.size(0)
-                masked_logits = logits.masked_fill(mask_b == 0, float("-inf"))
-                val_correct += (masked_logits.argmax(dim=-1) == yb).sum()
+                pred = logits.masked_fill(mask_b == 0, float("-inf")).argmax(dim=-1)
+                val_correct += (pred == yb).sum()
+                search_correct += ((pred == sb) & (sb >= 0)).sum()
+                search_n += (sb >= 0).sum()
 
         val_loss = (val_loss / n_val).item()
         val_acc = (val_correct / n_val).item()
+        search_acc = (search_correct / search_n.clamp(min=1)).item()
+        if has_search:
+            val_acc = search_acc   # model selection follows the search agreement
 
         lr_now = scheduler.get_last_lr()[0]
         print(
             f"Epoch {epoch:3d}/{epochs}  "
             f"train_loss={train_loss:.4f}  train_acc={train_acc:.4f}  "
-            f"val_loss={val_loss:.4f}  val_acc={val_acc:.4f}  "
-            f"lr={lr_now:.6f}"
+            f"val_loss={val_loss:.4f}  val_acc={(val_correct / n_val).item():.4f}  "
+            + (f"val_search_acc={search_acc:.4f}  " if has_search else "")
+            + f"lr={lr_now:.6f}"
         )
 
         if save_every_epoch:
@@ -246,6 +264,14 @@ def train(
 
     print(f"\nBest validation accuracy: {best_val_acc:.4f}")
     print(f"Model saved to: {output_path}")
+
+
+def _search_argmax(V: np.ndarray, device) -> torch.Tensor:
+    """Index of the teacher's best-valued card per row, -1 where < 2 cards were scored."""
+    V = torch.from_numpy(np.ascontiguousarray(V)).to(device)
+    scored = ~torch.isnan(V)
+    best = V.nan_to_num(nan=float("-inf")).argmax(dim=-1)
+    return torch.where(scored.sum(dim=1) >= 2, best, torch.full_like(best, -1))
 
 
 def _soft_targets(V: np.ndarray, y: np.ndarray, temp: float, device) -> tuple[torch.Tensor, torch.Tensor] | None:
