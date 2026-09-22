@@ -165,7 +165,7 @@ python tools/train_gpu_selfplay.py --model models/neural_best_v2pad.pt \
     --benchmark-rounds 384 --benchmark-baseline mythos --benchmark-candidate neural_mythosbid
 ```
 
-## 4b. Neural v3 (22 Sept 2026): exact, nat-aware endgame for the hybrid
+## 4b. Neural v3 (22 Sept 2026): nat-aware search endgame for the hybrid
 
 Full log with every benchmark: [neural-v3-campaign.md](neural-v3-campaign.md).
 
@@ -179,14 +179,18 @@ minimax over a single guessed layout of the hidden cards. Replacing that:
 | solver v2, 3 cards (sampled deals, nat/pit terminal, alpha-beta) | +62 / +143 / −14 / +131 | +81 |
 | solver v2, 4 cards | +204 / +31 / +81 / +99 | +104 |
 | **Mythos search from 5 cards** (`NEURAL_ENDGAME_ENGINE=mythos`, now the default) | **+220 / +129 / +146 / +61** | **+139** |
+| same, unpruned at 5 cards (`NEURAL_ENDGAME_EXACT=1`) | +90 / +89 / +71 / +107 (seeds 7 / 11 / 19 / 23) | +89 |
+| same, from 6 cards (depth-limited there) | +116 / −30 / · / · | +43 |
 
 Mythos's int-encoded alpha-beta searches to the end of the round at ≤ 5
 cards, averages up to `NEURAL_ENDGAME_SAMPLES` (default 10) sampled
 consistent deals and applies nat and pit at the terminal; the hybrid hands
-it the round from 5 cards down. The hybrid calls it in *exact* mode (no
-inner-node pruning; Mythos itself prunes to 3 replies at 5 cards), retries
-with pruning if no deal finishes inside `AI_CARD_BUDGET`, and lets the net
-play the card if even that times out. Cost under load: ~0.7 s at 5 cards,
+it the round from 5 cards down. It is exact from 4 cards; at 5 cards inner
+nodes keep Mythos's 3-reply pruning. `NEURAL_ENDGAME_EXACT=1` removes that
+pruning (pruned search as fallback when no deal finishes inside
+`AI_CARD_BUDGET`, the net as last resort), but under a per-card budget the
+unpruned search completes fewer deals and measured +89 vs +139 over four
+seeds, so it is off. Cost under load: ~0.3 s at 5 cards (0.7 s unpruned),
 ~0.15 s at 4, milliseconds below. `AIPlayer._endgame_minimax` (the Python solver) got
 the same ideas — sampled deals, nat/pit-aware terminal, alpha-beta — and
 stays the engine for the internal profiles and as the fallback.

@@ -51,6 +51,11 @@ class NeuralMythosBidPlayer(MythosPlayer):
         self.endgame_samples = int(_env("NEURAL_ENDGAME_SAMPLES",
                                         self.max_samples_full if self.endgame_engine == "mythos"
                                         else self.endgame_samples))
+        # NEURAL_ENDGAME_EXACT=1 removes Mythos's inner-node pruning at 5 cards
+        # (exact from 4 cards either way).  Off by default: under a per-card
+        # budget the unpruned search finishes fewer deals and measured +89 vs
+        # +139 pts/game for the pruned search over four seeds.
+        self.endgame_exact = _env("NEURAL_ENDGAME_EXACT", "0") in ("1", "true", "yes")
         # Neural-guided midgame search (experiment): before the endgame, let
         # the net rank the legal cards and have Mythos's short determinized
         # search pick among the top `midgame_topk` under `midgame_budget`
@@ -83,12 +88,19 @@ class NeuralMythosBidPlayer(MythosPlayer):
         return main.AIPlayer._strategy(self, legal, trick, trump)
 
     def _mythos_endgame(self, legal, trick, trump):
-        """Exact (unpruned) search over `endgame_samples` deals; pruned retry on timeout."""
+        """Mythos search to the end of the round over `endgame_samples` deals.
+
+        Exact (no inner pruning) from 4 cards; at 5 cards inner nodes keep
+        Mythos's 3-reply pruning unless `endgame_exact` is set, in which case
+        the pruned search is the fallback when no deal finishes in budget.
+        """
         self.current_trump = trump
         saved_samples = self.max_samples_full
         self.max_samples_full = max(1, self.endgame_samples)
         try:
-            card = self._search_choice(legal, trick, trump, exact=True)
+            card = None
+            if self.endgame_exact:
+                card = self._search_choice(legal, trick, trump, exact=True)
             if card is None:
                 card = self._search_choice(legal, trick, trump, exact=False)
             return card

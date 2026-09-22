@@ -52,12 +52,14 @@ Important distinctions:
   lookahead and the CUDA engine (`tools/gpu_engine.py`). The neural path also
   runs `AIPlayer._roem_guard` after the net picks a card. Keep it that way:
   `tests/test_ai_roem.py` and `tests/test_gpu_engine_roem.py` guard it.
-- The hybrid's endgame is exact and nat-aware: from 5 cards in hand Mythos's
-  search finishes the round (`NEURAL_ENDGAME_ENGINE=mythos`, default); the
-  Python solver (`AIPlayer._endgame_minimax`, sampled deals + alpha-beta +
-  nat/pit terminal) serves the internal profiles. This is worth ~+180
-  points per game vs Mythos compared with the old points-only 3-card solver;
-  see `docs/neural-v3-campaign.md` before changing it.
+- The hybrid's endgame is a nat-aware search to the end of the round: from 5
+  cards in hand Mythos's determinized alpha-beta finishes the round
+  (`NEURAL_ENDGAME_ENGINE=mythos`, default; exact from 4 cards, 3-reply
+  inner pruning at 5 unless `NEURAL_ENDGAME_EXACT=1`); the Python solver
+  (`AIPlayer._endgame_minimax`, sampled deals + alpha-beta + nat/pit
+  terminal) serves the internal profiles. This is worth ~+155 points per
+  game vs Mythos compared with the old points-only 3-card solver; see
+  `docs/neural-v3-campaign.md` before changing it.
 
 ## Important Runtime Patterns
 

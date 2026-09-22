@@ -53,14 +53,20 @@ every seed to count.
 | 08:45 | shipped baseline, seeds 13 / 17 (worktree of develop) | −66 / +82 → 4-seed mean **−17** (new default +139: **+156 per game**) |
 | 09:10 | sparse low-LR ep100, two seeds, 512 rounds, new default endgame | seed 7: 0.66 / +192; seed 11: 0.59 / +67 → mean +130 vs +175 unchanged net: **no**; the net stays as shipped |
 | 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |
+| 10:05 | Mythos engine from **6** cards (depth-limited there) | seed 7: 0.56 / +116; seed 11: 0.50 / −30 → mean +43 vs +175 at 5 cards: worse, 5 stays |
+| 10:10 | Codex review on PR #60: exact (unpruned) search at 5 cards + `NEURAL_ENDGAME_SAMPLES` honoured | ~0.7 s/decision at 5 cards under load; 2-seed check queued |
+| 10:35 | **exact-mode** 5-card default (post-review code), seed 19 | 0.53 / +71 (seeds 19/23 started after the fix, so they measure exact mode; seeds 7/11 queued for it) |
+| 10:55 | exact-mode 5-card default, seed 23 | 0.59 / +107 |
+| 11:15 | exact-mode 5-card default, seeds 7 / 11 | +90 / +89 → 4-seed mean **+89** vs pruned +139: pruned stays the default, `NEURAL_ENDGAME_EXACT=1` opt-in |
 
 ## Outcome
 
-* **Kept:** exact, nat/pit-aware endgame — Mythos's search from 5 cards as the
-  hybrid's default (+139 pts/game vs Mythos over 4 seeds; shipped config −17),
+* **Kept:** nat/pit-aware search to the end of the round — Mythos's search
+  from 5 cards as the hybrid's default (+139 pts/game vs Mythos over 4 seeds; shipped config −17),
   solver v2 for the Python profiles, dense-reward and snapshot tooling.
 * **Not kept:** every RL variant (dense lr 1e-4, ladder, dense lr 5e-5, sparse
-  lr 5e-5) and the neural-guided midgame search. The net in `neural_best.pt`
+  lr 5e-5), the neural-guided midgame search, the 6-card takeover and the
+  unpruned 5-card search. The net in `neural_best.pt`
   is unchanged.
 * **Lesson:** at 512 rounds a benchmark moves ±100 per game between seeds;
   four seeds separate ~+40. The endgame change is ~4× that; every RL delta
