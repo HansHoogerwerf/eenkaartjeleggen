@@ -284,6 +284,44 @@ class TestHybridEndgameEngine(unittest.TestCase):
                 search.assert_not_called()
 
 
+class TestNeuralGuidedMidgame(unittest.TestCase):
+    def test_guided_search_uses_the_nets_top_candidates(self):
+        from unittest import mock
+        import os
+        with mock.patch.dict(os.environ, {"NEURAL_MIDGAME": "search", "NEURAL_MIDGAME_TOPK": "2"}):
+            from model_players.neural_mythos_player import NeuralMythosBidPlayer
+            p = NeuralMythosBidPlayer("H", 0, 0, rng_seed=1)
+        p.start_round()
+        p.hand = [Card("♥", "K"), Card("♥", "9"), Card("♣", "7"), Card("♦", "8"), Card("♠", "8"), Card("♣", "A")]
+        legal = list(p.hand)
+        ranked = [p.hand[2], p.hand[5], p.hand[0], p.hand[1], p.hand[3], p.hand[4]]
+        with mock.patch("neural.player.neural_rank_cards", return_value=ranked),              mock.patch.object(p, "_search_choice", return_value=p.hand[5]) as search:
+            self.assertEqual(str(p._strategy(legal, [], "♠")), "A♣")
+            cands = search.call_args[0][0]
+            self.assertEqual([str(c) for c in cands], ["7♣", "A♣"])   # net's top-2 only
+        # Without a net ranking the hybrid falls back to the base strategy.
+        p.use_neural_play = False
+        with mock.patch("neural.player.neural_rank_cards", return_value=None),              mock.patch.object(p, "_search_choice") as search:
+            p._strategy(legal, [], "♠")
+            search.assert_not_called()
+
+    def test_rank_cards_agrees_with_choose_card(self):
+        try:
+            import torch  # noqa: F401
+        except Exception:
+            self.skipTest("torch not importable")
+        from neural.player import DEFAULT_MODEL_PATH, _get_model, neural_choose_card, neural_rank_cards
+        if _get_model(DEFAULT_MODEL_PATH) is None:
+            self.skipTest("no checkpoint")
+        ai = _ai(0, trick_num=2, current_trump="♠", declaring_team=0)
+        ai.hand = [Card("♥", "K"), Card("♥", "9"), Card("♣", "7"), Card("♦", "8"), Card("♠", "8")]
+        trick = [(_seat(1), Card("♥", "A")), (_seat(2), Card("♥", "7")), (_seat(3), Card("♥", "8"))]
+        legal = ai.legal_moves(trick, "♠")
+        ranked = neural_rank_cards(ai, legal, trick, "♠")
+        self.assertEqual(sorted(str(c) for c in ranked), sorted(str(c) for c in legal))
+        self.assertEqual(str(ranked[0]), str(neural_choose_card(ai, legal, trick, "♠")))
+
+
 class TestRoemFeatures(unittest.TestCase):
     def _encode(self, hand, trick, legal, trump, version):
         return encode_state(

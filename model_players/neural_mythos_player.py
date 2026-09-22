@@ -39,6 +39,13 @@ class NeuralMythosBidPlayer(MythosPlayer):
         # "mythos" = MythosPlayer's int-encoded, time-budgeted alpha-beta
         # (exact to the end of the round at <= 5 cards, up to 10 sampled deals).
         self.endgame_engine = os.environ.get("NEURAL_ENDGAME_ENGINE", "solver")
+        # Neural-guided midgame search (experiment): before the endgame, let
+        # the net rank the legal cards and have Mythos's short determinized
+        # search pick among the top `midgame_topk` under `midgame_budget`
+        # seconds.  "net" = plain neural play (default).
+        self.midgame_engine = os.environ.get("NEURAL_MIDGAME", "net")
+        self.midgame_topk = int(os.environ.get("NEURAL_MIDGAME_TOPK", "3"))
+        self.midgame_budget = float(os.environ.get("NEURAL_MIDGAME_BUDGET", "0.4"))
         self.random_mistake_rate = 0.0
 
     def _strategy(self, legal, trick, trump):
@@ -51,5 +58,31 @@ class NeuralMythosBidPlayer(MythosPlayer):
                     return card
             except Exception:
                 pass
+        if (self.midgame_engine == "search" and len(legal) > 1
+                and len(self.hand) > self.endgame_cards):
+            card = self._guided_search(legal, trick, trump)
+            if card is not None:
+                return card
         # Use the base engine's card play (neural + its endgame solver), not Mythos's search.
         return main.AIPlayer._strategy(self, legal, trick, trump)
+
+    def _guided_search(self, legal, trick, trump):
+        """Net ranks the legal cards; Mythos's search decides among the top-k."""
+        from neural.player import neural_rank_cards
+        ranked = neural_rank_cards(self, legal, trick, trump,
+                                   **({"model_path": self.neural_model_path}
+                                      if self.neural_model_path else {}))
+        if not ranked:
+            return None
+        candidates = ranked[:max(1, self.midgame_topk)]
+        if len(candidates) == 1:
+            return candidates[0]
+        self.current_trump = trump
+        saved_budget = self.time_budget
+        self.time_budget = self.midgame_budget
+        try:
+            return self._search_choice(candidates, trick, trump)
+        except Exception:
+            return None
+        finally:
+            self.time_budget = saved_budget

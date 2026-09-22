@@ -41,4 +41,6 @@ points per game, so a change needs to move both seeds to count.
 | 04:20 | dense RL ep200 net, two seeds, 3-card solver | seed 7: 0.50 / +1; seed 11: 0.56 / +50 → mean +25 vs shipped net +102 in the same setup: **RL did not improve the net**; its +150 screen was noise |
 | 04:50 | hybrid + Mythos engine from 5 cards | seed 7: 0.72 / **+220** (nats 39 vs 62); seed 11: 0.50 / **+129** (nats 41 vs 52) → 2-seed mean +175 (solver v2 4 cards: +118, 3 cards: +102) |
 | 05:05 | hybrid + Mythos engine from 4 cards | seed 7: 0.53 / +63; seed 11: 0.69 / +170 → mean +116 (5 cards: +175) |
+| 05:40 | ladder snapshots, seed 7, 256 rounds, 3-card solver | ep100 +44, ep150 +86, ep200 +32 — same band as the shipped net (+62): no RL candidate |
+| 06:00 | neural-guided midgame (`NEURAL_MIDGAME=search`: net ranks, Mythos search picks among top-3 in 0.4 s) + 5-card Mythos endgame | ~0.3 s/decision under load; 2-seed benchmark queued |
 | 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |
