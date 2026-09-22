@@ -47,7 +47,10 @@ class NeuralMythosBidPlayer(MythosPlayer):
         self.endgame_engine = _env("NEURAL_ENDGAME_ENGINE", "mythos")
         self.endgame_cards = int(_env("NEURAL_ENDGAME_CARDS",
                                       5 if self.endgame_engine == "mythos" else self.endgame_cards))
-        self.endgame_samples = int(_env("NEURAL_ENDGAME_SAMPLES", self.endgame_samples))
+        # Deals averaged by the endgame engine (Mythos: max_samples_full, 10).
+        self.endgame_samples = int(_env("NEURAL_ENDGAME_SAMPLES",
+                                        self.max_samples_full if self.endgame_engine == "mythos"
+                                        else self.endgame_samples))
         # Neural-guided midgame search (experiment): before the endgame, let
         # the net rank the legal cards and have Mythos's short determinized
         # search pick among the top `midgame_topk` under `midgame_budget`
@@ -60,13 +63,17 @@ class NeuralMythosBidPlayer(MythosPlayer):
     def _strategy(self, legal, trick, trump):
         if (self.endgame_engine == "mythos" and self.use_endgame_solver
                 and len(self.hand) <= self.endgame_cards and len(legal) > 1):
-            self.current_trump = trump
+            card = self._mythos_endgame(legal, trick, trump)
+            if card is not None:
+                return card
+            # Search could not finish a single deal within budget: let the
+            # net play this card rather than start the slower Python solver.
+            saved = self.use_endgame_solver
+            self.use_endgame_solver = False
             try:
-                card = self._search_choice(legal, trick, trump)
-                if card is not None:
-                    return card
-            except Exception:
-                pass
+                return main.AIPlayer._strategy(self, legal, trick, trump)
+            finally:
+                self.use_endgame_solver = saved
         if (self.midgame_engine == "search" and len(legal) > 1
                 and len(self.hand) > self.endgame_cards):
             card = self._guided_search(legal, trick, trump)
@@ -74,6 +81,21 @@ class NeuralMythosBidPlayer(MythosPlayer):
                 return card
         # Use the base engine's card play (neural + its endgame solver), not Mythos's search.
         return main.AIPlayer._strategy(self, legal, trick, trump)
+
+    def _mythos_endgame(self, legal, trick, trump):
+        """Exact (unpruned) search over `endgame_samples` deals; pruned retry on timeout."""
+        self.current_trump = trump
+        saved_samples = self.max_samples_full
+        self.max_samples_full = max(1, self.endgame_samples)
+        try:
+            card = self._search_choice(legal, trick, trump, exact=True)
+            if card is None:
+                card = self._search_choice(legal, trick, trump, exact=False)
+            return card
+        except Exception:
+            return None
+        finally:
+            self.max_samples_full = saved_samples
 
     def _guided_search(self, legal, trick, trump):
         """Net ranks the legal cards; Mythos's search decides among the top-k."""

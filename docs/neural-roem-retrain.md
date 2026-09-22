@@ -180,10 +180,14 @@ minimax over a single guessed layout of the hidden cards. Replacing that:
 | solver v2, 4 cards | +204 / +31 / +81 / +99 | +104 |
 | **Mythos search from 5 cards** (`NEURAL_ENDGAME_ENGINE=mythos`, now the default) | **+220 / +129 / +146 / +61** | **+139** |
 
-Mythos's int-encoded alpha-beta is exact to the end of the round at ≤ 5
-cards, averages up to 10 sampled consistent deals and applies nat and pit
-at the terminal; the hybrid now hands it the round from 5 cards down
-(~0.3 s per decision). `AIPlayer._endgame_minimax` (the Python solver) got
+Mythos's int-encoded alpha-beta searches to the end of the round at ≤ 5
+cards, averages up to `NEURAL_ENDGAME_SAMPLES` (default 10) sampled
+consistent deals and applies nat and pit at the terminal; the hybrid hands
+it the round from 5 cards down. The hybrid calls it in *exact* mode (no
+inner-node pruning; Mythos itself prunes to 3 replies at 5 cards), retries
+with pruning if no deal finishes inside `AI_CARD_BUDGET`, and lets the net
+play the card if even that times out. Cost under load: ~0.7 s at 5 cards,
+~0.15 s at 4, milliseconds below. `AIPlayer._endgame_minimax` (the Python solver) got
 the same ideas — sampled deals, nat/pit-aware terminal, alpha-beta — and
 stays the engine for the internal profiles and as the fallback.
 

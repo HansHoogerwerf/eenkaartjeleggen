@@ -197,15 +197,22 @@ class MythosPlayer(AIPlayer):
         except Exception:
             return legal[0]
 
-    def _search_choice(self, legal_cards, trick, trump):
+    def _search_choice(self, legal_cards, trick, trump, exact=False):
+        """Pick a card by determinized alpha-beta.
+
+        ``exact=True`` disables the inner-node move pruning at 5 cards (it is
+        already off at <= 4), so every sampled deal is solved to the end of
+        the round with all legal replies considered.  Costlier; callers that
+        need a bound should retry with ``exact=False`` when this returns None.
+        """
         t = _SUIT_IDX[trump]
         self._t = t
         self._eff, self._pts = _tables(t)
 
         n = len(self.hand)
         if n <= 5:
-            tricks_left = n                 # exact to end of round
-            self._branch = 3 if n == 5 else 8
+            tricks_left = n                 # to the end of the round
+            self._branch = 8 if (exact or n < 5) else 3
             max_samples = self.max_samples_full
         elif n == 6:
             tricks_left = 4
