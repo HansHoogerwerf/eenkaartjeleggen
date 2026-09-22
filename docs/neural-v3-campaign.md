@@ -51,4 +51,17 @@ every seed to count.
 | 08:00 | neural-guided midgame (top-3, 0.4 s) + 5-card Mythos endgame | seed 7: 0.59 / +71; seed 11: 0.56 / +24 → mean +48 vs +175 for the plain net: **worse**; the net's early-trick play beats a short search, option stays off |
 | 08:20 | sparse low-LR control snapshots ep100 / ep200, seed 7 screen (reference +220) | **+248** / +168 → ep100 gets a 2-seed 512-round check |
 | 08:45 | shipped baseline, seeds 13 / 17 (worktree of develop) | −66 / +82 → 4-seed mean **−17** (new default +139: **+156 per game**) |
+| 09:10 | sparse low-LR ep100, two seeds, 512 rounds, new default endgame | seed 7: 0.66 / +192; seed 11: 0.59 / +67 → mean +130 vs +175 unchanged net: **no**; the net stays as shipped |
 | 03:05 | ladder self-play from ep200 (opponent = ep200, dense, lr 5e-5, 256 steps/epoch, 200 epochs) | running on GPU |
+
+## Outcome
+
+* **Kept:** exact, nat/pit-aware endgame — Mythos's search from 5 cards as the
+  hybrid's default (+139 pts/game vs Mythos over 4 seeds; shipped config −17),
+  solver v2 for the Python profiles, dense-reward and snapshot tooling.
+* **Not kept:** every RL variant (dense lr 1e-4, ladder, dense lr 5e-5, sparse
+  lr 5e-5) and the neural-guided midgame search. The net in `neural_best.pt`
+  is unchanged.
+* **Lesson:** at 512 rounds a benchmark moves ±100 per game between seeds;
+  four seeds separate ~+40. The endgame change is ~4× that; every RL delta
+  was inside it.
