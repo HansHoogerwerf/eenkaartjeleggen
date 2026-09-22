@@ -59,7 +59,7 @@ that data erased its self-play skills (−273 vs +19 at the time). This time:
 | 19:55 | final distillation `v4_ft_pimc_full` (guarded 2M + PIMC ×8, warm start, lr 3e-5, 3 epochs) | val 77.8%; paired checks vs plain on seeds 7 / 11 running, one benchmark at a time |
 | 20:40 | `v4_ft_pimc_full` ep3 vs plain, paired, quiet machine | seed 7: +42 vs +143; seed 11: +108 vs +27 → mean −10: **distillation did not transfer the search's edge** |
 | 20:45 | final quiet paired test of the best remaining candidate, `v4_ft_c_epoch006.pt`, vs plain on seeds 7 / 11 / 13 | running |
-| 21:30 | `v4_ft_c_epoch006.pt` vs plain, paired, quiet | seed 7: −84 vs +58; seed 11: −36 vs +64 (seed 13 pending) → **not an improvement** |
+| 21:30 | `v4_ft_c_epoch006.pt` vs plain, paired, quiet | seed 7: −84 vs +58; seed 11: −36 vs +64; seed 13: +99 vs +167 → **not an improvement** (−142 / −100 / −69) |
 
 ## Outcome
 
@@ -68,7 +68,7 @@ in paired, equal-load benchmarks against Mythos:
 
 | Route | What was tried | Paired result vs the current net |
 |---|---|---|
-| Imitate Mythos | gentle warm-start fine-tunes on 3200 / 6400 Mythos rounds (lr 3e-5, per-epoch snapshots chosen by benchmark) | every epoch below or level; final quiet pairs of the best one: −142 / −100 |
+| Imitate Mythos | gentle warm-start fine-tunes on 3200 / 6400 Mythos rounds (lr 3e-5, per-epoch snapshots chosen by benchmark) | every epoch below or level; final quiet pairs of the best one: −142 / −100 / −69 |
 | Imitate Mythos, anchored | own guarded self-play (2M) + Mythos ×4 | ahead by ~100 on seed 7 in a loaded tournament, level on seed 11 → inside noise |
 | Improve by itself (PPO) | 600 epochs, lr 3e-5, dense rewards, snapshots | snapshots −119 / +213 / +108 vs +220 reference: noise around the start |
 | Improve by itself (search) | **net-rollout PIMC**: the net as rollout policy of a 64-deal determinized search on the GPU (`neural/pimc.py`) | **+180 / +127 / +11 as a player** (three pairs) — but needs a GPU |
