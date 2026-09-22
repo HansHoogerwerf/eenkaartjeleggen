@@ -37,7 +37,7 @@ from neural.model import KlaverjasNet, infer_net_shape
 
 
 def load_datasets(
-    specs: list[str], val_split: float = 0.1, seed: int | None = None,
+    specs: list[str], val_split: float = 0.1, seed: int | None = None, min_hand: int = 0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Load one or more datasets and return (X_train, y_train, X_val, y_val).
 
@@ -45,16 +45,28 @@ def load_datasets(
     repeated k times (oversampling a small, high-value set such as Mythos
     roem decisions next to a large heuristic set).  The train/val split is
     made per dataset before repetition, so no sample leaks into validation.
+
+    ``min_hand`` keeps only decisions made with at least that many cards in
+    hand (the own-hand one-hot is the first 32 features).  The deployed hybrid
+    hands the last tricks to the Mythos endgame search, so for it only the
+    early-trick decisions of a dataset matter.
     """
     rng = np.random.default_rng(seed)
-    tr_x, tr_y, va_x, va_y = [], [], [], []
+    tr_x, tr_y, va_x, va_y, tr_v, va_v = [], [], [], [], [], []
     for spec in specs:
         path, _, rep = spec.partition("@")
         repeat = int(rep) if rep else 1
         data = np.load(path)
         X, y = data["features"], data["labels"]
+        # Per-decision search values (32 floats, NaN where the teacher scored
+        # no card), the soft targets of --soft-temp; all-NaN without them.
+        V = data["values"] if "values" in data.files else np.full((X.shape[0], 32), np.nan, np.float32)
         version = int(data["feature_version"]) if "feature_version" in data.files else 1
         teacher = str(data["teacher"]) if "teacher" in data.files else "?"
+        if min_hand > 1:
+            keep = X[:, :32].sum(axis=1) >= min_hand
+            print(f"  {path}: keeping {int(keep.sum())} of {X.shape[0]} decisions with >= {min_hand} cards in hand")
+            X, y, V = X[keep], y[keep], V[keep]
         n = X.shape[0]
         perm = rng.permutation(n)
         val_n = int(n * val_split)
@@ -64,13 +76,16 @@ def load_datasets(
         for _ in range(repeat):
             tr_x.append(X[tr_idx])
             tr_y.append(y[tr_idx])
+            tr_v.append(V[tr_idx])
         va_x.append(X[va_idx])
         va_y.append(y[va_idx])
+        va_v.append(V[va_idx])
     widths = {X.shape[1] for X in tr_x}
     if len(widths) != 1:
         raise ValueError(f"Datasets have different feature widths: {sorted(widths)}")
     return (np.concatenate(tr_x), np.concatenate(tr_y),
-            np.concatenate(va_x), np.concatenate(va_y))
+            np.concatenate(va_x), np.concatenate(va_y),
+            np.concatenate(tr_v), np.concatenate(va_v))
 
 
 def warm_start(state_dict: dict, num_features: int) -> KlaverjasNet:
@@ -105,11 +120,13 @@ def train(
     init_path: str | None = None,
     weight_decay: float = 0.0,
     save_every_epoch: bool = False,
+    min_hand: int = 0,
+    soft_temp: float = 0.0,
 ) -> None:
     # Load data (one or more files; width decides the feature layout).
     # The train/val split happens per dataset inside load_datasets.
     paths = [data_path] if isinstance(data_path, str) else list(data_path)
-    X_tr, y_tr, X_va, y_va = load_datasets(paths, val_split=val_split)
+    X_tr, y_tr, X_va, y_va, V_tr, V_va = load_datasets(paths, val_split=val_split, min_hand=min_hand)
     num_features = X_tr.shape[1]
     feature_version = feature_version_for_size(num_features)
     print(f"Loaded {X_tr.shape[0]} train + {X_va.shape[0]} val samples, "
@@ -126,7 +143,13 @@ def train(
     y_train = torch.from_numpy(y_tr).to(device)
     X_val   = torch.from_numpy(X_va).to(device)
     y_val   = torch.from_numpy(y_va).to(device)
-    del X_tr, y_tr, X_va, y_va
+    # Soft targets: softmax(values / T) over the cards the search scored; rows
+    # without at least two scored cards fall back to the one-hot label.
+    T_train = _soft_targets(V_tr, y_tr, soft_temp, device)
+    del X_tr, y_tr, X_va, y_va, V_tr, V_va
+    if T_train is not None:
+        print(f"Soft targets (T={soft_temp}) on {int(T_train[1].sum())} of {T_train[0].size(0)} train samples")
+        T_train = T_train[0]
     legal_mask_train = X_train[:, legal_mask_offset:legal_mask_offset + 32]
     legal_mask_val   = X_val[:,   legal_mask_offset:legal_mask_offset + 32]
 
@@ -163,7 +186,10 @@ def train(
             xb, yb, mask_b = X_train[idx], y_train[idx], legal_mask_train[idx]
 
             logits = model(xb)
-            loss = criterion(logits, yb)
+            if T_train is not None:
+                loss = -(T_train[idx] * torch.log_softmax(logits, dim=-1)).sum(dim=-1).mean()
+            else:
+                loss = criterion(logits, yb)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -222,6 +248,22 @@ def train(
     print(f"Model saved to: {output_path}")
 
 
+def _soft_targets(V: np.ndarray, y: np.ndarray, temp: float, device) -> tuple[torch.Tensor, torch.Tensor] | None:
+    """Return (targets [N,32], is_soft [N]) or None when soft targets are off/absent."""
+    if temp <= 0:
+        return None
+    V = torch.from_numpy(np.ascontiguousarray(V)).to(device)
+    scored = ~torch.isnan(V)
+    is_soft = scored.sum(dim=1) >= 2
+    if not bool(is_soft.any()):
+        return None
+    logits = torch.where(scored, V / temp, torch.full_like(V, float("-inf")))
+    soft = torch.softmax(logits.nan_to_num(nan=float("-inf")), dim=-1)
+    hard = torch.nn.functional.one_hot(torch.from_numpy(y).to(device), 32).to(soft.dtype)
+    targets = torch.where(is_soft[:, None], soft, hard)
+    return targets, is_soft
+
+
 def main_cli() -> None:
     parser = argparse.ArgumentParser(description="Train neural Klaverjassen AI.")
     parser.add_argument("--data", nargs="+", default=[str(ROOT / "models" / "training_data.npz")],
@@ -241,6 +283,13 @@ def main_cli() -> None:
     parser.add_argument("--save-every-epoch", action="store_true",
                         help="Also write <output>_epochNNN.pt after every epoch, so checkpoints can be "
                              "picked by benchmark instead of validation accuracy.")
+    parser.add_argument("--min-hand", type=int, default=0,
+                        help="Train only on decisions with at least this many cards in hand "
+                             "(e.g. 6 for the tricks the hybrid plays with the net).")
+    parser.add_argument("--soft-temp", type=float, default=0.0,
+                        help="Distil from the teacher's per-card search values (datasets with a "
+                             "'values' array, e.g. --teacher pimc): the target is "
+                             "softmax(values / T) in round points instead of the one-hot label.")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +305,8 @@ def main_cli() -> None:
         init_path=args.init,
         weight_decay=args.weight_decay,
         save_every_epoch=args.save_every_epoch,
+        min_hand=args.min_hand,
+        soft_temp=args.soft_temp,
     )
 
 

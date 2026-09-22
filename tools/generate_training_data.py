@@ -50,7 +50,7 @@ import main
 from klaverjas.constants import SEAT_DEFAULTS, SEAT_TEAMS
 from klaverjas.core import Card, Trick
 from main import AIPlayer, KlaverjasGame
-from neural.features import CARD_INDEX, FEATURE_SIZES, encode_state
+from neural.features import CARD_INDEX, FEATURE_SIZES, NUM_CARDS, encode_state
 
 INTERNAL_PROFILES = tuple(AIPlayer.AI_STRENGTH_PROFILES)
 DROP_IN_TEACHERS = ("mythos", "opus", "neural_mythosbid", "pimc")
@@ -58,7 +58,12 @@ TEACHERS = DROP_IN_TEACHERS + INTERNAL_PROFILES
 
 # Module-level list that workers append to.  Each worker process gets its
 # own copy, so there is no cross-process sharing.
-_worker_samples: list[tuple[np.ndarray, int]] = []
+_worker_samples: list[tuple[np.ndarray, int, np.ndarray]] = []
+
+# Per-decision search values (32 floats, NaN for cards the search did not
+# score) when the teacher exposes ``last_pimc_values`` (the pimc teacher);
+# all-NaN otherwise.  Saved as ``values`` for soft-target distillation.
+_NO_VALUES = np.full(NUM_CARDS, np.nan, dtype=np.float32)
 
 
 class RecordingMixin:
@@ -95,7 +100,13 @@ class RecordingMixin:
         card = super().choose_card(trick, trump)  # type: ignore[misc]
 
         if features is not None:
-            _worker_samples.append((features, CARD_INDEX[str(card)]))
+            vals = getattr(self, "last_pimc_values", None)
+            v = _NO_VALUES
+            if vals:
+                v = np.full(NUM_CARDS, np.nan, dtype=np.float32)
+                for cs, x in vals.items():
+                    v[CARD_INDEX[cs]] = x
+            _worker_samples.append((features, CARD_INDEX[str(card)], v))
         return card
 
 
@@ -141,7 +152,7 @@ def make_recording_player(
     return cls(name, team, seat_idx=seat_idx, rng_seed=rng_seed)
 
 
-def _collect_game(args: tuple) -> tuple[np.ndarray, np.ndarray]:
+def _collect_game(args: tuple) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Play one game and return all recorded decision samples."""
     game_seed, teacher, boom_rounds, feature_version, record_forced, card_budget = args
 
@@ -193,24 +204,29 @@ def _collect_game(args: tuple) -> tuple[np.ndarray, np.ndarray]:
 
     width = FEATURE_SIZES[feature_version]
     if not _worker_samples:
-        return np.empty((0, width), dtype=np.float32), np.empty((0,), dtype=np.int64)
+        return (np.empty((0, width), dtype=np.float32), np.empty((0,), dtype=np.int64),
+                np.empty((0, NUM_CARDS), dtype=np.float32))
 
     features = np.stack([s[0] for s in _worker_samples])
     labels = np.array([s[1] for s in _worker_samples], dtype=np.int64)
-    return features, labels
+    values = np.stack([s[2] for s in _worker_samples])
+    return features, labels, values
 
 
 def _save(output_path: Path, feats: list[np.ndarray], labels: list[np.ndarray],
-          feature_version: int, teacher: str, rounds_done: int) -> tuple[int, int]:
+          values: list[np.ndarray], feature_version: int, teacher: str,
+          rounds_done: int) -> tuple[int, int]:
     width = FEATURE_SIZES[feature_version]
     X = np.concatenate(feats, axis=0) if feats else np.empty((0, width), np.float32)
     y = np.concatenate(labels, axis=0) if labels else np.empty((0,), np.int64)
+    V = np.concatenate(values, axis=0) if values else np.empty((0, NUM_CARDS), np.float32)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp = output_path.with_name(output_path.stem + ".tmp.npz")
     np.savez_compressed(
         str(tmp),
         features=X,
         labels=y,
+        values=V,
         feature_version=np.int64(feature_version),
         teacher=np.array(teacher),
         rounds=np.int64(rounds_done),
@@ -258,13 +274,15 @@ def main_cli() -> None:
 
     all_features: list[np.ndarray] = []
     all_labels: list[np.ndarray] = []
+    all_values: list[np.ndarray] = []
     completed = 0
     t0 = time.perf_counter()
 
-    def on_done(features: np.ndarray, labels: np.ndarray) -> None:
+    def on_done(features: np.ndarray, labels: np.ndarray, values: np.ndarray) -> None:
         nonlocal completed
         all_features.append(features)
         all_labels.append(labels)
+        all_values.append(values)
         completed += 1
         if completed % 5 == 0 or completed == num_games:
             total_samples = sum(f.shape[0] for f in all_features)
@@ -274,8 +292,8 @@ def main_cli() -> None:
                   f"{elapsed/60:.1f} min elapsed, ETA {eta/60:.1f} min")
             sys.stdout.flush()
         if args.checkpoint_every and completed % args.checkpoint_every == 0 and completed < num_games:
-            n, w = _save(output_path, all_features, all_labels, args.feature_version,
-                         args.teacher, completed * args.boom_rounds)
+            n, w = _save(output_path, all_features, all_labels, all_values,
+                         args.feature_version, args.teacher, completed * args.boom_rounds)
             print(f"  checkpoint: {n} samples x {w} features -> {output_path}")
             sys.stdout.flush()
 
@@ -284,11 +302,11 @@ def main_cli() -> None:
             on_done(*_collect_game(task))
     else:
         with Pool(processes=args.workers) as pool:
-            for features, labels in pool.imap_unordered(_collect_game, tasks):
-                on_done(features, labels)
+            for features, labels, values in pool.imap_unordered(_collect_game, tasks):
+                on_done(features, labels, values)
 
-    n, w = _save(output_path, all_features, all_labels, args.feature_version,
-                 args.teacher, completed * args.boom_rounds)
+    n, w = _save(output_path, all_features, all_labels, all_values,
+                 args.feature_version, args.teacher, completed * args.boom_rounds)
     print(f"\nDone! {n} samples x {w} features saved to {output_path}")
     print(f"  Elapsed: {(time.perf_counter() - t0)/60:.1f} min")
 

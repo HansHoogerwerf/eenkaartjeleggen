@@ -43,8 +43,13 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
         self.pimc_margin = float(_env("NEURAL_PIMC_MARGIN", "0"))
         self.pimc_calls = 0
         self.pimc_overrides = 0   # decisions where the search picked another card than the net
+        # Search values of the last decision (card str -> mean round points), or
+        # None when the net/endgame decided without the search; recorded by
+        # tools/generate_training_data.py as soft distillation targets.
+        self.last_pimc_values = None
 
     def _strategy(self, legal, trick, trump):
+        self.last_pimc_values = None
         if len(legal) > 1 and len(self.hand) >= self.pimc_min_cards:
             card = self._pimc_choice(legal, trick, trump)
             if card is not None:
@@ -63,6 +68,7 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
             return None
         if not values:
             return None
+        self.last_pimc_values = dict(values)
         best = max(values, key=values.get)
         self.pimc_calls += 1
         net_choice = str(ranked[0])

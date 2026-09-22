@@ -10,10 +10,18 @@ value is its mean round outcome (team frame, nat/pit applied by the engine).
 This is a search-based *improvement operator* over the net's own policy: the
 net proposes, rollouts with the same net judge.  Used by PIMCNetPlayer for
 play and for generating training targets that are stronger than the net.
+
+Runs on CUDA when available (CUDA-graph captured) and on the CPU otherwise
+(~0.5 s per decision at 32 deals with 4 threads).  NEURAL_PIMC_DEVICE forces
+a device, NEURAL_PIMC_THREADS caps the CPU threads (set it to 1 in
+multi-process benchmarks).  evaluate() is serialised by a lock, so one
+evaluator can be shared by every AI seat of a server process.
 """
 
 from __future__ import annotations
 
+import os
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -31,7 +39,12 @@ class NetRolloutEvaluator:
 
     def __init__(self, model_path: str | Path, deals: int = 32, max_candidates: int = 8,
                  device: str | None = None):
-        self.device = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+        device = device or os.environ.get("NEURAL_PIMC_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
+        self.device = torch.device(device)
+        threads = int(os.environ.get("NEURAL_PIMC_THREADS") or 0)
+        if threads > 0 and self.device.type == "cpu":
+            torch.set_num_threads(threads)
+        self._lock = threading.Lock()
         sd = torch.load(str(model_path), map_location=self.device, weights_only=True)
         self.net = KlaverjasNet.from_state_dict(sd).to(self.device).eval()
         self.feature_version = feature_version_for_size(self.net.in_features)
@@ -172,6 +185,10 @@ class NetRolloutEvaluator:
     @torch.no_grad()
     def evaluate(self, player, legal: list[Card], trick, trump: str) -> dict[str, float]:
         """Mean round outcome (own-team points minus theirs) per legal card."""
+        with self._lock:
+            return self._evaluate(player, legal, trick, trump)
+
+    def _evaluate(self, player, legal: list[Card], trick, trump: str) -> dict[str, float]:
         candidates = list(legal)[: self.max_candidates]
         deals = []
         for _ in range(self.deals * 2):
