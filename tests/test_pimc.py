@@ -79,6 +79,41 @@ class TestNetRolloutEvaluator(unittest.TestCase):
             self.assertEqual(str(p._strategy(legal, trick, "♠")), "K♣")
 
 
+class TestAdaptiveBudget(unittest.TestCase):
+    def _player(self):
+        from model_players.pimc_player import PIMCNetPlayer
+        p = PIMCNetPlayer("P", 0, 0, rng_seed=1)
+        p.pimc_deals_max = p.pimc_deals = 64
+        p.pimc_budget = 1.0
+        return p
+
+    def test_halves_to_the_floor_then_pauses(self):
+        p = self._player()
+        p._adapt_deals(1.5)
+        self.assertEqual(p.pimc_deals, 32)
+        p._adapt_deals(1.5)
+        self.assertEqual(p.pimc_deals, 32)        # never below the floor
+        self.assertEqual(p._search_paused_for, 0)
+        for _ in range(3):
+            p._adapt_deals(2.5)                   # over twice the budget at the floor
+        self.assertEqual(p._search_paused_for, 20)
+
+    def test_grows_back_when_fast(self):
+        p = self._player()
+        p.pimc_deals = 32
+        p._adapt_deals(0.1)
+        self.assertEqual(p.pimc_deals, 64)
+
+    def test_paused_search_plays_the_net(self):
+        from unittest import mock
+        p = self._player()
+        p._search_paused_for = 2
+        with mock.patch.object(p, "_pimc_choice") as pc,              mock.patch("model_players.neural_mythos_player.NeuralMythosBidPlayer._strategy", return_value="net"):
+            self.assertEqual(p._strategy([1, 2, 3], [], "♠"), "net")
+            pc.assert_not_called()
+        self.assertEqual(p._search_paused_for, 1)
+
+
 class TestRegistrySwitch(unittest.TestCase):
     def test_neural_search_env_selects_pimc_player(self):
         import os

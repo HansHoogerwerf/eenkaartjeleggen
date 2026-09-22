@@ -77,6 +77,7 @@ campaign up to the reopen ran 08:08–13:30 and the reopened attempt from 13:30.
 | 47 | 16:17 head-to-head search hybrid vs plain hybrid, seeds 13 / 17 | 0.72 / **+167**; 0.63 / **+140** → four seeds: +92 / +88 / +167 / +140 (mean **+122 per game**, all positive): net-rollout search is a decisively stronger neural opponent; 32- and 16-deal CPU variants queued to pick the production setting |
 | 48 | 16:33 learning curve of value distillation (T = 3, lr 1e-3, 20 epochs): 2000 rounds (15k early decisions) → held-out agreement with the search 45 → 48 %; 3750 rounds (31k) → 46.5 → 49.7 %, training set 81 % | +1.5 points per doubling toward a 67 % noise ceiling, all of it memorisation: **the values recording is stopped at 3750 rounds** (`training_data_pimc_v2_vals.npz`, 73 706 decisions with values) to free the machine for the deployment benchmarks |
 | 49 | 16:33 head-to-head with fewer deals (CPU): 32 deals seed 7 (unbudgeted) +15; seed 11 (1 s budget, 1 thread, so partly at 16 deals) +40 | the search's edge shrinks with the deal count (64 deals: +92 / +88 on the same seeds); unbudgeted 32-deal seed 11 and 16-deal seeds 7 / 11 running |
+| 50 | 16:52 deal-count curve, head-to-head vs plain hybrid (CPU, unbudgeted, seeds 7 / 11) | 16 deals **−14 / −57**, 32 deals +15 / +38, 64 deals +92 / +88: too few deals is worse than the net alone, so the player must never search below 32 deals (it falls back to the net instead); 128 deals on the GPU running |
 
 ## Outcome (interim, before the reopened attempt)
 

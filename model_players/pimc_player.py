@@ -11,8 +11,10 @@ NEURAL_PIMC_MAXCANDS (8), NEURAL_PIMC_MINCARDS (only search with at least
 this many cards in hand, default endgame_cards + 1), NEURAL_PIMC_MARGIN
 (round points the search must gain before it overrides the net, default 8),
 NEURAL_PIMC_BUDGET (seconds per decision, default AI_CARD_BUDGET: when a
-decision takes longer the player halves its deals, down to 8, and grows
-them back when decisions are fast again, so a slow CPU stays responsive).
+decision takes longer the player halves its deals, down to 32, and grows
+them back when decisions are fast again; below 32 deals the search is worse
+than the net alone, so a machine that cannot afford 32 deals within twice
+the budget plays the net directly and re-tries the search later).
 """
 
 from __future__ import annotations
@@ -59,6 +61,9 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
         # beats it by at least this many round points (noise guard).
         self.pimc_margin = float(_env("NEURAL_PIMC_MARGIN", "8"))
         self.pimc_budget = float(_env("NEURAL_PIMC_BUDGET", _env("AI_CARD_BUDGET", "1.0")))
+        self.pimc_min_deals = 32
+        self._slow_at_floor = 0       # consecutive over-budget decisions at the deal floor
+        self._search_paused_for = 0   # decisions left to play with the net alone
         self.pimc_calls = 0
         self.pimc_overrides = 0   # decisions where the search picked another card than the net
         # Search values of the last decision (card str -> mean round points), or
@@ -68,7 +73,9 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
 
     def _strategy(self, legal, trick, trump):
         self.last_pimc_values = None
-        if len(legal) > 1 and len(self.hand) >= self.pimc_min_cards:
+        if self._search_paused_for > 0:
+            self._search_paused_for -= 1
+        elif len(legal) > 1 and len(self.hand) >= self.pimc_min_cards:
             card = self._pimc_choice(legal, trick, trump)
             if card is not None:
                 return card
@@ -102,13 +109,26 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
         return None
 
     def _adapt_deals(self, seconds: float) -> None:
-        """Keep one decision near the budget: halve the deals when it is slow, grow back when fast."""
+        """Keep one decision near the budget: halve the deals when it is slow, grow back when fast.
+
+        At the 32-deal floor a decision over twice the budget three times in a
+        row pauses the search for 20 decisions (the net plays alone), since
+        searching with fewer deals would be worse than not searching.
+        """
         if self.pimc_budget <= 0:
             return
-        if seconds > self.pimc_budget and self.pimc_deals > 8:
-            self.pimc_deals = max(8, self.pimc_deals // 2)
+        floor = min(self.pimc_min_deals, self.pimc_deals_max)
+        if seconds > self.pimc_budget and self.pimc_deals > floor:
+            self.pimc_deals = max(floor, self.pimc_deals // 2)
         elif seconds < self.pimc_budget / 4 and self.pimc_deals < self.pimc_deals_max:
             self.pimc_deals = min(self.pimc_deals_max, self.pimc_deals * 2)
+        if self.pimc_deals <= floor and seconds > 2 * self.pimc_budget:
+            self._slow_at_floor += 1
+            if self._slow_at_floor >= 3:
+                self._slow_at_floor = 0
+                self._search_paused_for = 20
+        else:
+            self._slow_at_floor = 0
 
 
 PLAYER_CLASS = PIMCNetPlayer
