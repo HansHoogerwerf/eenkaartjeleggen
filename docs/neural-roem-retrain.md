@@ -179,6 +179,7 @@ minimax over a single guessed layout of the hidden cards. Replacing that:
 | solver v2, 3 cards (sampled deals, nat/pit terminal, alpha-beta) | +62 / +143 / −14 / +131 | +81 |
 | solver v2, 4 cards | +204 / +31 / +81 / +99 | +104 |
 | **Mythos search from 5 cards** (`NEURAL_ENDGAME_ENGINE=mythos`, now the default) | **+220 / +129 / +146 / +61** | **+139** |
+| default again, 1024 rounds each on fresh seeds 29 / 31 | +119 / +49 | +84 |
 | same, unpruned at 5 cards (`NEURAL_ENDGAME_EXACT=1`) | +90 / +89 / +71 / +107 (seeds 7 / 11 / 19 / 23) | +89 |
 | same, from 6 cards (depth-limited there) | +116 / −30 / · / · | +43 |
 
