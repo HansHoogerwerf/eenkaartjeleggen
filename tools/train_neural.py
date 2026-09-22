@@ -104,6 +104,7 @@ def train(
     hidden_sizes: tuple[int, ...] = (512, 256, 128),
     init_path: str | None = None,
     weight_decay: float = 0.0,
+    save_every_epoch: bool = False,
 ) -> None:
     # Load data (one or more files; width decides the feature layout).
     # The train/val split happens per dataset inside load_datasets.
@@ -201,6 +202,10 @@ def train(
             f"lr={lr_now:.6f}"
         )
 
+        if save_every_epoch:
+            snap = str(Path(output_path).with_suffix("")) + f"_epoch{epoch:03d}.pt"
+            torch.save(model.state_dict(), snap)
+
         # Early stopping
         if val_acc > best_val_acc:
             best_val_acc = val_acc
@@ -233,6 +238,9 @@ def main_cli() -> None:
     parser.add_argument("--init", default=None,
                         help="Warm-start from this checkpoint (a 267-input net is zero-padded to the data width).")
     parser.add_argument("--weight-decay", type=float, default=0.0, help="AdamW weight decay.")
+    parser.add_argument("--save-every-epoch", action="store_true",
+                        help="Also write <output>_epochNNN.pt after every epoch, so checkpoints can be "
+                             "picked by benchmark instead of validation accuracy.")
     args = parser.parse_args()
 
     Path(args.output).parent.mkdir(parents=True, exist_ok=True)
@@ -247,6 +255,7 @@ def main_cli() -> None:
         hidden_sizes=tuple(args.hidden_sizes),
         init_path=args.init,
         weight_decay=args.weight_decay,
+        save_every_epoch=args.save_every_epoch,
     )
 
 
