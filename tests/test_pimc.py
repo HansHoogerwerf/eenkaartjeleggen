@@ -79,5 +79,22 @@ class TestNetRolloutEvaluator(unittest.TestCase):
             self.assertEqual(str(p._strategy(legal, trick, "♠")), "K♣")
 
 
+class TestRegistrySwitch(unittest.TestCase):
+    def test_neural_search_env_selects_pimc_player(self):
+        import os
+        from unittest import mock
+        import main
+        import model_players.registry  # noqa: F401  (registers the factories)
+        from model_players.neural_mythos_player import NeuralMythosBidPlayer
+        from model_players.pimc_player import PIMCNetPlayer
+        with mock.patch.dict(os.environ, {"NEURAL_SEARCH": "0"}):
+            p = main.AI_PLAYER_FACTORIES["neural"]("N", 0, 0, rng_seed=1)
+            self.assertIsInstance(p, NeuralMythosBidPlayer)
+            self.assertNotIsInstance(p, PIMCNetPlayer)
+        with mock.patch.dict(os.environ, {"NEURAL_SEARCH": "1"}):
+            p = main.AI_PLAYER_FACTORIES["neural"]("N", 0, 0, rng_seed=1)
+            self.assertIsInstance(p, PIMCNetPlayer)
+
+
 if __name__ == "__main__":
     unittest.main()
