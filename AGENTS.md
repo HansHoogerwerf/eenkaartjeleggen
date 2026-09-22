@@ -115,11 +115,17 @@ drop-ins (`mythos`, `opus`, `neural_mythosbid`) as candidate or baseline, e.g.
 `--candidate-strength neural_mythosbid --baseline-strength mythos --model <ckpt>`
 compares card play with the same bidder on both sides.
 
-Training tooling: `tools/generate_training_data.py --teacher mythos` records
-imitation data (v2 features), `tools/train_neural.py` trains from one or more
-`.npz` files, `tools/train_gpu_selfplay.py` runs PPO self-play on the CUDA
-engine, and `tools/run_full_pipeline.py` chains them. PyTorch is only needed
-from the training step onwards.
+Training tooling: `tools/generate_training_data.py --teacher mythos|pimc|…`
+records imitation data (v2 features), `tools/train_neural.py` trains from one
+or more `.npz` files (`--init` warm start, `@k` oversampling,
+`--save-every-epoch`), `tools/train_gpu_selfplay.py` runs PPO self-play on
+the CUDA engine, `tools/screen_checkpoints.py` benchmarks checkpoints one at a
+time, and `tools/run_full_pipeline.py` chains the stages. PyTorch is only
+needed from the training step onwards. Benchmarks vs Mythos are
+load-sensitive: compare candidates only in back-to-back runs under equal
+load (see `docs/neural-v4-campaign.md`). `model_players/pimc_player.py`
+(net-rollout search on the GPU) is a stronger player than the lobby hybrid
+but is not deployable without a GPU.
 
 ## Deployment Notes
 

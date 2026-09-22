@@ -55,30 +55,34 @@ that data erased its self-play skills (−273 vs +19 at the time). This time:
 | 17:05 | tournament rows (control −7 / +38) | ft_c ep6 +114 / +39; ft_mix ep3 +60 / +21; ft_mix ep1 +114 / (pending); PIMC pending |
 | 17:30 | tournament (control −7 / +38 on seeds 7 / 11) | ft_c ep6 +114 / +39; ft_mix ep3 +60 / +21; ft_mix ep1 +114 / +13 → every fine-tune beats the control on seed 7 by ~120 and ties on seed 11 (mean gain ~+50, still inside noise) |
 | 17:30 | **host stopped three jobs for low memory:** the tournament before its PIMC rows, the paired checks of both PIMC-distilled trials (`v4_ft_pimc_a_epoch003.pt`, `v4_ft_pimc_b_epoch003.pt`, both trained, val 79.5% / 79.1%). The PIMC recording survived (100/250 games). Not restarted automatically | pending |
+| 19:50 | PIMC recording done: 4000 rounds, 81 842 decisions (`training_data_pimc_v2.npz`, 126 min on 2 GPU workers) | – |
+| 19:55 | final distillation `v4_ft_pimc_full` (guarded 2M + PIMC ×8, warm start, lr 3e-5, 3 epochs) | val 77.8%; paired checks vs plain on seeds 7 / 11 running, one benchmark at a time |
+| 20:40 | `v4_ft_pimc_full` ep3 vs plain, paired, quiet machine | seed 7: +42 vs +143; seed 11: +108 vs +27 → mean −10: **distillation did not transfer the search's edge** |
+| 20:45 | final quiet paired test of the best remaining candidate, `v4_ft_c_epoch006.pt`, vs plain on seeds 7 / 11 / 13 | running |
+| 21:30 | `v4_ft_c_epoch006.pt` vs plain, paired, quiet | seed 7: −84 vs +58; seed 11: −36 vs +64 (seed 13 pending) → **not an improvement** |
 
-## Where this stands
+## Outcome
 
-* **Imitating Mythos directly** (3200 / 6400 rounds, gentle warm-start fine-tunes)
-  did not beat the current net in paired or quiet comparisons; on the same
-  seeds a short Mythos search choosing among the net's cards also lost. The
-  net's early-trick play is already stronger than Mythos's.
-* **Anchored fine-tunes** (own guarded self-play + Mythos) and the 6400-round
-  fine-tune are the first candidates that came out *ahead* of the control in
-  a tournament (by ~120 on seed 7, level on seed 11) — promising, not proven.
-* **Self-improvement:** six PPO runs in v3/v4 never beat the net. What did:
-  **net-rollout PIMC** (`neural/pimc.py`, `PIMCNetPlayer`) — the net used as
-  the rollout policy of a determinized search on the GPU — beat the plain
-  hybrid in three paired 512-round runs (+180 / +127 / +11). It needs a GPU,
-  so the deployable form is a net distilled from PIMC self-play (recording in
-  `models/training_data_pimc_v2.npz`, `--teacher pimc`); the first two
-  distilled trials are trained and await their paired checks.
-* **Protocol:** benchmarks vs Mythos move ±100/game with machine load; only
-  paired runs under equal load or a single sequential tournament are
-  comparable (`tools/screen_checkpoints.py`).
+**The net in `neural_best.pt` stays.** No candidate from this campaign beat it
+in paired, equal-load benchmarks against Mythos:
 
-To resume (each ~25 min at 12 workers, run one at a time):
+| Route | What was tried | Paired result vs the current net |
+|---|---|---|
+| Imitate Mythos | gentle warm-start fine-tunes on 3200 / 6400 Mythos rounds (lr 3e-5, per-epoch snapshots chosen by benchmark) | every epoch below or level; final quiet pairs of the best one: −142 / −100 |
+| Imitate Mythos, anchored | own guarded self-play (2M) + Mythos ×4 | ahead by ~100 on seed 7 in a loaded tournament, level on seed 11 → inside noise |
+| Improve by itself (PPO) | 600 epochs, lr 3e-5, dense rewards, snapshots | snapshots −119 / +213 / +108 vs +220 reference: noise around the start |
+| Improve by itself (search) | **net-rollout PIMC**: the net as rollout policy of a 64-deal determinized search on the GPU (`neural/pimc.py`) | **+180 / +127 / +11 as a player** (three pairs) — but needs a GPU |
+| Distil the search back into the net | guarded 2M + 4000 rounds of PIMC self-play ×8, warm start | −101 / +82 → no transfer |
 
-```bash
-python tools/screen_checkpoints.py models/v4_ft_pimc_b_epoch003.pt models/neural_best.pt --rounds 512 --seeds 7 11 --workers 12
-NEURAL_PIMC_DEALS=64 NEURAL_PIMC_MARGIN=8 python tools/screen_checkpoints.py models/neural_best.pt --candidate pimc --rounds 512 --seeds 7 11 --workers 12
-```
+Why: the current net's early-trick play is already better than Mythos's
+(imitating Mythos pulls it down), self-play has been at a plateau for seven
+runs, and the search's edge lives in per-position lookahead that a
+300-input MLP does not absorb from 80k labelled decisions.
+
+What the branch leaves behind for the next attempt: `PIMCNetPlayer` (a
+stronger opponent wherever a GPU is available), the `pimc` recording teacher,
+`tools/screen_checkpoints.py` and the paired-benchmark protocol, per-epoch
+snapshots in `train_neural.py`, and the datasets
+(`training_data_mythos_v2_50k.npz` 9600 rounds, `training_data_pimc_v2.npz`
+4000 rounds). The most promising untried step is a larger PIMC recording
+(50k+ rounds, cheap on GPU) distilled into a *wider* net, then PPO from it.
