@@ -208,6 +208,10 @@ Knobs on the hybrid (environment): `NEURAL_ENDGAME_ENGINE` (mythos | solver),
 `NEURAL_MIDGAME_TOPK` within `NEURAL_MIDGAME_BUDGET` seconds). The latter
 scored +48 vs +175 for the plain net on the same two seeds: the net's
 early-trick choices beat a short search, so leave it off.
+`NEURAL_BID_SUCCESS_MIN` / `NEURAL_BID_EV_MIN` raise or lower Mythos's
+marginal-declaration thresholds for the hybrid only (defaults 0.62 / 3.0);
+0.70 scored +78 and 0.55 scored +54 against +175 at the default, with no
+better declare-success rate either (0.82–0.84 / 0.78–0.84 vs 0.84–0.85).
 
 ## 5. Verifying the CUDA engine
 

@@ -58,6 +58,8 @@ every seed to count.
 | 10:35 | **exact-mode** 5-card default (post-review code), seed 19 | 0.53 / +71 (seeds 19/23 started after the fix, so they measure exact mode; seeds 7/11 queued for it) |
 | 10:55 | exact-mode 5-card default, seed 23 | 0.59 / +107 |
 | 11:15 | exact-mode 5-card default, seeds 7 / 11 | +90 / +89 → 4-seed mean **+89** vs pruned +139: pruned stays the default, `NEURAL_ENDGAME_EXACT=1` opt-in |
+| 12:10 | bid threshold `NEURAL_BID_SUCCESS_MIN=0.70` (default 0.62) | seed 7: 0.56 / −4, declare success 0.82; seed 11: 0.66 / +159, 0.83 → mean +78 vs +175 and success 0.85/0.84 at default: passing marginal hands gives Mythos the declarations → **worse on both counts**; trying 0.55 |
+| 12:40 | bid threshold 0.55 | seed 7: 0.63 / +82, success 0.84; seed 11: 0.56 / +26, 0.78 → mean +54: worse too. **Default 0.62 is best in both directions**; `NEURAL_BID_SUCCESS_MIN` / `NEURAL_BID_EV_MIN` stay as knobs |
 
 ## Outcome
 
