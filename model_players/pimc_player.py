@@ -38,6 +38,9 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
         self.pimc_deals = int(_env("NEURAL_PIMC_DEALS", "32"))
         self.pimc_max_candidates = int(_env("NEURAL_PIMC_MAXCANDS", "8"))
         self.pimc_min_cards = int(_env("NEURAL_PIMC_MINCARDS", self.endgame_cards + 1))
+        # Only override the net's own choice when the search's best candidate
+        # beats it by at least this many round points (noise guard).
+        self.pimc_margin = float(_env("NEURAL_PIMC_MARGIN", "0"))
         self.pimc_calls = 0
         self.pimc_overrides = 0   # decisions where the search picked another card than the net
 
@@ -62,7 +65,10 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
             return None
         best = max(values, key=values.get)
         self.pimc_calls += 1
-        if best != str(ranked[0]):
+        net_choice = str(ranked[0])
+        if best != net_choice and values[best] - values.get(net_choice, -1e9) < self.pimc_margin:
+            best = net_choice
+        if best != net_choice:
             self.pimc_overrides += 1
         for c in legal:
             if str(c) == best:
