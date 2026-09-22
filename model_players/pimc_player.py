@@ -6,7 +6,9 @@ with the player's inferences, each played to the end of the round by the
 net itself, batched on the GPU engine; the card with the best mean outcome
 is played.  Bidding and the endgame are inherited from NeuralMythosBidPlayer.
 
-Environment knobs: NEURAL_PIMC_DEALS (default 64 on CUDA, 32 on the CPU),
+Environment knobs: NEURAL_PIMC_DEALS (default 128 on CUDA, 64 on the CPU;
+head-to-head vs the plain net 16 deals lose, 32 give ~+25, 64 ~+120 and 128
+~+130 points per game),
 NEURAL_PIMC_MAXCANDS (8), NEURAL_PIMC_MINCARDS (only search with at least
 this many cards in hand, default endgame_cards + 1), NEURAL_PIMC_MARGIN
 (round points the search must gain before it overrides the net, default 8),
@@ -53,7 +55,7 @@ def _evaluator(model_path, deals: int, max_cands: int):
 class PIMCNetPlayer(NeuralMythosBidPlayer):
     def __init__(self, name="PIMC", team=0, seat_idx=0, rng_seed=None, **kw):
         super().__init__(name, team, seat_idx=seat_idx, rng_seed=rng_seed, **kw)
-        self.pimc_deals_max = int(_env("NEURAL_PIMC_DEALS", 64 if _cuda_available() else 32))
+        self.pimc_deals_max = int(_env("NEURAL_PIMC_DEALS", 128 if _cuda_available() else 64))
         self.pimc_deals = self.pimc_deals_max
         self.pimc_max_candidates = int(_env("NEURAL_PIMC_MAXCANDS", "8"))
         self.pimc_min_cards = int(_env("NEURAL_PIMC_MINCARDS", self.endgame_cards + 1))

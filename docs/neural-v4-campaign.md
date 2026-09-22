@@ -78,6 +78,8 @@ campaign up to the reopen ran 08:08–13:30 and the reopened attempt from 13:30.
 | 48 | 16:33 learning curve of value distillation (T = 3, lr 1e-3, 20 epochs): 2000 rounds (15k early decisions) → held-out agreement with the search 45 → 48 %; 3750 rounds (31k) → 46.5 → 49.7 %, training set 81 % | +1.5 points per doubling toward a 67 % noise ceiling, all of it memorisation: **the values recording is stopped at 3750 rounds** (`training_data_pimc_v2_vals.npz`, 73 706 decisions with values) to free the machine for the deployment benchmarks |
 | 49 | 16:33 head-to-head with fewer deals (CPU): 32 deals seed 7 (unbudgeted) +15; seed 11 (1 s budget, 1 thread, so partly at 16 deals) +40 | the search's edge shrinks with the deal count (64 deals: +92 / +88 on the same seeds); unbudgeted 32-deal seed 11 and 16-deal seeds 7 / 11 running |
 | 50 | 16:52 deal-count curve, head-to-head vs plain hybrid (CPU, unbudgeted, seeds 7 / 11) | 16 deals **−14 / −57**, 32 deals +15 / +38, 64 deals +92 / +88: too few deals is worse than the net alone, so the player must never search below 32 deals (it falls back to the net instead); 128 deals on the GPU running |
+| 51 | 17:06 128 deals on the GPU, head-to-head seeds 7 / 11 | **+118 / +137** (64 deals: +92 / +88) → defaults: 64 deals on a CPU, 128 on CUDA; quiet-machine cost per decision: CPU 0.52 s at 32 deals, 0.70 s at 64 (2–8 threads alike: the engine step dominates), CUDA 0.11 s at 64, 0.14 s at 128 |
+| 52 | 17:06 **shipped**: `NEURAL_SEARCH=1` default in the registry, adaptive budget floored at 32 deals with a pause rule, docs (AGENTS.md, ai-strategy.md, .env.example); full suite 103 tests OK; pushed, PR #61 updated | – |
 
 ## Outcome
 
@@ -90,7 +92,7 @@ default, `NEURAL_SEARCH=0` restores the plain net).
 | Imitate Mythos | gentle warm-start fine-tunes on 3200 / 6400 Mythos rounds, per-epoch snapshots chosen by benchmark | every epoch below or level with the current net; final quiet pairs of the best one: −142 / −100 / −69 |
 | Imitate Mythos, anchored | own guarded self-play (2M) + Mythos ×4 | inside noise |
 | Improve by itself (PPO) | 600 epochs, lr 3e-5, dense rewards, snapshots | noise around the start |
-| Improve by itself (search) | **net-rollout search**: the net as playout policy of a 64-deal determinized search (`neural/pimc.py`), CPU or CUDA | **+92 / +88 / +167 / +140 per game** head-to-head vs the plain net on four seeds (mean +122); 32 deals ≈ +25, 16 deals worse than no search |
+| Improve by itself (search) | **net-rollout search**: the net as playout policy of a 64-deal determinized search (`neural/pimc.py`), CPU or CUDA | **+92 / +88 / +167 / +140 per game** head-to-head vs the plain net on four seeds (mean +122); 128 deals on CUDA +118 / +137; 32 deals ≈ +25, 16 deals worse than no search |
 | Distil the search into the net | hard labels (mixed, search-only, early-trick-only), soft targets from the search's per-card values (T = 0.5–10), learning curve 2000 → 3750 rounds | held-out agreement with the search stays 45–50 % (+1.5 points per data doubling, all memorisation); the search agrees with itself only 67 % of the time |
 
 Why the weights could not be improved: the net's early-trick play is already
@@ -101,7 +103,7 @@ the net already sits near that noise ceiling.
 
 What ships on the branch:
 
-- `PIMCNetPlayer` as the public `neural` opponent: 64 deals, margin 8, top-8
+- `PIMCNetPlayer` as the public `neural` opponent: 64 deals (128 on CUDA), margin 8, top-8
   candidates, per-decision budget `NEURAL_PIMC_BUDGET` (default
   `AI_CARD_BUDGET`) that halves the deals to a floor of 32 and pauses the
   search when even that is too slow; thread-safe evaluator that runs on the

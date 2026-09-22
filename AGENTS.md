@@ -23,7 +23,7 @@ by `app.py`):
 |---|---|
 | `opus` | `model_players/opus_player.py` — PIMC double-dummy card play + its own MC nat-aware bidder |
 | `mythos` | `model_players/mythos_player.py` — determinized alpha-beta card play + MC nat-aware bidder |
-| `neural` (default) | `model_players/pimc_player.py` — the neural net with **net-rollout search** for the first tricks (`neural/pimc.py`: the net proposes, playouts by the same net over 64 sampled deals judge), **Mythos's** exact nat-aware search from 5 cards down, Mythos's MC bidder. `NEURAL_SEARCH=0` gives the plain net (`model_players/neural_mythos_player.py`) |
+| `neural` (default) | `model_players/pimc_player.py` — the neural net with **net-rollout search** for the first tricks (`neural/pimc.py`: the net proposes, playouts by the same net over 64 sampled deals judge, 128 on CUDA), **Mythos's** exact nat-aware search from 5 cards down, Mythos's MC bidder. `NEURAL_SEARCH=0` gives the plain net (`model_players/neural_mythos_player.py`) |
 
 Only `opus`, `mythos`, and `neural` should be exposed by the app or accepted
 through `CONFIG.room.allowed_ai_strengths`.
