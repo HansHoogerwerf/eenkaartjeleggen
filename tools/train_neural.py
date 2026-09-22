@@ -122,11 +122,13 @@ def train(
     save_every_epoch: bool = False,
     min_hand: int = 0,
     soft_temp: float = 0.0,
+    split_seed: int | None = None,
 ) -> None:
     # Load data (one or more files; width decides the feature layout).
     # The train/val split happens per dataset inside load_datasets.
     paths = [data_path] if isinstance(data_path, str) else list(data_path)
-    X_tr, y_tr, X_va, y_va, V_tr, V_va = load_datasets(paths, val_split=val_split, min_hand=min_hand)
+    X_tr, y_tr, X_va, y_va, V_tr, V_va = load_datasets(paths, val_split=val_split, seed=split_seed,
+                                                       min_hand=min_hand)
     num_features = X_tr.shape[1]
     feature_version = feature_version_for_size(num_features)
     print(f"Loaded {X_tr.shape[0]} train + {X_va.shape[0]} val samples, "
@@ -151,6 +153,11 @@ def train(
     # choice, so agreement with the search's best card is the metric that
     # tells whether distillation moves the net toward the search.
     y_val_search = _search_argmax(V_va, device)
+    # Regret: search points lost by the card the net picks vs the search's best
+    # card (the top cards are often near-ties, so regret, not argmax agreement,
+    # measures what a policy loses).  Cards the search did not score count as
+    # the worst scored card.
+    V_val = torch.from_numpy(np.ascontiguousarray(V_va)).to(device)
     del X_tr, y_tr, X_va, y_va, V_tr, V_va
     y_train_search = None
     if T_train is not None:
@@ -158,6 +165,39 @@ def train(
         T_train = T_train[0]
         y_train_search = T_train.argmax(dim=-1)   # the search's best card (label on hard rows)
     has_search = bool((y_val_search >= 0).any())
+
+    def validate() -> tuple[float, float, float, float]:
+        model.eval()
+        v_loss = torch.tensor(0.0, device=device)
+        v_correct = torch.tensor(0, device=device)
+        s_correct = torch.tensor(0, device=device)
+        s_n = torch.tensor(0, device=device)
+        regret_sum = torch.tensor(0.0, device=device)
+        with torch.no_grad():
+            for start in range(0, n_val, batch_size):
+                xb = X_val[start:start + batch_size]
+                yb = y_val[start:start + batch_size]
+                sb = y_val_search[start:start + batch_size]
+                vb = V_val[start:start + batch_size]
+                mask_b = legal_mask_val[start:start + batch_size]
+                logits = model(xb)
+                v_loss += criterion(logits, yb) * xb.size(0)
+                pred = logits.masked_fill(mask_b == 0, float("-inf")).argmax(dim=-1)
+                v_correct += (pred == yb).sum()
+                scored = sb >= 0
+                s_correct += ((pred == sb) & scored).sum()
+                s_n += scored.sum()
+                if bool(scored.any()):
+                    vv = vb[scored]
+                    best = vv.nan_to_num(nan=float("-inf")).max(dim=1).values
+                    worst = vv.nan_to_num(nan=float("inf")).min(dim=1).values
+                    chosen = vv.gather(1, pred[scored][:, None]).squeeze(1)
+                    chosen = torch.where(torch.isnan(chosen), worst, chosen)
+                    regret_sum += (best - chosen).sum()
+        n_s = max(1, int(s_n))
+        return ((v_loss / n_val).item(), (v_correct / n_val).item(),
+                (s_correct / n_s).item(), (regret_sum / n_s).item())
+
     legal_mask_train = X_train[:, legal_mask_offset:legal_mask_offset + 32]
     legal_mask_val   = X_val[:,   legal_mask_offset:legal_mask_offset + 32]
 
@@ -179,7 +219,11 @@ def train(
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     criterion = nn.CrossEntropyLoss()
 
-    best_val_acc = 0.0
+    if has_search:
+        _, a0, s0, r0 = validate()
+        print(f"Epoch   0/{epochs}  val_acc={a0:.4f}  val_search_acc={s0:.4f}  val_regret={r0:.2f}")
+
+    best_val_acc = float("-inf")
     no_improve = 0
 
     for epoch in range(1, epochs + 1):
@@ -212,37 +256,17 @@ def train(
         train_acc = (train_correct / n_train).item()
 
         # Validate
-        model.eval()
-        val_loss = torch.tensor(0.0, device=device)
-        val_correct = torch.tensor(0, device=device)
-        search_correct = torch.tensor(0, device=device)
-        search_n = torch.tensor(0, device=device)
-
-        with torch.no_grad():
-            for start in range(0, n_val, batch_size):
-                xb = X_val[start:start + batch_size]
-                yb = y_val[start:start + batch_size]
-                sb = y_val_search[start:start + batch_size]
-                mask_b = legal_mask_val[start:start + batch_size]
-                logits = model(xb)
-                val_loss += criterion(logits, yb) * xb.size(0)
-                pred = logits.masked_fill(mask_b == 0, float("-inf")).argmax(dim=-1)
-                val_correct += (pred == yb).sum()
-                search_correct += ((pred == sb) & (sb >= 0)).sum()
-                search_n += (sb >= 0).sum()
-
-        val_loss = (val_loss / n_val).item()
-        val_acc = (val_correct / n_val).item()
-        search_acc = (search_correct / search_n.clamp(min=1)).item()
-        if has_search:
-            val_acc = search_acc   # model selection follows the search agreement
+        val_loss, hard_acc, search_acc, regret = validate()
+        # Model selection: lowest regret vs the search when values exist,
+        # otherwise agreement with the label.
+        val_acc = (-regret) if has_search else hard_acc
 
         lr_now = scheduler.get_last_lr()[0]
         print(
             f"Epoch {epoch:3d}/{epochs}  "
             f"train_loss={train_loss:.4f}  train_acc={train_acc:.4f}  "
-            f"val_loss={val_loss:.4f}  val_acc={(val_correct / n_val).item():.4f}  "
-            + (f"val_search_acc={search_acc:.4f}  " if has_search else "")
+            f"val_loss={val_loss:.4f}  val_acc={hard_acc:.4f}  "
+            + (f"val_search_acc={search_acc:.4f}  val_regret={regret:.2f}  " if has_search else "")
             + f"lr={lr_now:.6f}"
         )
 
@@ -312,6 +336,8 @@ def main_cli() -> None:
     parser.add_argument("--min-hand", type=int, default=0,
                         help="Train only on decisions with at least this many cards in hand "
                              "(e.g. 6 for the tricks the hybrid plays with the net).")
+    parser.add_argument("--split-seed", type=int, default=None,
+                        help="Seed of the train/val split (fixed seed = comparable runs).")
     parser.add_argument("--soft-temp", type=float, default=0.0,
                         help="Distil from the teacher's per-card search values (datasets with a "
                              "'values' array, e.g. --teacher pimc): the target is "
@@ -333,6 +359,7 @@ def main_cli() -> None:
         save_every_epoch=args.save_every_epoch,
         min_hand=args.min_hand,
         soft_temp=args.soft_temp,
+        split_seed=args.split_seed,
     )
 
 
