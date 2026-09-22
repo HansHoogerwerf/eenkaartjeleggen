@@ -23,7 +23,7 @@ by `app.py`):
 |---|---|
 | `opus` | `model_players/opus_player.py` — PIMC double-dummy card play + its own MC nat-aware bidder |
 | `mythos` | `model_players/mythos_player.py` — determinized alpha-beta card play + MC nat-aware bidder |
-| `neural` (default) | `model_players/neural_mythos_player.py` — neural-net card play for the first tricks, **Mythos's** exact nat-aware search from 5 cards down, Mythos's MC bidder |
+| `neural` (default) | `model_players/pimc_player.py` — the neural net with **net-rollout search** for the first tricks (`neural/pimc.py`: the net proposes, playouts by the same net over 64 sampled deals judge), **Mythos's** exact nat-aware search from 5 cards down, Mythos's MC bidder. `NEURAL_SEARCH=0` gives the plain net (`model_players/neural_mythos_player.py`) |
 
 Only `opus`, `mythos`, and `neural` should be exposed by the app or accepted
 through `CONFIG.room.allowed_ai_strengths`.
@@ -39,10 +39,18 @@ Important distinctions:
   bidding is a hand-written Monte-Carlo round simulation. Training a neural
   bidder is planned future work.
 - `AI_CARD_BUDGET` (env, seconds per card decision, default 1.0) bounds the
-  Opus/Mythos search; lower it on weak hardware. The `neural` opponent is not
-  search-bound. Neural card play needs PyTorch + `models/neural_best.pt`; it
-  falls back to heuristic play if unavailable. `NEURAL_MODEL_PATH` (env)
-  points the neural opponents at another checkpoint.
+  Opus/Mythos search and, as the default of `NEURAL_PIMC_BUDGET`, the
+  `neural` opponent's net-rollout search (which halves its deals to 32 at
+  most and then pauses when a decision runs over: fewer than 32 deals is
+  worse than no search). Lower it on weak hardware. Neural card play needs
+  PyTorch + `models/neural_best.pt`; it falls back to heuristic play if
+  unavailable. `NEURAL_MODEL_PATH` (env) points the neural opponents at
+  another checkpoint.
+- The search does not live in the weights: every attempt to distil it back
+  into the net failed (hard labels, early-trick-only, soft targets from the
+  search's values); the search agrees with itself on only ~67 % of decisions,
+  so its edge is decision-time averaging. See `docs/neural-v4-campaign.md`
+  before trying again.
 - Two neural feature layouts exist (`neural/features.py`): v1 = 267 inputs
   (all older checkpoints) and v2 = 300 inputs (adds trick-roem features). The
   width is read from the checkpoint, so both load. New training data and
@@ -123,9 +131,10 @@ the CUDA engine, `tools/screen_checkpoints.py` benchmarks checkpoints one at a
 time, and `tools/run_full_pipeline.py` chains the stages. PyTorch is only
 needed from the training step onwards. Benchmarks vs Mythos are
 load-sensitive: compare candidates only in back-to-back runs under equal
-load (see `docs/neural-v4-campaign.md`). `model_players/pimc_player.py`
-(net-rollout search on the GPU) is a stronger player than the lobby hybrid
-but is not deployable without a GPU.
+load; for card-play changes prefer the head-to-head protocol
+(`--candidate pimc --baseline neural_mythosbid`, or a candidate checkpoint
+via `--model` against the default net), which keeps bidder and endgame
+equal on both sides and is far less noisy (see `docs/neural-v4-campaign.md`).
 
 ## Deployment Notes
 

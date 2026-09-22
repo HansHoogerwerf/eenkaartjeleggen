@@ -5,9 +5,10 @@ Importing this module populates ``main.AI_PLAYER_FACTORIES`` so that the
 
   * ``"opus"``   -> OpusPlayer
   * ``"mythos"`` -> MythosPlayer
-  * ``"neural"`` -> NeuralMythosBidPlayer (neural card play + Mythos's bidder),
-    or PIMCNetPlayer (the same net improved by net-rollout search for the
-    early tricks, see neural/pimc.py) when NEURAL_SEARCH=1
+  * ``"neural"`` -> PIMCNetPlayer: the neural net improved by net-rollout
+    search for the early tricks (neural/pimc.py) + Mythos's endgame and
+    bidder; NEURAL_SEARCH=0 gives the plain NeuralMythosBidPlayer (the net's
+    own choice every trick, no search)
 
 The factories accept the keyword args that ``main.make_ai_player`` passes
 (name, team, seat_idx, rng_seed, signal_profile) and adapt them to each
@@ -39,7 +40,7 @@ def _make_mythos(name, team, seat_idx, rng_seed=None, signal_profile="core"):
 
 
 def _neural_search_enabled() -> bool:
-    return os.environ.get("NEURAL_SEARCH", "0").strip().lower() in ("1", "true", "yes", "on")
+    return os.environ.get("NEURAL_SEARCH", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _make_neural(name, team, seat_idx, rng_seed=None, signal_profile="core"):
