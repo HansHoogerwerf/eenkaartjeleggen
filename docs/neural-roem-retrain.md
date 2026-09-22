@@ -214,6 +214,26 @@ marginal-declaration thresholds for the hybrid only (defaults 0.62 / 3.0);
 0.70 scored +78 and 0.55 scored +54 against +175 at the default, with no
 better declare-success rate either (0.82–0.84 / 0.78–0.84 vs 0.84–0.85).
 
+## 4c. Neural v4 (22 Sept 2026): imitate Mythos, then self-improve — no new net
+
+Full log: [neural-v4-campaign.md](neural-v4-campaign.md). Gentle Mythos
+fine-tunes (3200 / 6400 rounds), an anchored variant, a 600-epoch PPO run and
+a distillation of search-improved self-play all failed to beat the current
+net in paired benchmarks; the net is unchanged. Two things came out of it:
+
+* **Net-rollout PIMC** (`neural/pimc.py`, `model_players/pimc_player.py`,
+  benchmark candidate `pimc`): the net as the rollout policy of a
+  64-deal determinized search on the CUDA engine, CUDA-graph captured
+  (~0.25 s per decision). As a *player* it beat the plain hybrid by
+  +180 / +127 / +11 in three paired 512-round runs — but it needs a GPU, so
+  it is not the lobby opponent. Recording it (`--teacher pimc`) and
+  distilling 4000 rounds into the net did not transfer the edge.
+* **Benchmark protocol:** results vs Mythos move by ±100 per game with
+  machine load (the same hybrid scored +220 quiet and −14 under 30
+  processes on one seed). Compare only back-to-back pairs under equal load or
+  one sequential tournament (`tools/screen_checkpoints.py`), never against
+  numbers from another day.
+
 ## 5. Verifying the CUDA engine
 
 `tests/test_gpu_engine_roem.py` pins the tensor implementation to the Python

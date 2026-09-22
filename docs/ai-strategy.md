@@ -401,6 +401,45 @@ Before committing a trump or high card to win a trick, the AI checks whether it 
 
 ---
 
+## Net-Rollout Search (public `neural` opponent)
+
+Since the v4 campaign (Sept 2026) the public `neural` opponent is
+`PIMCNetPlayer` (`model_players/pimc_player.py`, search in `neural/pimc.py`):
+the same net, but for every early-trick decision (6+ cards in hand, i.e. the
+tricks before Mythos's endgame search takes over) the net's choice is checked
+by a determinized search that uses the net itself as the playout policy:
+
+1. The net ranks the legal cards; the top 8 are the candidates.
+2. 64 deals (128 on CUDA) of the unseen cards are sampled with
+   `_sample_hands`, so every deal respects the void and trump-strength
+   inferences.
+3. Each candidate is played on each deal to the end of the round on the
+   batched engine (`tools/gpu_engine.py`, CUDA when available, CPU otherwise),
+   every later card of all four seats chosen greedily by the net. The engine
+   scores the round exactly (points, trick roem, nat, pit).
+4. The candidate with the best mean outcome is played, but only when it beats
+   the net's own first choice by `NEURAL_PIMC_MARGIN` (8) round points;
+   otherwise the net's choice stands.
+
+Head-to-head against the plain net (same bidder and endgame on both sides,
+512 rounds per seed) this is worth **+92 / +88 / +167 / +140 points per game**
+on four seeds at 64 deals, and +118 / +137 at 128 deals on the GPU. The edge
+scales with the deal count — 32 deals give about +25 and 16 deals are *worse*
+than no search — so the player never
+searches below 32 deals: under `NEURAL_PIMC_BUDGET` (default `AI_CARD_BUDGET`,
+1 s) it halves its deals when a decision runs over budget, grows them back when
+decisions are fast, and on a machine that cannot afford 32 deals within twice
+the budget it pauses the search and plays the net directly for a while. On a
+CPU a 64-deal decision costs about one second with a few threads; the cost is
+dominated by the engine's per-trick step, not by the net.
+
+The search's choices could not be distilled back into the weights (hard
+labels, early-trick-only labels and soft targets from the search's own values
+all leave held-out agreement with the search at 45–50 %); two independent
+evaluations of the same position agree only 67 % of the time, so the gain is
+decision-time averaging over sampled deals rather than knowledge the net
+lacks. `NEURAL_SEARCH=0` restores the plain net.
+
 ## Trick Roem Awareness
 
 Roem is awarded per trick to the team that wins it, for the four cards on the
