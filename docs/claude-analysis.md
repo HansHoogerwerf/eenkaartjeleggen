@@ -252,9 +252,13 @@ klaverjas/
 
 - Seats are indexed `0..3`.
 - Socket IDs are transient and tracked in `sid_to_seat`.
-- Reconnect identity is still based on `(room code, player name)`.
-- Active connected seats reject duplicate reconnect attempts from another socket.
-- Disconnected seats can be reclaimed by matching name, which is convenient but not cryptographically secure.
+- Reconnect identity is a server-issued per-seat token (`Room.seats[i]["token"]`), sent privately in `room_created`, `room_joined`, `game_starting` and `game_state_snapshot`, stored client-side in `localStorage`.
+- A matching token takes the seat over even while an old socket still looks connected: the old socket receives `session_superseded` and is disconnected by the server. This is what makes a phone coming back from the background reconnect immediately instead of waiting for the ping timeout.
+- The player name is a fallback (new device, cleared storage) that may only reclaim a seat that is currently disconnected; names are unique per room.
+- A `rejoin_game` from the socket that already holds the seat is a silent resync (the client sends one when a tab comes back to the foreground).
+- `Room.phase` (`lobby`, `bidding`, `playing`, `between_rounds`, `game_over`) plus the offered suit, trick leader, last round result, game result and the other seats' reconnect deadlines are in the snapshot, so a reload lands on the right screen in every phase.
+- Dropped seats keep a deadline in `Room.reconnect_deadline`; mid-game the host can extend it (`extend_wait`) or end the game. In the lobby every seat (host or guest) gets `LOBBY_RECONNECT_TIMEOUT_SECONDS` before it is freed.
+- A host who drops mid-game lends the role to a connected player (so the paused overlay's actions and the next-round button stay reachable) and gets it back on reconnecting in time; both hand-overs are broadcast as `host_migrated`, and every host-only control on the client follows `isHost` through one `applyHostControls()` helper.
 
 ---
 
@@ -287,7 +291,9 @@ RoomConfig
   score_limit range                50..5000, default 500
   default_team_names               Team A, Team N
   max_team_name_len                16
-  seat_reconnect_timeout_seconds   env SEAT_RECONNECT_TIMEOUT_SECONDS, default 60
+  seat_reconnect_timeout_seconds   env SEAT_RECONNECT_TIMEOUT_SECONDS, default 90
+  lobby_reconnect_timeout_seconds  env LOBBY_RECONNECT_TIMEOUT_SECONDS, default 30
+  reconnect_extend_seconds         env RECONNECT_EXTEND_SECONDS, default 60
   lobby_ttl_seconds                env ROOM_LOBBY_TTL_SECONDS, default 3600
   started_ttl_seconds              env ROOM_STARTED_TTL_SECONDS, default 21600
 ```
@@ -299,7 +305,9 @@ Important environment variables:
 | `SECRET_KEY` | Flask session secret; should be set in production |
 | `CORS_ORIGINS` | Socket.IO CORS allow-list |
 | `FLASK_DEBUG` | Enables Flask debug mode when `1` |
-| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Per-seat reconnect grace period |
+| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Mid-game reconnect grace period (game aborts when it expires; host can extend) |
+| `LOBBY_RECONNECT_TIMEOUT_SECONDS` | Waiting-room grace period before a dropped seat is freed |
+| `RECONNECT_EXTEND_SECONDS` | Seconds added per host "Wait longer" request |
 | `ROOM_LOBBY_TTL_SECONDS` | Expiry for inactive lobby rooms |
 | `ROOM_STARTED_TTL_SECONDS` | Expiry for inactive started rooms |
 | `ACME_EMAIL` | Traefik/Let's Encrypt contact email |
@@ -411,7 +419,7 @@ Internal legacy profile keys such as `expert_v2`, `expert_v2_base`, and `neural`
 
 ### Session Persistence
 
-The browser stores `{code, name}` in localStorage under `klaverjas_session`. On reconnect/page reload, the client emits `rejoin_game`.
+The browser stores `{code, name, seat, token}` in localStorage under `klaverjas_session`. On every socket connect (page reload, network recovery) the client emits `rejoin_game` with the token; it also resyncs when a tab returns to the foreground after a few seconds hidden, and recycles a socket that does not answer a rejoin within a few seconds. A `seat_already_connected` answer (no token, old socket not yet reaped) is retried with back-off instead of dropping the session; any other failure brings the lobby form to the front with the error. The session is cleared only on an explicit leave, `game_left`, `room_expired` or a stale-session error, not at game over.
 
 ### PWA Behavior
 
@@ -581,7 +589,7 @@ The AI quality gate command attempted in the sandbox failed on Windows multiproc
 
 | Issue | Current Risk | Suggested Fix |
 |---|---|---|
-| Name-based reconnect for disconnected seats | Anyone with room code and matching name can reclaim a disconnected seat | Add server-issued per-seat reconnect tokens stored client-side |
+| Name-based reconnect fallback | Without a token, anyone with room code and matching name can reclaim a *disconnected* seat | Rate-limit `rejoin_game`, or require the token once all clients carry one |
 | Lobby player-name XSS | Seat picker and lobby seat list interpolate `seat.name` through `innerHTML` without escaping | Use DOM text nodes or `escapeHtml()` for lobby seat names |
 | Partial Socket.IO payload validation | Some handlers still use raw direct indexing such as `data["card"]` | Validate `.get()` payloads and emit structured errors |
 | Default `SECRET_KEY` | Static fallback if env var is missing | Fail fast in non-debug production when default is used |
@@ -602,7 +610,7 @@ The AI quality gate command attempted in the sandbox failed on Windows multiproc
 |---|---|
 | Re-run and recalibrate the AI quality gate | `expert` now means neural-backed profile and `advanced` means lookahead profile |
 | Fix lobby player-name escaping | Prevents a straightforward XSS path in lobby views |
-| Add reconnect tokens | Name-only reconnect remains the most important identity weakness |
+| Replace a long-gone player with an AI | One player dropping past the grace period still ends the game for four |
 | Harden Socket.IO payload validation | Prevent malformed clients from raising handler exceptions |
 
 ### Medium Priority

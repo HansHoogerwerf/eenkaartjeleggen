@@ -153,18 +153,31 @@ function cancelSeatPicker() {
     document.getElementById("lobby-name-section").style.display = "block";
 }
 
-function showAutoReconnecting() {
-    document.getElementById("lobby-reconnecting").style.display = "block";
+function showAutoReconnecting(message) {
+    const box = document.getElementById("lobby-reconnecting");
+    const text = box.querySelector("p");
+    if (text) text.textContent = message || t("lobby.reconnecting");
+    box.style.display = "block";
     document.getElementById("lobby-name-section").style.display = "none";
     document.getElementById("lobby-actions").style.display = "none";
+}
+
+/* Progress text while a rejoin is being retried: in the lobby spinner box
+   when the lobby is showing, otherwise on the paused overlay. */
+function setReconnectingMessage(text) {
+    if (document.getElementById("lobby-overlay").classList.contains("active")) {
+        showAutoReconnecting(text);
+        return;
+    }
+    const msgEl = document.getElementById("paused-msg");
+    if (msgEl) msgEl.textContent = text;
+    document.getElementById("paused-overlay").classList.add("active");
 }
 
 function cancelAutoReconnect() {
     clearSession();
     ConnectionFSM.onLeave();
-    document.getElementById("lobby-reconnecting").style.display = "none";
-    document.getElementById("lobby-name-section").style.display = "block";
-    document.getElementById("lobby-actions").style.display = "block";
+    showLobbyForm();
 }
 
 let selectedMode = "score_limit";
@@ -373,8 +386,9 @@ socket.on("room_created", data => {
     const name = document.getElementById("lobby-name").value.trim()
         || (loadSession() || {}).name
         || t("lobby.name_placeholder");
-    saveSession(data.code, name);
+    saveSession(data.code, name, {token: data.token, seat: data.seat});
     ConnectionFSM.onLobbyJoined();
+    showLobbyOverlay();
     showWaitingRoom(data.lobby);
 });
 
@@ -386,35 +400,48 @@ socket.on("room_joined", data => {
     const name = document.getElementById("lobby-name").value.trim()
         || (loadSession() || {}).name
         || t("lobby.name_placeholder");
-    saveSession(data.code, name);
+    saveSession(data.code, name, {token: data.token, seat: data.seat});
+    manualJoinIntent = null;
     ConnectionFSM.onLobbyJoined();
+    // Also the answer to a rejoin after the game was aborted while we were
+    // away: make sure the lobby is in front of the (stale) table.
+    showLobbyOverlay();
     showWaitingRoom(data.lobby);
 });
 
 socket.on("rejoin_error", data => {
-    // Server rejected our rejoin attempt. Two cases:
-    //  1. Manual entry fallback (peek_room → game_in_progress → rejoin_game):
-    //     just show the error and let the user correct their input. Don't
-    //     clear any saved session — it may still be valid for another room.
-    //  2. Auto-reconnect from saved session: the saved session is bad, so
-    //     clear it and return to the lobby form pre-filled with what we had.
-    const msg = data.key ? t(data.key) : (data.msg || "Error");
-    if (manualJoinIntent) {
-        manualJoinIntent = null;
-        ConnectionFSM.onIdle();
-        showLobbyError(msg);
+    // Server rejected our rejoin attempt.
+    const key = data.key;
+    const msg = key ? t(key) : (data.msg || "Error");
+
+    if (key === "error.seat_already_connected" && ConnectionFSM.retryRejoinLater()) {
+        // The seat's previous socket has not been reaped by the server yet
+        // (it will be within the ping timeout): keep the session and retry.
+        setReconnectingMessage(t("error.reconnect_retry", {n: ConnectionFSM._rejoinAttempt}));
         return;
     }
+
     const session = loadSession();
-    cancelAutoReconnect(); // clears session and shows the lobby form
-    if (session) {
-        const nameEl = document.getElementById("lobby-name");
-        const codeEl = document.getElementById("join-code");
-        if (nameEl && !nameEl.value) nameEl.value = session.name;
-        if (codeEl && !codeEl.value) codeEl.value = session.code;
+    if (manualJoinIntent) {
+        // Manual entry (peek_room → game_in_progress → rejoin_game): show
+        // the error and let the user correct their input. Keep any saved
+        // session — it may still be valid for another room.
+        manualJoinIntent = null;
+        ConnectionFSM.onIdle();
+        showLobbyForm();
+        showLobbyError(msg, {sticky: true});
+        return;
     }
+
+    // Auto-reconnect from the saved session failed. A seat that is merely
+    // held by another connection may free up later, so keep that session;
+    // any other answer means the session is stale. Either way the lobby
+    // form comes to the front (never leave a dead table on screen).
+    if (key !== "error.seat_already_connected") clearSession();
     ConnectionFSM.onIdle();
-    showLobbyError(msg);
+    showLobbyForm();
+    prefillLobbyForm(session);
+    showLobbyError(msg, {sticky: true});
 });
 
 socket.on("room_peeked", data => {
@@ -428,20 +455,19 @@ socket.on("join_error", data => {
     // browser data, fresh device, etc.) to rejoin a started game.
     if (data.key === "error.game_in_progress" && manualJoinIntent) {
         const intent = manualJoinIntent;
-        ConnectionFSM.set(ConnState.RECONNECTING);
-        socket.emit("rejoin_game", {code: intent.code, name: intent.name});
+        // A stored token for this very room lets a still-connected seat be
+        // taken over; without one only a disconnected seat can be reclaimed.
+        const session = loadSession();
+        const payload = {code: intent.code, name: intent.name};
+        if (session && session.code === intent.code && session.token) payload.token = session.token;
+        ConnectionFSM.rejoinWith(payload);
         return;
     }
     if (document.getElementById("lobby-reconnecting").style.display !== "none") {
         // Auto-reconnect failed — pre-fill form so user can try manually
         const session = loadSession();
-        if (session) {
-            const nameEl = document.getElementById("lobby-name");
-            const codeEl = document.getElementById("join-code");
-            if (nameEl && !nameEl.value) nameEl.value = session.name;
-            if (codeEl && !codeEl.value) codeEl.value = session.code;
-        }
         cancelAutoReconnect(); // also clears session
+        prefillLobbyForm(session);
     }
     manualJoinIntent = null;
     ConnectionFSM.onIdle();
@@ -452,17 +478,9 @@ socket.on("join_error", data => {
 socket.on("lobby_update", data => {
     // Sync host status from authoritative server data
     if (typeof data.host_seat === "number") {
-        const wasHost = isHost;
         isHost = (data.host_seat === mySeat);
         isCreator = isHost;
-        if (!wasHost && isHost) {
-            // Just became host — make host-only buttons visible if we're in-game
-            const inGame = !document.getElementById("lobby-overlay").classList.contains("active");
-            if (inGame) {
-                document.getElementById("gameover-newgame-btn").style.display = "inline-block";
-                document.getElementById("gameover-banner-newgame-btn").style.display = "inline-block";
-            }
-        }
+        applyHostControls();
     }
     if (document.getElementById("lobby-waiting").style.display !== "none") {
         updateLobbySeats(data);
@@ -473,12 +491,10 @@ socket.on("host_migrated", data => {
     if (typeof data.seat === "number") {
         isHost = (data.seat === mySeat);
         isCreator = isHost;
-        const inGame = !document.getElementById("lobby-overlay").classList.contains("active");
-        if (inGame) {
-            const display = isHost ? "inline-block" : "none";
-            document.getElementById("gameover-newgame-btn").style.display = display;
-            document.getElementById("gameover-banner-newgame-btn").style.display = display;
-        }
+        // Every host-only control follows the role: game-over buttons, the
+        // next-round button (a migration between rounds used to strand the
+        // game) and the paused overlay's actions.
+        applyHostControls();
         if (data.name) {
             appendLog(t("log.host_migrated", {name: data.name}), "");
         }
@@ -489,19 +505,22 @@ socket.on("game_starting", data => {
     mySeat = data.seat;
     playerNames = data.player_names;
     if (data.team_names) teamNames = data.team_names;
+    const session = loadSession();
+    if (session && data.token) {
+        saveSession(roomCode || session.code, session.name, {token: data.token, seat: data.seat});
+    }
 
     ConnectionFSM.onGameJoined();
 
     // Hide lobby, show game
     document.getElementById("lobby-overlay").classList.remove("active");
+    hideGameOverlays();
     updateSeatLabels();
     updateScores([0, 0]);
 
-    // Show gameover New Game button only for host; Leave/Close button for everyone
-    const hostDisplay = isHost ? "inline-block" : "none";
-    document.getElementById("gameover-newgame-btn").style.display = hostDisplay;
+    // Host-only buttons for the host; Leave/Close button for everyone
+    applyHostControls();
     document.getElementById("gameover-close-btn").style.display = "inline-block";
-    document.getElementById("gameover-banner-newgame-btn").style.display = hostDisplay;
     document.getElementById("leave-game-btn").style.display = "inline-block";
 });
 
@@ -614,10 +633,9 @@ socket.on("round_done", data => {
 socket.on("roem", () => {});
 socket.on("nat", () => {});
 
-socket.on("waiting_for_host", () => {
+function showNextRoundBanner() {
     const banner = document.getElementById("nextround-banner");
-    document.getElementById("nextround-btn").style.display = isCreator ? "inline-block" : "none";
-    document.getElementById("nextround-wait").style.display = isCreator ? "none" : "inline";
+    applyHostControls();
 
     // Show round outcome
     const msg = document.getElementById("nextround-msg");
@@ -626,19 +644,29 @@ socket.on("waiting_for_host", () => {
     }
 
     banner.classList.add("active");
+}
+
+socket.on("waiting_for_host", () => {
+    showNextRoundBanner();
 });
 
-socket.on("game_over", data => {
-    clearSession();
-    const s = data.scores;
-    const winner = teamNames[data.winner];
+function showGameOver(result) {
+    const s = result.scores;
+    const winner = teamNames[result.winner];
     document.getElementById("gameover-winner").textContent =
         t("modal.game_over_winner", {winner});
     document.getElementById("gameover-scores").textContent =
         t("modal.game_over_scores", {team0: teamNames[0], s0: s[0], team1: teamNames[1], s1: s[1]});
     document.getElementById("gameover-banner-msg").textContent =
         t("modal.game_over_winner", {winner});
+    applyHostControls();
     document.getElementById("gameover-overlay").classList.add("active");
+}
+
+socket.on("game_over", data => {
+    // The session is kept on purpose: the host can start a new game in this
+    // room, and a player who reloads must be able to come back for it.
+    showGameOver(data);
 });
 
 function dismissGameover() {
@@ -749,42 +777,87 @@ socket.on("request_forced_suit", () => {
 
 /* ─── Disconnect / Reconnect ──────────────────────────────────────────── */
 
-/* Another player dropped — show paused overlay with their name and a
-   countdown showing how long the host has before the seat auto-closes. */
-let pausedCountdownTimer = null;
-let pausedSeatIdx = null;
-let pausedSeatName = null;
+/* Seats currently waiting to reconnect (seat → {name, deadline}). The paused
+   overlay shows the nearest deadline; the host can extend it or end the
+   game. Rebuilt from the snapshot on every (re)connect. */
+const pausedSeats = new Map();
+let pausedTimer = null;
 
-function startPausedCountdown(seat, name, seconds) {
-    stopPausedCountdown();
-    pausedSeatIdx = seat;
-    pausedSeatName = name;
-    let remaining = seconds;
-    const update = () => {
-        const msg = document.getElementById("paused-msg");
-        if (!msg) return;
-        msg.textContent = t("error.waiting_reconnect_countdown", {name, seconds: remaining});
-    };
-    update();
-    pausedCountdownTimer = setInterval(() => {
-        remaining -= 1;
-        if (remaining <= 0) {
-            stopPausedCountdown();
-            return;
-        }
-        update();
-    }, 1000);
+function stopPausedTimer() {
+    if (pausedTimer) {
+        clearInterval(pausedTimer);
+        pausedTimer = null;
+    }
 }
 
-function stopPausedCountdown() {
-    if (pausedCountdownTimer) {
-        clearInterval(pausedCountdownTimer);
-        pausedCountdownTimer = null;
+function seatDeadline(secondsRemaining) {
+    // null = waiting without a countdown (nobody was connected to wait)
+    if (typeof secondsRemaining !== "number") return null;
+    return Date.now() + Math.max(0, secondsRemaining) * 1000;
+}
+
+function setSeatWaiting(seat, name, secondsRemaining) {
+    pausedSeats.set(seat, {name, deadline: seatDeadline(secondsRemaining)});
+    renderPausedOverlay();
+}
+
+function clearSeatWaiting(seat) {
+    pausedSeats.delete(seat);
+    renderPausedOverlay();
+}
+
+function clearAllSeatsWaiting() {
+    pausedSeats.clear();
+    stopPausedTimer();
+    const overlay = document.getElementById("paused-overlay");
+    if (overlay && !ConnectionFSM.is(ConnState.RECONNECTING)) overlay.classList.remove("active");
+}
+
+function renderPausedOverlay() {
+    const overlay = document.getElementById("paused-overlay");
+    const msg = document.getElementById("paused-msg");
+    if (!overlay || !msg) return;
+    if (pausedSeats.size === 0) {
+        clearAllSeatsWaiting();
+        return;
     }
-    pausedSeatIdx = null;
-    pausedSeatName = null;
+    // Our own "reconnecting" message has priority while we are the one
+    // without a connection; the snapshot rebuilds this afterwards.
+    if (ConnectionFSM.is(ConnState.RECONNECTING)) return;
+    const update = () => {
+        let soonest = null;
+        for (const info of pausedSeats.values()) {
+            if (info.deadline === null) continue;
+            if (!soonest || info.deadline < soonest.deadline) soonest = info;
+        }
+        const name = [...pausedSeats.values()].map(i => i.name).join(", ");
+        if (!soonest) {
+            msg.textContent = t("error.waiting_reconnect", {name});
+            return;
+        }
+        const seconds = Math.max(0, Math.ceil((soonest.deadline - Date.now()) / 1000));
+        msg.textContent = t("error.waiting_reconnect_countdown", {name, seconds});
+    };
+    update();
+    stopPausedTimer();
+    pausedTimer = setInterval(update, 1000);
+    applyHostControls();
+    overlay.classList.add("active");
+}
+
+/* Host-only controls live in several places (game-over overlay and banner,
+   next-round banner, paused overlay). Keep them all in sync with isHost so
+   a host migration or a reconnect never leaves a needed button missing. */
+function applyHostControls() {
+    const hostDisplay = isHost ? "inline-block" : "none";
+    for (const id of ["gameover-newgame-btn", "gameover-banner-newgame-btn", "nextround-btn"]) {
+        const el = document.getElementById(id);
+        if (el) el.style.display = hostDisplay;
+    }
+    const nextWait = document.getElementById("nextround-wait");
+    if (nextWait) nextWait.style.display = isHost ? "none" : "inline";
     const hostActions = document.getElementById("paused-host-actions");
-    if (hostActions) hostActions.style.display = "none";
+    if (hostActions) hostActions.style.display = isHost ? "block" : "none";
 }
 
 function hostAbortGame() {
@@ -792,34 +865,124 @@ function hostAbortGame() {
     socket.emit("host_abort_game");
 }
 
+function extendWait() {
+    if (!isHost) return;
+    socket.emit("extend_wait");
+}
+
+/* Hide every in-game overlay and banner (before showing the lobby, or
+   before rebuilding the screen from a snapshot). */
+function hideGameOverlays() {
+    for (const id of ["paused-overlay", "bid-overlay", "gameover-overlay", "leave-overlay",
+                      "superseded-overlay", "hands-overlay", "history-overlay",
+                      "nextround-banner", "gameover-banner"]) {
+        const el = document.getElementById(id);
+        if (el) el.classList.remove("active");
+    }
+}
+
+/* Bring the lobby overlay to the front, whatever the table behind it shows. */
+function showLobbyOverlay() {
+    pausedSeats.clear();
+    stopPausedTimer();
+    hideGameOverlays();
+    document.getElementById("leave-game-btn").style.display = "none";
+    document.getElementById("lobby-overlay").classList.add("active");
+}
+
+/* The plain name + code form: no room, no session-driven state. */
+function showLobbyForm() {
+    showLobbyOverlay();
+    document.getElementById("lobby-reconnecting").style.display = "none";
+    document.getElementById("lobby-seat-picker").style.display = "none";
+    document.getElementById("lobby-waiting").style.display = "none";
+    document.getElementById("lobby-name-section").style.display = "block";
+    document.getElementById("lobby-actions").style.display = "block";
+    roomCode = null;
+    isHost = false;
+    isCreator = false;
+}
+
+function prefillLobbyForm(session) {
+    if (!session) return;
+    const nameEl = document.getElementById("lobby-name");
+    const codeEl = document.getElementById("join-code");
+    if (nameEl && !nameEl.value && session.name) nameEl.value = session.name;
+    if (codeEl && !codeEl.value && session.code) codeEl.value = session.code;
+}
+
 socket.on("seat_disconnected", data => {
-    const msg = document.getElementById("paused-msg");
-    if (msg) {
-        msg.textContent = t("error.waiting_reconnect", {name: data.name});
-    }
-    document.getElementById("paused-overlay").classList.add("active");
-    pausedSeatIdx = data.seat;
-    if (typeof data.reconnect_timeout_seconds === "number") {
-        startPausedCountdown(data.seat, data.name, data.reconnect_timeout_seconds);
-    }
-    // Show "End game" button only to the host
-    const hostActions = document.getElementById("paused-host-actions");
-    if (hostActions) hostActions.style.display = isHost ? "block" : "none";
+    const secs = typeof data.seconds_remaining === "number"
+        ? data.seconds_remaining
+        : data.reconnect_timeout_seconds;
+    setSeatWaiting(data.seat, data.name, secs);
+});
+
+socket.on("seat_wait_extended", data => {
+    setSeatWaiting(data.seat, data.name, data.seconds_remaining);
 });
 
 socket.on("seat_reconnected", data => {
-    stopPausedCountdown();
-    document.getElementById("paused-overlay").classList.remove("active");
+    clearSeatWaiting(data.seat);
     appendLog(t("log.reconnected", {name: data.name}), "winner");
+});
+
+/* Another tab or device presented our seat token. Stay dormant so the two
+   do not fight over the seat, and offer to take it back from here. */
+socket.on("session_superseded", () => {
+    ConnectionFSM.onSuperseded();
+    clearAllSeatsWaiting();
+    hideGameOverlays();
+    document.getElementById("superseded-overlay").classList.add("active");
+});
+
+function takeOverSeat() {
+    document.getElementById("superseded-overlay").classList.remove("active");
+    ConnectionFSM.onTakeOver();
+}
+
+function dismissSuperseded() {
+    document.getElementById("superseded-overlay").classList.remove("active");
+    showLobbyForm();
+    // The stored session now belongs to the tab that took over, so it is
+    // left alone. Reconnect the socket so this tab can still create or
+    // join another room.
+    if (!socket.connected) socket.connect();
+}
+
+socket.on("room_expired", data => {
+    const session = loadSession();
+    const code = data && data.code;
+    if (!code) return;
+    if (code !== roomCode && !(session && session.code === code)) return;
+    clearSession();
+    ConnectionFSM.onIdle();
+    showLobbyForm();
+    showLobbyError(t("error.room_expired"), {sticky: true});
 });
 
 /* ─── Full game-state snapshot (the reconnect payload) ──────────────────
    Single-source-of-truth restore. The server sends this when the player
-   rejoins via rejoin_game. We wipe the relevant UI bits and rebuild
-   everything from the snapshot — including any in-flight input request,
-   so a stuck game (waiting on this player to bid/play) immediately
-   re-displays the correct prompt.
+   rejoins via rejoin_game (or asks for a resync). We wipe the relevant UI
+   bits and rebuild everything from the snapshot: the phase decides which
+   screen comes back (bidding, table, next-round banner, game over), any
+   in-flight input request re-opens its prompt so a stuck game (waiting on
+   this player) immediately shows the right thing, and other seats that are
+   waiting to reconnect get their countdown back.
 */
+function setTrumpIndicator(suit) {
+    const indicator = document.getElementById("trump-card-indicator");
+    const card = document.getElementById("trump-card");
+    if (!indicator || !card) return;
+    if (!suit) {
+        indicator.classList.remove("active");
+        return;
+    }
+    card.className = isRed(suit) ? "card red" : "card";
+    card.innerHTML = `<span>${suit}</span><span>${suit}</span>`;
+    indicator.classList.add("active");
+}
+
 socket.on("game_state_snapshot", data => {
     manualJoinIntent = null;
     roomCode = data.code;
@@ -831,39 +994,36 @@ socket.on("game_state_snapshot", data => {
     }
     if (data.team_names) teamNames = data.team_names;
 
-    // Persist session so subsequent reloads/disconnects auto-rejoin
+    // Persist session (with the seat token) so subsequent reloads and
+    // disconnects auto-rejoin
     const sessionName = (playerNames && playerNames[mySeat])
         || (loadSession() || {}).name
         || document.getElementById("lobby-name").value.trim();
-    if (sessionName) saveSession(data.code, sessionName);
+    if (sessionName) saveSession(data.code, sessionName, {token: data.token, seat: data.seat});
 
     ConnectionFSM.onGameJoined();
-    stopPausedCountdown();
 
-    // Hide lobby + paused overlays
+    // Hide the lobby and every overlay; the phase below re-opens what applies
     document.getElementById("lobby-overlay").classList.remove("active");
-    document.getElementById("paused-overlay").classList.remove("active");
+    hideGameOverlays();
+    pausedSeats.clear();
+    stopPausedTimer();
 
-    // Reset visible game state before restoring
+    // Reset visible game state before restoring. The user's hand order is
+    // kept: renderMyHand drops cards no longer held and appends new ones.
     clearTrickArea();
     clearBidBadges();
     clearDeclaringHighlight();
     hideTurnArrow();
     currentLegal = [];
     currentTrump = null;
-    userHandOrder = [];
     trickPlayCount = 0;
-    const bidOverlay = document.getElementById("bid-overlay");
-    if (bidOverlay) bidOverlay.classList.remove("active");
-    const trumpInd = document.getElementById("trump-card-indicator");
-    if (trumpInd) trumpInd.classList.remove("active");
+    setTrumpIndicator(null);
 
     // Action buttons
     document.getElementById("leave-game-btn").style.display = "inline-block";
-    const hostDisplay = isHost ? "inline-block" : "none";
-    document.getElementById("gameover-newgame-btn").style.display = hostDisplay;
     document.getElementById("gameover-close-btn").style.display = "inline-block";
-    document.getElementById("gameover-banner-newgame-btn").style.display = hostDisplay;
+    applyHostControls();
 
     updateSeatLabels();
     updateScores(data.scores || [0, 0]);
@@ -878,32 +1038,55 @@ socket.on("game_state_snapshot", data => {
         }
     }
 
-    // Restore trump indicator and declaring highlight
+    const phase = data.phase || "playing";
+
+    // Trump (or, during bidding, the suit on offer) and declaring highlight
     if (data.trump) {
         currentTrump = data.trump;
         if (data.declaring_player_idx !== null && data.declaring_player_idx !== undefined) {
             showDeclaringHighlight(data.declaring_player_idx, data.trump);
         }
-        const indicator = document.getElementById("trump-card-indicator");
-        const card = document.getElementById("trump-card");
-        if (indicator && card) {
-            card.className = isRed(data.trump) ? "card red" : "card";
-            card.innerHTML = `<span>${data.trump}</span><span>${data.trump}</span>`;
-            indicator.classList.add("active");
-        }
+        setTrumpIndicator(data.trump);
+    } else if (phase === "bidding" && data.offered_suit) {
+        setTrumpIndicator(data.offered_suit);
     }
 
     // Restore hand and other-player card counts
     if (data.hand) renderMyHand(data.hand, []);
     if (data.card_counts) renderOtherCards(data.card_counts);
 
-    // Restore in-progress trick
+    // Bidding: replay the pass/declare badges of the current offer
+    if (phase === "bidding" && Array.isArray(data.bid_history)) {
+        for (const entry of data.bid_history) {
+            if (entry.kind === "offered") {
+                clearBidBadges();
+            } else if (entry.kind === "bid") {
+                showBidBadge(entry.player_idx, entry.trump !== null && entry.trump !== undefined);
+            }
+        }
+    }
+
+    // Restore in-progress trick and whose turn it is
     if (data.trick_cards) {
         const entries = Object.entries(data.trick_cards);
         trickPlayCount = entries.length;
         for (const [pidxStr, c] of entries) {
             showCardInTrick(parseInt(pidxStr), c);
         }
+    }
+    if (phase === "playing" && typeof data.current_turn === "number") {
+        showTurnArrow(data.current_turn);
+    }
+
+    // Between rounds: the next-round banner (with the button for the host)
+    if (phase === "between_rounds") {
+        if (data.last_round_result) lastRoundResult = data.last_round_result;
+        showNextRoundBanner();
+    }
+
+    // Game over: the result overlay (with "New game" for the host)
+    if (phase === "game_over" && data.game_result) {
+        showGameOver(data.game_result);
     }
 
     // Restore any pending input request — this is the "stuck game" fix.
@@ -915,11 +1098,17 @@ socket.on("game_state_snapshot", data => {
             currentLegal = req.legal || [];
             if (data.hand) renderMyHand(data.hand, currentLegal);
         } else if (req.type === "bid") {
-            displayBidOverlay(req.suit, req.forced, null);
+            displayBidOverlay(req.suit, req.forced, req.leader_name || null);
         } else if (req.type === "forced_suit") {
             displayForcedSuitOverlay();
         }
     }
+
+    // Other seats that are waiting to reconnect: show their countdown
+    for (const [seatStr, info] of Object.entries(data.disconnected_seats || {})) {
+        pausedSeats.set(parseInt(seatStr), {name: info.name, deadline: seatDeadline(info.seconds_remaining)});
+    }
+    renderPausedOverlay();
 });
 
 /* ─── Hands viewer ────────────────────────────────────────────────────── */
@@ -1079,38 +1268,24 @@ function confirmLeave() {
 
 socket.on("game_aborted", data => {
     // Game was interrupted (e.g. player disconnect timeout) — return to lobby
-    stopPausedCountdown();
-    document.getElementById("leave-game-btn").style.display = "none";
-    document.getElementById("nextround-banner").classList.remove("active");
-    document.getElementById("gameover-banner").classList.remove("active");
-    document.getElementById("paused-overlay").classList.remove("active");
+    showLobbyOverlay();
+    document.getElementById("lobby-reconnecting").style.display = "none";
     document.getElementById("lobby-name-section").style.display = "none";
     document.getElementById("lobby-actions").style.display = "none";
     document.getElementById("lobby-waiting").style.display = "block";
-    document.getElementById("lobby-overlay").classList.add("active");
     ConnectionFSM.set(ConnState.LOBBY);
     const msg = data.key ? t(data.key) : "The game was aborted.";
     showLobbyError(msg);
 });
 
 socket.on("game_left", data => {
-    // Return everyone to the lobby
-    stopPausedCountdown();
+    // Return everyone to the lobby form
     clearSession();
     history.replaceState(null, "", window.location.pathname);
-    document.getElementById("leave-game-btn").style.display = "none";
-    document.getElementById("nextround-banner").classList.remove("active");
     dismissGameover();
-    document.getElementById("paused-overlay").classList.remove("active");
-    document.getElementById("lobby-waiting").style.display = "none";
-    document.getElementById("lobby-name-section").style.display = "block";
-    document.getElementById("lobby-actions").style.display = "block";
-    document.getElementById("lobby-overlay").classList.add("active");
+    showLobbyForm();
     ConnectionFSM.onLeave();
     showLobbyError(t("msg.game_left", {name: data.name}));
-    roomCode = null;
-    isHost = false;
-    isCreator = false;
 });
 
 /* ─── Chat ────────────────────────────────────────────────────────────── */
