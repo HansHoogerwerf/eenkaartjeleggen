@@ -6,15 +6,35 @@ by the app layer.
 """
 
 import threading
+import time
 
 import gevent
 
 from config import CONFIG
 from main import GameInterrupt, HumanPlayer, KlaverjasGame, SUIT_NAMES
-from server.room_state import Room, rooms
+from server.room_state import (
+    PHASE_BETWEEN_ROUNDS,
+    PHASE_BIDDING,
+    PHASE_GAME_OVER,
+    PHASE_LOBBY,
+    PHASE_PLAYING,
+    Room,
+    rooms,
+)
 
 
 # ─── Snapshot building ───────────────────────────────────────────────────
+
+
+def _current_turn(room: Room) -> int | None:
+    """Seat whose card is awaited in the current trick, or None when the
+    trick is complete (waiting for trick_cleared) or no trick is running."""
+    if room.phase != PHASE_PLAYING or room.cur_trick_leader is None:
+        return None
+    played = len(room.cur_trick_cards)
+    if played >= 4:
+        return None
+    return (room.cur_trick_leader + played) % 4
 
 
 def build_game_state_snapshot(room: Room, seat: int) -> dict:
@@ -23,27 +43,36 @@ def build_game_state_snapshot(room: Room, seat: int) -> dict:
     This is the single authoritative source for "what the player needs to
     rebuild their UI from scratch". The client's `game_state_snapshot`
     handler pulls everything it needs from this dict and does not rely on
-    any follow-up events.
+    any follow-up events. `phase` tells the client which screen to rebuild:
+    the bid dialog, the table, the next-round banner or the game-over overlay.
     """
     snapshot = {
         "seat": seat,
         "code": room.code,
+        "token": room.seat_token(seat),
         "is_host": room.host_seat == seat,
         "host_seat": room.host_seat,
         "player_names": room.player_names(),
         "team_names": list(room.team_names),
+        "phase": room.phase,
         "scores": list(room.game.scores) if room.game else [0, 0],
         "cur_tricks": list(room.cur_tricks),
         "cur_roem": list(room.cur_roem),
         "trump": room.cur_trump,
+        "offered_suit": room.cur_offered_suit,
         "declaring_player": room.cur_declaring_player,
         "declaring_player_idx": room.cur_declaring_player_idx,
         "declaring_team": room.cur_declaring_team,
         "trick_cards": {str(k): v for k, v in room.cur_trick_cards.items()},
+        "trick_leader": room.cur_trick_leader,
+        "current_turn": _current_turn(room),
         "trick_history": list(room.cur_round_tricks),
         "bid_history": list(room.cur_bid_history),
         "log_messages": list(room.cur_log_messages),
+        "last_round_result": dict(room.last_round_result) if room.last_round_result else None,
+        "game_result": dict(room.game_result) if room.game_result else None,
         "seat_reconnect_timeout_seconds": CONFIG.room.seat_reconnect_timeout_seconds,
+        "reconnect_extend_seconds": CONFIG.room.reconnect_extend_seconds,
         "seats_status": {
             str(i): {
                 "name": room.seats[i]["name"] if i in room.seats else None,
@@ -51,6 +80,9 @@ def build_game_state_snapshot(room: Room, seat: int) -> dict:
                 "connected": room.seats[i]["connected"] if i in room.seats else False,
             }
             for i in range(4)
+        },
+        "disconnected_seats": {
+            str(s): info for s, info in room.disconnected_seats().items() if s != seat
         },
     }
 
@@ -62,7 +94,14 @@ def build_game_state_snapshot(room: Room, seat: int) -> dict:
                 str(i): len(room.game.players[i].hand)
                 for i in range(4) if i != seat
             }
-            snapshot["pending_request"] = player.get_pending_request()
+            pending = player.get_pending_request()
+            if pending and pending.get("type") == "bid":
+                leader_idx = getattr(room.game, "_current_leader_idx", None)
+                pending["leader_idx"] = leader_idx
+                pending["leader_name"] = (
+                    room.game.players[leader_idx].name if leader_idx is not None else None
+                )
+            snapshot["pending_request"] = pending
         else:
             snapshot["hand"] = []
             snapshot["card_counts"] = {str(i): len(room.game.players[i].hand) for i in range(4) if i != seat}
@@ -78,7 +117,8 @@ def build_game_state_snapshot(room: Room, seat: int) -> dict:
 # ─── Reconnect ────────────────────────────────────────────────────────────
 
 
-def apply_reconnect(socketio, emit_fn, join_room_fn, room: Room, seat: int, new_sid: str) -> None:
+def apply_reconnect(socketio, emit_fn, join_room_fn, room: Room, seat: int, new_sid: str,
+                    announce: bool = True) -> None:
     """Rebind a seat to a new sid and push the right resume payload to the client.
 
     Cancels any pending auto-abort greenlet and updates the seat's sid. Then:
@@ -86,8 +126,9 @@ def apply_reconnect(socketio, emit_fn, join_room_fn, room: Room, seat: int, new_
         the HumanPlayer it's reconnected so the game thread can resume.
       • Otherwise (lobby state, e.g. the game was aborted while this seat was
         disconnected) → emit `room_joined` so the client lands in the lobby.
-    Either way, broadcasts `seat_reconnected` so other players hide the
-    paused overlay.
+    With `announce`, broadcasts `seat_reconnected` so other players hide the
+    paused overlay. A same-socket resync or a token takeover of a seat that
+    never looked disconnected passes `announce=False` to keep the log quiet.
     """
     if seat not in room.seats:
         return
@@ -95,8 +136,15 @@ def apply_reconnect(socketio, emit_fn, join_room_fn, room: Room, seat: int, new_
     room.cancel_close_greenlet(seat)
     room.attach_sid(seat, new_sid)
     room.mark_reconnected(seat)
+    host_restored = room.restore_host(seat)
 
     join_room_fn(room.code)
+
+    if host_restored:
+        socketio.emit("host_migrated", {
+            "seat": room.host_seat,
+            "name": room.seats[seat]["name"],
+        }, room=room.code)
 
     if room.started and room.game is not None:
         snapshot = build_game_state_snapshot(room, seat)
@@ -108,14 +156,16 @@ def apply_reconnect(socketio, emit_fn, join_room_fn, room: Room, seat: int, new_
         emit_fn("room_joined", {
             "code": room.code,
             "seat": seat,
+            "token": room.seat_token(seat),
             "lobby": room.lobby_state(),
             "is_host": room.host_seat == seat,
         })
 
-    socketio.emit("seat_reconnected", {
-        "seat": seat,
-        "name": room.seats[seat]["name"],
-    }, room=room.code)
+    if announce:
+        socketio.emit("seat_reconnected", {
+            "seat": seat,
+            "name": room.seats[seat]["name"],
+        }, room=room.code)
 
 
 # ─── Game abort ──────────────────────────────────────────────────────────
@@ -149,21 +199,38 @@ def abort_game(socketio, room: Room) -> None:
 # ─── Auto-abort greenlet ─────────────────────────────────────────────────
 
 
-def schedule_seat_auto_close(socketio, room: Room, seat: int) -> None:
-    """Spawn an auto-abort countdown for a disconnected seat.
+def grace_timeout_for(room: Room) -> int:
+    """Seconds a dropped seat is held for, depending on the room phase."""
+    if room.started:
+        return CONFIG.room.seat_reconnect_timeout_seconds
+    return CONFIG.room.lobby_reconnect_timeout_seconds
 
-    If the seat does not reconnect within `seat_reconnect_timeout_seconds`,
-    the entire game is aborted (rather than the seat being closed and the
-    game continuing in a broken state). The function name is kept for
-    backwards compat with callers but the behavior is now full-game abort.
+
+def schedule_seat_auto_close(socketio, room: Room, seat: int, timeout: float | None = None) -> None:
+    """Spawn an auto-close countdown for a disconnected seat.
+
+    Mid-game: if the seat does not reconnect before its deadline, the entire
+    game is aborted (rather than the seat being closed and the game
+    continuing in a broken state). In the lobby: the seat is freed.
+
+    The countdown is driven by `room.reconnect_deadline[seat]`, so the host
+    can push the deadline back with `extend_seat_grace` while the greenlet
+    is sleeping; the greenlet re-checks the deadline whenever it wakes.
     """
     if seat not in room.seats:
         return
-    timeout = CONFIG.room.seat_reconnect_timeout_seconds
+    if timeout is None:
+        timeout = grace_timeout_for(room)
+    if seat not in room.reconnect_deadline:
+        room.reconnect_deadline[seat] = time.time() + timeout
 
     def _worker():
         try:
-            gevent.sleep(timeout)
+            while True:
+                remaining = room.seconds_remaining(seat)
+                if remaining is None or remaining <= 0:
+                    break
+                gevent.sleep(remaining)
         except gevent.GreenletExit:
             return
         # Re-check state after the sleep — the player may have reconnected
@@ -181,13 +248,28 @@ def schedule_seat_auto_close(socketio, room: Room, seat: int) -> None:
             abort_game(socketio, room)
         else:
             # Game wasn't started (lobby disconnect) — just clean up the seat
+            old_host = room.host_seat
             room.close_seat(seat)
-            socketio.emit("lobby_update", room.lobby_state(), room=room.code)
             if not room.seats:
                 rooms.pop(room.code, None)
+                return
+            socketio.emit("lobby_update", room.lobby_state(), room=room.code)
+            if room.host_seat != old_host:
+                new_host_info = room.seats.get(room.host_seat)
+                if new_host_info is not None:
+                    socketio.emit("host_migrated", {
+                        "seat": room.host_seat,
+                        "name": new_host_info.get("name"),
+                    }, room=room.code)
 
     g = gevent.spawn(_worker)
     room.seats[seat]["close_greenlet"] = g
+
+
+def extend_seat_grace(room: Room, seat: int, seconds: float) -> float | None:
+    """Give a disconnected seat more time. Returns the new remaining seconds
+    or None if the seat is not waiting to reconnect."""
+    return room.extend_deadline(seat, seconds)
 
 
 # ─── Game start / lifecycle ──────────────────────────────────────────────
@@ -196,17 +278,8 @@ def schedule_seat_auto_close(socketio, room: Room, seat: int) -> None:
 def start_room_game(socketio, room: Room) -> None:
     room.started = True
     room._game_abort_handled = False
-    room.round_history.clear()
-    room.cur_round_tricks.clear()
-    room.cur_trick_cards.clear()
-    room.cur_bid_history.clear()
-    room.cur_log_messages.clear()
-    room.cur_roem[:] = [0, 0]
-    room.cur_tricks[:] = [0, 0]
-    room.cur_trump = None
-    room.cur_declaring_player = None
-    room.cur_declaring_player_idx = None
-    room.cur_declaring_team = None
+    room.reset_game_state()
+    room.phase = PHASE_BIDDING
 
     human_seats = {seat: info["name"] for seat, info in room.seats.items()}
 
@@ -234,6 +307,7 @@ def start_room_game(socketio, room: Room) -> None:
             continue
         socketio.emit("game_starting", {
             "seat": seat,
+            "token": info.get("token"),
             "player_names": room.player_names(),
             "team_names": room.team_names,
         }, to=sid)
@@ -247,11 +321,13 @@ def start_room_game(socketio, room: Room) -> None:
             # the room back to lobby so remaining players aren't stuck.
             if not room._game_abort_handled and room.code in rooms and room.started:
                 room.started = False
+                room.phase = PHASE_LOBBY
                 room.game = None
                 room.game_thread = None
                 room.disconnected_at.clear()
-                room.cur_bid_history.clear()
-                room.cur_log_messages.clear()
+                room.reconnect_deadline.clear()
+                room.host_before_migration = None
+                room.reset_game_state()
                 # Remove any seats that are still disconnected — after the
                 # abort they have no live socket, and leaving them in the
                 # lobby would cause the next game to hang waiting on a player
@@ -284,15 +360,8 @@ def room_state(socketio, room: Room, event: str, data: dict) -> None:
     send_data = dict(data)
 
     if event == "deal_done":
-        room.cur_roem[:] = [0, 0]
-        room.cur_tricks[:] = [0, 0]
-        room.cur_round_tricks.clear()
-        room.cur_trick_cards.clear()
-        room.cur_bid_history.clear()
-        room.cur_trump = None
-        room.cur_declaring_player = None
-        room.cur_declaring_player_idx = None
-        room.cur_declaring_team = None
+        room.reset_round_state()
+        room.phase = PHASE_BIDDING
         if room.game:
             for seat, info in room.seats.items():
                 sid = info.get("sid")
@@ -312,6 +381,7 @@ def room_state(socketio, room: Room, event: str, data: dict) -> None:
 
     if event == "trump_offered":
         # Record that a new bidding round started with this suit
+        room.cur_offered_suit = data.get("suit")
         room.cur_bid_history.append({
             "kind": "offered",
             "suit": data.get("suit"),
@@ -339,7 +409,10 @@ def room_state(socketio, room: Room, event: str, data: dict) -> None:
         return
 
     if event == "trump_set":
+        room.phase = PHASE_PLAYING
         room.cur_trump = data.get("trump")
+        room.cur_offered_suit = None
+        room.cur_trick_leader = data.get("leader_idx")
         room.cur_declaring_player = data.get("declaring_player")
         room.cur_declaring_player_idx = data.get("declaring_player_idx")
         room.cur_declaring_team = data.get("declaring_team")
@@ -394,6 +467,7 @@ def room_state(socketio, room: Room, event: str, data: dict) -> None:
     elif event == "trick_cleared":
         # Clear trick cards now that the UI animation is complete
         room.cur_trick_cards.clear()
+        room.cur_trick_leader = data.get("next_leader", room.cur_trick_leader)
         socketio.emit(event, send_data, room=room.code)
         return
     elif event == "roem":
@@ -408,6 +482,21 @@ def room_state(socketio, room: Room, event: str, data: dict) -> None:
         send_data.pop("history", None)
         send_data["cur_tricks"] = [0, 0]
         send_data["cur_roem"] = [0, 0]
+        room.last_round_result = {
+            "t0": data.get("t0"),
+            "t1": data.get("t1"),
+            "scores": list(data.get("scores", [])),
+            "round_num": data.get("round_num"),
+            "total_rounds": data.get("total_rounds"),
+        }
+    elif event == "waiting_for_host":
+        room.phase = PHASE_BETWEEN_ROUNDS
+    elif event == "game_over":
+        room.phase = PHASE_GAME_OVER
+        room.game_result = {
+            "winner": data.get("winner"),
+            "scores": list(data.get("scores", [])),
+        }
 
     socketio.emit(event, send_data, room=room.code)
 

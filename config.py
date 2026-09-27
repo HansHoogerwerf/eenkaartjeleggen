@@ -36,6 +36,8 @@ class RoomConfig:
     default_team_names: tuple[str, str]
     max_team_name_len: int
     seat_reconnect_timeout_seconds: int
+    lobby_reconnect_timeout_seconds: int
+    reconnect_extend_seconds: int
     lobby_ttl_seconds: int
     started_ttl_seconds: int
 
@@ -50,7 +52,11 @@ CONFIG = AppConfig(
     server=ServerConfig(
         secret_key=os.environ.get("SECRET_KEY", "klaverjas-secret"),
         cors_origins=os.environ.get("CORS_ORIGINS", "*"),
-        ping_timeout=30,
+        # Engine.IO heartbeat. A socket that misses a pong for ping_timeout
+        # seconds is closed server-side; with token-based seat takeover a
+        # returning client no longer has to wait for that, so the timeout can
+        # stay short to reap zombie connections quickly.
+        ping_timeout=20,
         ping_interval=10,
         host="0.0.0.0",
         port=5000,
@@ -73,7 +79,13 @@ CONFIG = AppConfig(
         max_score_limit=5000,
         default_team_names=("Team A", "Team N"),
         max_team_name_len=16,
-        seat_reconnect_timeout_seconds=int(os.environ.get("SEAT_RECONNECT_TIMEOUT_SECONDS", "60")),
+        # Mid-game grace period before the game is aborted for a missing
+        # player. The host can extend it from the paused overlay.
+        seat_reconnect_timeout_seconds=int(os.environ.get("SEAT_RECONNECT_TIMEOUT_SECONDS", "90")),
+        # Waiting-room grace period before a dropped seat is freed.
+        lobby_reconnect_timeout_seconds=int(os.environ.get("LOBBY_RECONNECT_TIMEOUT_SECONDS", "30")),
+        # Seconds added per "wait longer" request from the host.
+        reconnect_extend_seconds=int(os.environ.get("RECONNECT_EXTEND_SECONDS", "60")),
         lobby_ttl_seconds=int(os.environ.get("ROOM_LOBBY_TTL_SECONDS", "3600")),
         started_ttl_seconds=int(os.environ.get("ROOM_STARTED_TTL_SECONDS", "21600")),
     ),

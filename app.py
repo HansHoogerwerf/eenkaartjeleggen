@@ -16,6 +16,7 @@ from main import HumanPlayer
 from server.game_flow import (
     abort_game,
     apply_reconnect,
+    extend_seat_grace,
     schedule_seat_auto_close,
     start_room_game,
 )
@@ -53,11 +54,11 @@ socketio = SocketIO(
 )
 
 
-# Set of SIDs that have explicitly left (via leave_room/leave_game). When
-# their socket subsequently disconnects, the disconnect handler will clean
-# up quietly without triggering reconnect logic. This is how we distinguish
-# "intentional leave" from "unintentional disconnect".
-_leaving: set[str] = set()
+# Intentional vs. unintentional disconnects are told apart by `sid_to_seat`
+# alone: leaving a room (or being superseded by a token takeover) removes the
+# sid from the map, so its later `disconnect` finds nothing to do. There is
+# deliberately no separate "leaving" set — a socket that leaves one room and
+# then joins another must be tracked normally again.
 
 
 @app.route("/")
@@ -101,8 +102,29 @@ def _unregister_sid(sid: str) -> None:
     sid_to_seat.pop(sid, None)
 
 
+def _seat_payload(room: Room, seat: int) -> dict:
+    """The private join/rejoin acknowledgement for one seat (carries the
+    seat's reconnect token, so it must only ever go to that seat's socket)."""
+    return {
+        "code": room.code,
+        "seat": seat,
+        "token": room.seat_token(seat),
+        "lobby": room.lobby_state(),
+        "is_host": room.host_seat == seat,
+    }
+
+
+def _emit_host_migrated(room: Room) -> None:
+    new_host_info = room.seats.get(room.host_seat)
+    if new_host_info is not None:
+        socketio.emit("host_migrated", {
+            "seat": room.host_seat,
+            "name": new_host_info.get("name"),
+        }, room=room.code)
+
+
 def _detach_from_lobby(socketio_, room: Room, sid: str, seat: int) -> None:
-    """Clean up a lobby disconnect (game not started): remove the seat and
+    """Clean up a lobby leave (game not started): remove the seat and
     either delete the room, migrate the host, or just broadcast an update."""
     room.close_seat(seat)
     _unregister_sid(sid)
@@ -115,12 +137,26 @@ def _detach_from_lobby(socketio_, room: Room, sid: str, seat: int) -> None:
         return
     # close_seat() already migrated the host if needed; broadcast if changed
     socketio_.emit("lobby_update", room.lobby_state(), room=room.code)
-    new_host_info = room.seats.get(room.host_seat)
-    if new_host_info is not None:
-        socketio_.emit("host_migrated", {
-            "seat": room.host_seat,
-            "name": new_host_info.get("name"),
-        }, room=room.code)
+    _emit_host_migrated(room)
+
+
+def _detach_prior_room(sid: str, keep_code: str | None) -> None:
+    """If this sid is still registered in another room, leave it cleanly."""
+    prior = sid_to_seat.get(sid)
+    if prior is None:
+        return
+    prior_code, prior_seat = prior
+    if prior_code == keep_code:
+        return
+    prior_room = rooms.get(prior_code)
+    if prior_room is not None and not prior_room.started:
+        _detach_from_lobby(socketio, prior_room, sid, prior_seat)
+    else:
+        _unregister_sid(sid)
+
+
+def _clean_name(raw) -> str:
+    return (raw or "").strip()[:CONFIG.room.max_player_name_len]
 
 
 # ─── Lobby ───────────────────────────────────────────────────────────────
@@ -129,12 +165,11 @@ def _detach_from_lobby(socketio_, room: Room, sid: str, seat: int) -> None:
 @socketio.on("create_room")
 def handle_create_room(data):
     sid = request.sid
-    name = (data.get("name") or CONFIG.room.default_player_name).strip()[:CONFIG.room.max_player_name_len] or CONFIG.room.default_player_name
+    data = data or {}
+    name = _clean_name(data.get("name")) or CONFIG.room.default_player_name
 
     # If this sid was already in another room, detach cleanly first
-    existing_room, existing_seat = _resolve_room_seat(sid)
-    if existing_room is not None and not existing_room.started:
-        _detach_from_lobby(socketio, existing_room, sid, existing_seat)
+    _detach_prior_room(sid, keep_code=None)
 
     code = generate_code()
     room = Room(code, sid, name)
@@ -142,20 +177,16 @@ def handle_create_room(data):
     sid_to_seat[sid] = (code, 0)
 
     join_room(code)
-    emit("room_created", {
-        "code": code,
-        "seat": 0,
-        "lobby": room.lobby_state(),
-        "is_host": True,
-    })
+    emit("room_created", _seat_payload(room, 0))
 
 
 @socketio.on("join_room")
 def handle_join_room(data):
     """First-time lobby join only. Mid-game reconnect uses `rejoin_game`."""
     sid = request.sid
+    data = data or {}
     code = (data.get("code") or "").strip().upper()
-    name = (data.get("name") or CONFIG.room.default_player_name).strip()[:CONFIG.room.max_player_name_len] or CONFIG.room.default_player_name
+    name = _clean_name(data.get("name")) or CONFIG.room.default_player_name
 
     if code not in rooms:
         emit("join_error", {"key": "error.room_not_found"})
@@ -169,33 +200,38 @@ def handle_join_room(data):
         emit("join_error", {"key": "error.game_in_progress"})
         return
 
-    # If the name already exists in the lobby and is currently disconnected,
-    # treat this as a lobby-level reconnect (same person coming back).
     existing_seat = room.seat_for_name(name)
-    if existing_seat is not None and not room.seats[existing_seat]["connected"]:
-        # Detach any prior mapping this sid had
-        prior_room, prior_seat = _resolve_room_seat(sid)
-        if prior_room is not None and prior_room is not room:
-            _detach_from_lobby(socketio, prior_room, sid, prior_seat)
-
+    if existing_seat is not None:
+        existing = room.seats[existing_seat]
+        if existing["connected"] and existing["sid"] == sid:
+            # Already seated on this very socket — just acknowledge again.
+            emit("room_joined", _seat_payload(room, existing_seat))
+            return
+        if existing["connected"]:
+            # Someone else is live under that name. Names are the fallback
+            # reconnect identity, so they must be unique per room.
+            emit("join_error", {"key": "error.name_taken"})
+            return
+        # The name belongs to a disconnected seat: treat this as a
+        # lobby-level reconnect (same person coming back without a token).
+        _detach_prior_room(sid, keep_code=code)
         room.cancel_close_greenlet(existing_seat)
         room.attach_sid(existing_seat, sid)
         room.mark_reconnected(existing_seat)
         sid_to_seat[sid] = (code, existing_seat)
         join_room(code)
-        emit("room_joined", {
-            "code": code,
-            "seat": existing_seat,
-            "lobby": room.lobby_state(),
-            "is_host": room.host_seat == existing_seat,
-        })
+        emit("room_joined", _seat_payload(room, existing_seat))
         socketio.emit("lobby_update", room.lobby_state(), room=code)
         return
 
     # Fresh join — pick a seat
     requested_seat = data.get("seat")
     if requested_seat is not None:
-        requested_seat = int(requested_seat)
+        try:
+            requested_seat = int(requested_seat)
+        except (TypeError, ValueError):
+            emit("join_error", {"key": "error.invalid_seat"})
+            return
         if requested_seat < 0 or requested_seat >= CONFIG.room.seat_count:
             emit("join_error", {"key": "error.invalid_seat"})
             return
@@ -210,30 +246,38 @@ def handle_join_room(data):
             return
 
     # Detach from any previous room before joining this one
-    prior_room, prior_seat = _resolve_room_seat(sid)
-    if prior_room is not None and prior_room is not room:
-        _detach_from_lobby(socketio, prior_room, sid, prior_seat)
+    _detach_prior_room(sid, keep_code=code)
 
     room.add_seat(seat, sid, name, connected=True)
     sid_to_seat[sid] = (code, seat)
     join_room(code)
-    emit("room_joined", {
-        "code": code,
-        "seat": seat,
-        "lobby": room.lobby_state(),
-        "is_host": room.host_seat == seat,
-    })
+    emit("room_joined", _seat_payload(room, seat))
     socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
 @socketio.on("rejoin_game")
 def handle_rejoin_game(data):
-    """Reconnect to an in-progress (or lobby) game by (code, name)."""
-    sid = request.sid
-    code = (data.get("code") or "").strip().upper()
-    name = (data.get("name") or "").strip()[:CONFIG.room.max_player_name_len]
+    """Reconnect to an in-progress (or lobby) room.
 
-    if not code or not name:
+    Identity, in order of preference:
+      1. `token` — the per-seat secret handed out on join. A matching token
+         always wins the seat, even if an old socket still looks connected
+         (a phone that went to the background, a second tab): the old socket
+         is told it was superseded and closed.
+      2. `name` — the fallback for a client without a stored session. It may
+         only reclaim a seat that is currently disconnected.
+    A rejoin on the socket that already holds the seat is a plain resync:
+    the snapshot is re-sent and nothing is broadcast.
+    """
+    sid = request.sid
+    data = data or {}
+    code = (data.get("code") or "").strip().upper()
+    name = _clean_name(data.get("name"))
+    token = data.get("token")
+    if not isinstance(token, str) or not token:
+        token = None
+
+    if not code or (not name and token is None):
         emit("rejoin_error", {"key": "error.missing_credentials"})
         return
     if code not in rooms:
@@ -242,44 +286,55 @@ def handle_rejoin_game(data):
 
     room = rooms[code]
     room.touch()
-    seat = room.seat_for_name(name)
+
+    seat = room.seat_for_token(token)
+    token_ok = seat is not None
+    if seat is None and name:
+        seat = room.seat_for_name(name)
     if seat is None:
         emit("rejoin_error", {"key": "error.name_not_in_room"})
         return
 
-    if room.seats[seat].get("connected"):
-        # The seat is already held by a live socket. If it's THIS sid, just
-        # re-send the snapshot (idempotent). Otherwise reject to prevent
-        # hijacking of an actively-connected player.
-        if room.seats[seat].get("sid") != sid:
+    info = room.seats[seat]
+    old_sid = info.get("sid")
+    announce = True
+    if info.get("connected") and old_sid == sid:
+        # Same socket asking again (visibility change, manual resync).
+        announce = False
+    elif info.get("connected"):
+        if not token_ok:
+            # A live socket holds the seat and the caller cannot prove it is
+            # the same player: refuse, to prevent hijacking by name.
             emit("rejoin_error", {"key": "error.seat_already_connected"})
             return
-
-    # Detach any prior room this sid was in
-    prior = sid_to_seat.get(sid)
-    if prior is not None:
-        prior_code, prior_seat = prior
-        if prior_code != code:
-            prior_room = rooms.get(prior_code)
-            if prior_room is not None and not prior_room.started:
-                _detach_from_lobby(socketio, prior_room, sid, prior_seat)
-            else:
-                _unregister_sid(sid)
-
-    # Unregister any old sid that was bound to this seat
-    old_sid = room.seats[seat].get("sid")
-    if old_sid is not None and old_sid != sid:
+        # Token takeover: retire the old socket. Dropping it from
+        # sid_to_seat first makes its disconnect handler a no-op.
         sid_to_seat.pop(old_sid, None)
+        socketio.emit("session_superseded", {"code": code, "seat": seat}, to=old_sid)
+        try:
+            socketio.server.disconnect(old_sid)
+        except Exception:
+            pass
+        announce = False
+    else:
+        # Reclaiming a disconnected seat (the normal reconnect).
+        if old_sid is not None and old_sid != sid:
+            sid_to_seat.pop(old_sid, None)
+
+    # Detach any other room this sid was in
+    _detach_prior_room(sid, keep_code=code)
 
     sid_to_seat[sid] = (code, seat)
-    apply_reconnect(socketio, emit, join_room, room, seat, sid)
+    apply_reconnect(socketio, emit, join_room, room, seat, sid, announce=announce)
 
-    # Broadcast updated lobby so everyone sees the seat as connected
-    socketio.emit("lobby_update", room.lobby_state(), room=code)
+    if announce:
+        # Broadcast updated lobby so everyone sees the seat as connected
+        socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
 @socketio.on("peek_room")
 def handle_peek_room(data):
+    data = data or {}
     code = (data.get("code") or "").strip().upper()
     if code not in rooms:
         emit("join_error", {"key": "error.room_not_found"})
@@ -323,6 +378,14 @@ def handle_start_game(data=None):
                 str(n).strip()[:CONFIG.room.max_team_name_len] or CONFIG.room.default_team_names[i]
                 for i, n in enumerate(names)
             ]
+
+    # Seats still waiting out their lobby grace period have nobody behind
+    # them right now; free them so those seats are dealt to AI players
+    # instead of blocking the first trick on an absent human.
+    for s in list(room.seats.keys()):
+        if not room.seats[s].get("connected"):
+            room.close_seat(s)
+
     start_room_game(socketio, room)
 
 
@@ -330,13 +393,11 @@ def handle_start_game(data=None):
 def handle_leave_room(_data=None):
     """Intentional leave from the lobby. Does NOT trigger reconnect flow."""
     sid = request.sid
-    _leaving.add(sid)
     room, seat = _resolve_room_seat(sid)
     if room is None:
         return
     if room.started:
         # Leaving an in-progress game while in the lobby UI — treat as leave_game
-        _leaving.discard(sid)
         handle_leave_game()
         return
     _detach_from_lobby(socketio, room, sid, seat)
@@ -352,9 +413,12 @@ def handle_play_card(data):
     if room is None or not room.game:
         return
     room.touch()
+    card = (data or {}).get("card")
+    if not isinstance(card, str):
+        return
     player = room.game.players[seat]
     if isinstance(player, HumanPlayer):
-        player.supply_card(data["card"])
+        player.supply_card(card)
 
 
 @socketio.on("bid_response")
@@ -364,9 +428,12 @@ def handle_bid_response(data):
     if room is None or not room.game:
         return
     room.touch()
+    declare = (data or {}).get("declare")
+    if not isinstance(declare, bool):
+        return
     player = room.game.players[seat]
     if isinstance(player, HumanPlayer):
-        player.supply_bid(data["declare"])
+        player.supply_bid(declare)
 
 
 @socketio.on("forced_suit_response")
@@ -376,9 +443,12 @@ def handle_forced_suit_response(data):
     if room is None or not room.game:
         return
     room.touch()
+    suit = (data or {}).get("suit")
+    if not isinstance(suit, str):
+        return
     player = room.game.players[seat]
     if isinstance(player, HumanPlayer):
-        player.supply_forced_suit(data["suit"])
+        player.supply_forced_suit(suit)
 
 
 @socketio.on("new_game")
@@ -399,13 +469,7 @@ def handle_new_game(_data=None):
         room.game_thread.join(timeout=3)
 
     room.started = False
-    room.round_history.clear()
-    room.cur_round_tricks.clear()
-    room.cur_trick_cards.clear()
-    room.cur_bid_history.clear()
-    room.cur_log_messages.clear()
-    room.cur_roem[:] = [0, 0]
-    room.cur_tricks[:] = [0, 0]
+    room.reset_game_state()
     start_room_game(socketio, room)
 
 
@@ -427,7 +491,7 @@ def handle_chat_message(data):
     if room is None:
         return
     room.touch()
-    text = str(data.get("text", "")).strip()[:CONFIG.room.max_chat_message_len]
+    text = str((data or {}).get("text", "")).strip()[:CONFIG.room.max_chat_message_len]
     if not text:
         return
     socketio.emit("chat_message", {
@@ -438,10 +502,9 @@ def handle_chat_message(data):
 
 
 @socketio.on("leave_game")
-def handle_leave_game():
+def handle_leave_game(_data=None):
     """Intentional leave from an in-progress game. Tears down the whole room."""
     sid = request.sid
-    _leaving.add(sid)
     room, seat = _resolve_room_seat(sid)
     if room is None:
         return
@@ -459,13 +522,8 @@ def handle_leave_game():
             if isinstance(p, HumanPlayer):
                 p.interrupt()
 
-    # Mark every seat's sid as "leaving" so their disconnects are silent
-    for info in room.seats.values():
-        info_sid = info.get("sid")
-        if info_sid is not None:
-            _leaving.add(info_sid)
-
     socketio.emit("game_left", {"name": name}, room=room.code)
+    # Every seat's sid leaves the map, so their later disconnects are quiet.
     for info in room.seats.values():
         info_sid = info.get("sid")
         if info_sid is not None:
@@ -496,6 +554,31 @@ def handle_host_abort_game(_data=None):
     abort_game(socketio, room)
 
 
+@socketio.on("extend_wait")
+def handle_extend_wait(_data=None):
+    """Host-only: give every seat that is waiting to reconnect more time
+    before the game is aborted. Broadcasts the new remaining time so all
+    countdowns stay in sync."""
+    sid = request.sid
+    room, _seat = _resolve_room_seat(sid)
+    if room is None:
+        return
+    if not room.is_host(sid):
+        emit("error", {"key": "error.only_host"})
+        return
+    room.touch()
+    extra = CONFIG.room.reconnect_extend_seconds
+    for seat, info in room.disconnected_seats().items():
+        remaining = extend_seat_grace(room, seat, extra)
+        if remaining is None:
+            continue
+        socketio.emit("seat_wait_extended", {
+            "seat": seat,
+            "name": info.get("name"),
+            "seconds_remaining": int(remaining),
+        }, room=room.code)
+
+
 @socketio.on("get_hands")
 def handle_get_hands(_data=None):
     sid = request.sid
@@ -524,15 +607,11 @@ def handle_connect():
 
 
 @socketio.on("disconnect")
-def handle_disconnect():
+def handle_disconnect(_reason=None):
     sid = request.sid
 
-    # Intentional leave → quiet cleanup, no reconnect flow
-    if sid in _leaving:
-        _leaving.discard(sid)
-        _unregister_sid(sid)
-        return
-
+    # A sid that left, never joined, or was superseded by a token takeover
+    # is not in the map: nothing to do.
     entry = sid_to_seat.pop(sid, None)
     if not entry:
         return
@@ -541,60 +620,44 @@ def handle_disconnect():
     if room is None:
         return
     room.touch()
+    info = room.seats.get(seat)
+    if info is None or info.get("sid") != sid:
+        # The seat moved on to another socket already.
+        return
 
     if room.started:
         # Unintentional disconnect mid-game → start reconnect flow
+        timeout = CONFIG.room.seat_reconnect_timeout_seconds
         room.detach_sid(seat)
-        room.mark_disconnected(seat)
+        room.mark_disconnected(seat, timeout)
 
         player = room.game.players[seat] if room.game else None
         if isinstance(player, HumanPlayer):
             player.set_disconnected()
 
-        # Host migration
-        migrated = room._migrate_host()
-        if migrated:
-            new_host_info = room.seats.get(room.host_seat)
-            if new_host_info is not None:
-                socketio.emit("host_migrated", {
-                    "seat": room.host_seat,
-                    "name": new_host_info.get("name"),
-                }, room=code)
+        # Host migration: somebody connected must be able to end the game
+        # or wait longer; the role returns to this seat when it reconnects.
+        if room.migrate_host_away_from(seat):
+            _emit_host_migrated(room)
 
-        schedule_seat_auto_close(socketio, room, seat)
+        schedule_seat_auto_close(socketio, room, seat, timeout)
 
         socketio.emit("seat_disconnected", {
             "seat": seat,
-            "name": room.seats[seat]["name"],
-            "reconnect_timeout_seconds": CONFIG.room.seat_reconnect_timeout_seconds,
+            "name": info["name"],
+            "reconnect_timeout_seconds": timeout,
+            "seconds_remaining": timeout,
         }, room=code)
         return
 
-    # Lobby disconnect: keep the host's seat alive for reconnect, remove others
-    if seat == room.host_seat:
-        room.detach_sid(seat)
-        room.mark_disconnected(seat)
-        schedule_seat_auto_close(socketio, room, seat)
-        socketio.emit("lobby_update", room.lobby_state(), room=code)
-        return
-
-    room.close_seat(seat)
-    try:
-        leave_room(code)
-    except Exception:
-        pass
-    if not room.seats:
-        rooms.pop(code, None)
-        return
-
-    migrated = room._migrate_host()
-    if migrated:
-        new_host_info = room.seats.get(room.host_seat)
-        if new_host_info is not None:
-            socketio.emit("host_migrated", {
-                "seat": room.host_seat,
-                "name": new_host_info.get("name"),
-            }, room=code)
+    # Lobby disconnect: every seat (host or guest) keeps its place for the
+    # lobby grace period so a reload or a short blip does not lose the seat.
+    # The host role is not migrated during the grace period; if the host
+    # never returns the auto-close greenlet frees the seat and migrates.
+    timeout = CONFIG.room.lobby_reconnect_timeout_seconds
+    room.detach_sid(seat)
+    room.mark_disconnected(seat, timeout)
+    schedule_seat_auto_close(socketio, room, seat, timeout)
     socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
