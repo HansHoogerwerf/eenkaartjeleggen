@@ -73,7 +73,41 @@ Important distinctions:
 
 - `app.py` sets `main._thread_offload` so CPU-heavy AI decisions run in native threads under Gevent.
 - `Room` state lives in `server/room_state.py`; game lifecycle and reconnect snapshots live in `server/game_flow.py`.
-- Reconnect identity is still based on room code + player name. This is convenient, but not secure against someone reclaiming a disconnected seat by name.
+- Reconnect identity is a server-issued per-seat token (`Room.seats[i]["token"]`,
+  handed to the client in `room_created` / `room_joined` / `game_starting` /
+  `game_state_snapshot` and stored in `localStorage`). A matching token may
+  take a seat over even while an old socket still looks connected (the old
+  socket gets `session_superseded` and is closed). The player name is only a
+  fallback that may reclaim a seat that is currently disconnected, and names
+  are unique per room. A `rejoin_game` from the socket that already holds the
+  seat is a silent resync (fresh snapshot, no broadcast).
+- Intentional leaves are recognised by the sid no longer being in
+  `sid_to_seat`; there is no separate "leaving" set (one used to leak across
+  rooms and silently swallow later disconnects).
+- `Room.phase` (`lobby`, `bidding`, `playing`, `between_rounds`, `game_over`)
+  is updated from the engine's state events in `server/game_flow.py` and is
+  what the reconnect snapshot uses to rebuild the right screen (bid dialog,
+  table with turn arrow, next-round banner, game-over overlay). Keep it in
+  sync when adding engine events.
+- When the host drops mid-game the role is lent to a connected player
+  (`Room.migrate_host_away_from`) so someone can end the game or wait
+  longer, and handed back when the original host reconnects in time
+  (`Room.restore_host`, emits `host_migrated` again). A reload therefore does
+  not demote the host. In the lobby the host keeps the role through the
+  grace period.
+- Disconnected seats keep a deadline in `Room.reconnect_deadline`; the
+  auto-close greenlet sleeps until it and re-checks, so the host can push it
+  back with `extend_wait`. Mid-game the timeout is
+  `SEAT_RECONNECT_TIMEOUT_SECONDS` (abort the game when it expires), in the
+  lobby `LOBBY_RECONNECT_TIMEOUT_SECONDS` (free the seat).
+- A countdown only runs while at least one *other* human is connected and
+  waiting. A single-player game (one human, three AIs) or a game where
+  everyone dropped simply pauses: the game thread blocks on the next human
+  input, `Room.pause_countdowns` clears all deadlines, and
+  `game_flow.resume_countdowns` starts the absent seats' countdowns when
+  somebody returns. Such a paused room only goes away through the idle TTL
+  (`ROOM_STARTED_TTL_SECONDS`, 6 h). Do not reintroduce an unconditional
+  abort here: it is what closed single-player games on a locked phone.
 - The Socket.IO client is local at `static/socket.io.min.js`.
 - The app has PWA assets: `static/manifest.webmanifest`, `static/sw.js`, and generated icons.
 
@@ -82,8 +116,13 @@ Important distinctions:
 Run focused tests:
 
 ```bash
-python -m unittest tests.test_ai_strength_levels tests.test_app_integration tests.test_frontend_split -v
+python -m unittest tests.test_ai_strength_levels tests.test_app_integration tests.test_reconnect_scenarios tests.test_frontend_split -v
 ```
+
+`tests/test_reconnect_scenarios.py` drives the real Socket.IO handlers with
+a stand-in game object (no AI) through the disconnect, takeover, phase and
+grace-period paths; `tests/test_game_flow_unit.py` covers the snapshot and
+the auto-close greenlet.
 
 Run all tests:
 
@@ -151,7 +190,11 @@ equal on both sides and is far less noisy (see `docs/neural-v4-campaign.md`).
 ## High-Priority Known Gaps
 
 - Lobby seat names are still interpolated into `innerHTML`; escape or render with text nodes before treating player names as safe.
-- Reconnect should use server-issued per-seat tokens instead of name-only identity.
+- The name-only reconnect fallback (no stored token) still lets anyone with
+  the room code and a matching name reclaim a *disconnected* seat; consider
+  rate limiting it or requiring the token once every client has one.
+- A player who drops for longer than the grace period still ends the game
+  for everyone; replacing the seat with an AI mid-round is not implemented.
 - Socket.IO payload validation is inconsistent in some handlers.
 - Production should fail fast if `SECRET_KEY` remains the default or CORS remains `*`.
 - Add rate limiting for public Socket.IO events.

@@ -286,11 +286,23 @@
 </div>
 
 <!-- ── Paused overlay ───────────────────────────────────────────────── -->
+<div class="modal-overlay" id="superseded-overlay">
+    <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="superseded-title">
+        <h2 id="superseded-title" data-i18n="modal.superseded">Opened elsewhere</h2>
+        <p data-i18n="msg.superseded" role="status" aria-live="polite">This seat is now open in another tab or on another device.</p>
+        <div class="modal-buttons">
+            <button type="button" class="btn-declare" id="superseded-takeover-btn" onclick="takeOverSeat()" data-i18n="btn.take_over">Take over here</button>
+            <button type="button" class="btn-pass" onclick="dismissSuperseded()" data-i18n="btn.close" data-modal-close>Close</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal-overlay" id="paused-overlay">
     <div class="modal modal-wrapper" role="dialog" aria-modal="true" aria-labelledby="paused-title">
         <h2 id="paused-title" data-i18n="modal.paused">Game Paused</h2>
         <p id="paused-msg" role="status" aria-live="polite"></p>
         <div class="modal-buttons" id="paused-host-actions" style="display:none;">
+            <button type="button" class="btn-declare" id="paused-wait-longer-btn" onclick="extendWait()" data-i18n="btn.wait_longer">Wait longer</button>
             <button type="button" class="btn-pass" id="paused-end-game-btn" onclick="hostAbortGame()" data-i18n="btn.end_game">End game now</button>
         </div>
     </div>
@@ -321,10 +333,10 @@
 </div>
 
 <script defer src="/static/socket.io.min.js"></script>
-<script defer src="/static/i18n.js?v=4"></script>
-<script defer src="/static/game_state.js?v=3"></script>
+<script defer src="/static/i18n.js?v=5"></script>
+<script defer src="/static/game_state.js?v=4"></script>
 <script defer src="/static/game_render.js?v=5"></script>
-<script defer src="/static/game_app.js?v=16"></script>
+<script defer src="/static/game_app.js?v=17"></script>
 <script>
     if ('serviceWorker' in navigator) {
         window.addEventListener('load', () => navigator.serviceWorker.register('/sw.js'));

@@ -36,6 +36,31 @@ class TestRoomStateUnit(unittest.TestCase):
             code = generate_code()
         self.assertEqual(code, "BBBB")
 
+    def test_host_role_migrates_away_and_is_restored_on_return(self):
+        room = Room("ABCD", "sid-1", "Alice")
+        room.add_seat(1, "sid-2", "Bob")
+        room.detach_sid(0)
+        self.assertTrue(room.migrate_host_away_from(0))
+        self.assertEqual(room.host_seat, 1)
+        self.assertEqual(room.host_before_migration, 0)
+
+        # Bob dropping too moves the role on but keeps the original holder.
+        room.add_seat(2, "sid-3", "Carol")
+        room.detach_sid(1)
+        self.assertTrue(room.migrate_host_away_from(1))
+        self.assertEqual(room.host_seat, 2)
+        self.assertEqual(room.host_before_migration, 0)
+
+        # Bob returning does not take the role; Alice returning does.
+        room.attach_sid(1, "sid-2b")
+        self.assertFalse(room.restore_host(1))
+        self.assertEqual(room.host_seat, 2)
+        room.attach_sid(0, "sid-1b")
+        self.assertTrue(room.restore_host(0))
+        self.assertEqual(room.host_seat, 0)
+        self.assertIsNone(room.host_before_migration)
+        self.assertFalse(room.restore_host(0))
+
     def test_host_migration_prefers_connected_oldest_join(self):
         room = Room("ABCD", "sid-1", "Alice")
         room.add_seat(2, "sid-2", "Bob", connected=True)

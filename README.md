@@ -78,7 +78,9 @@ All runtime configuration is in [config.py](config.py); secrets and per-environm
 | `SECRET_KEY` | Flask session secret — **set this in production** | `klaverjas-secret` (insecure fallback) |
 | `CORS_ORIGINS` | Socket.IO CORS allow-list | `*` |
 | `FLASK_DEBUG` | Enable Flask debug when `1` | `0` |
-| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Per-seat reconnect grace period | `60` |
+| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Mid-game reconnect grace period before the game is aborted (the host can extend it). Only counts while another player is connected and waiting; a single-player game just pauses until `ROOM_STARTED_TTL_SECONDS` | `90` |
+| `LOBBY_RECONNECT_TIMEOUT_SECONDS` | Waiting-room grace period before a dropped seat is freed | `30` |
+| `RECONNECT_EXTEND_SECONDS` | Seconds added per "Wait longer" click by the host | `60` |
 | `ROOM_LOBBY_TTL_SECONDS` | Inactive lobby expiry | `3600` |
 | `ROOM_STARTED_TTL_SECONDS` | Inactive started-room expiry | `21600` |
 | `ACME_EMAIL` | Traefik / Let's Encrypt contact email | — |
@@ -115,7 +117,7 @@ Production deploys on push to `main` after CI passes; acceptance deploys on push
 ## Known Limitations
 
 - **Single-worker only.** Room state is in-process; multi-worker deployments would split state. Use Redis or persistent storage to scale out.
-- **Name-based reconnect.** A disconnected seat can be reclaimed by anyone with the room code and matching player name. Reconnect tokens are tracked work.
+- **Name-based reconnect fallback.** Reconnects use a per-seat token stored in the browser; without one (new device, cleared storage) a *disconnected* seat can still be reclaimed by anyone with the room code and matching player name.
 - **No rate limiting** on Socket.IO events.
 
 See [docs/claude-analysis.md §11](docs/claude-analysis.md#11-security-and-reliability) for the full hardening backlog.
