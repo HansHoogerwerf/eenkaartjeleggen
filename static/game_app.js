@@ -790,9 +790,14 @@ function stopPausedTimer() {
     }
 }
 
+function seatDeadline(secondsRemaining) {
+    // null = waiting without a countdown (nobody was connected to wait)
+    if (typeof secondsRemaining !== "number") return null;
+    return Date.now() + Math.max(0, secondsRemaining) * 1000;
+}
+
 function setSeatWaiting(seat, name, secondsRemaining) {
-    const secs = typeof secondsRemaining === "number" ? Math.max(0, secondsRemaining) : 0;
-    pausedSeats.set(seat, {name, deadline: Date.now() + secs * 1000});
+    pausedSeats.set(seat, {name, deadline: seatDeadline(secondsRemaining)});
     renderPausedOverlay();
 }
 
@@ -822,10 +827,15 @@ function renderPausedOverlay() {
     const update = () => {
         let soonest = null;
         for (const info of pausedSeats.values()) {
+            if (info.deadline === null) continue;
             if (!soonest || info.deadline < soonest.deadline) soonest = info;
         }
-        const seconds = Math.max(0, Math.ceil((soonest.deadline - Date.now()) / 1000));
         const name = [...pausedSeats.values()].map(i => i.name).join(", ");
+        if (!soonest) {
+            msg.textContent = t("error.waiting_reconnect", {name});
+            return;
+        }
+        const seconds = Math.max(0, Math.ceil((soonest.deadline - Date.now()) / 1000));
         msg.textContent = t("error.waiting_reconnect_countdown", {name, seconds});
     };
     update();
@@ -1096,8 +1106,7 @@ socket.on("game_state_snapshot", data => {
 
     // Other seats that are waiting to reconnect: show their countdown
     for (const [seatStr, info] of Object.entries(data.disconnected_seats || {})) {
-        const secs = typeof info.seconds_remaining === "number" ? info.seconds_remaining : 0;
-        pausedSeats.set(parseInt(seatStr), {name: info.name, deadline: Date.now() + secs * 1000});
+        pausedSeats.set(parseInt(seatStr), {name: info.name, deadline: seatDeadline(info.seconds_remaining)});
     }
     renderPausedOverlay();
 });

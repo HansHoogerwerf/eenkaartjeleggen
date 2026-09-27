@@ -318,6 +318,41 @@ class TestReconnectFlow(unittest.TestCase):
             self.assertEqual(abort.call_count, 0)
         self.assertIsNone(room.seats[1]["close_greenlet"])
 
+    def test_auto_close_does_not_abort_when_nobody_is_connected(self):
+        socketio = FakeSocketIO()
+        room = self._room_with_game()
+        room.detach_sid(0)
+        room.detach_sid(1)
+        room.mark_disconnected(1, timeout=0.02)
+
+        with patch.object(game_flow, "abort_game") as abort:
+            game_flow.schedule_seat_auto_close(socketio, room, 1, timeout=0.02)
+            gevent.sleep(0.1)
+            self.assertEqual(abort.call_count, 0)
+        self.assertIn(1, room.seats)
+        self.assertIsNone(room.seconds_remaining(1))
+        self.assertIsNone(room.seats[1]["close_greenlet"])
+
+    def test_resume_countdowns_only_touches_paused_seats(self):
+        socketio = FakeSocketIO()
+        room = self._room_with_game()
+        room.add_seat(2, "sid-3", "Carol")
+        room.detach_sid(1)
+        room.mark_disconnected(1)  # paused: no deadline
+        room.detach_sid(2)
+        room.mark_disconnected(2, timeout=500)
+        game_flow.schedule_seat_auto_close(socketio, room, 2, timeout=500)
+        before = room.seconds_remaining(2)
+
+        game_flow.resume_countdowns(socketio, room, except_seat=0)
+        self.assertIsNotNone(room.seats[1]["close_greenlet"])
+        self.assertAlmostEqual(room.seconds_remaining(1), 90, delta=5)
+        self.assertAlmostEqual(room.seconds_remaining(2), before, delta=1)
+        room.pause_countdowns()
+        self.assertIsNone(room.seats[1]["close_greenlet"])
+        self.assertIsNone(room.seats[2]["close_greenlet"])
+        self.assertEqual(room.reconnect_deadline, {})
+
     def test_lobby_auto_close_frees_seat_and_migrates_host(self):
         socketio = FakeSocketIO()
         room = self._room_with_game(started=False)

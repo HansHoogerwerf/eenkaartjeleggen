@@ -100,6 +100,14 @@ Important distinctions:
   back with `extend_wait`. Mid-game the timeout is
   `SEAT_RECONNECT_TIMEOUT_SECONDS` (abort the game when it expires), in the
   lobby `LOBBY_RECONNECT_TIMEOUT_SECONDS` (free the seat).
+- A countdown only runs while at least one *other* human is connected and
+  waiting. A single-player game (one human, three AIs) or a game where
+  everyone dropped simply pauses: the game thread blocks on the next human
+  input, `Room.pause_countdowns` clears all deadlines, and
+  `game_flow.resume_countdowns` starts the absent seats' countdowns when
+  somebody returns. Such a paused room only goes away through the idle TTL
+  (`ROOM_STARTED_TTL_SECONDS`, 6 h). Do not reintroduce an unconditional
+  abort here: it is what closed single-player games on a locked phone.
 - The Socket.IO client is local at `static/socket.io.min.js`.
 - The app has PWA assets: `static/manifest.webmanifest`, `static/sw.js`, and generated icons.
 

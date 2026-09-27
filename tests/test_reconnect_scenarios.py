@@ -328,6 +328,96 @@ class TestReconnectScenarios(unittest.TestCase):
             self.assertEqual(start_game.call_count, 1)
         self.assertNotIn(1, room.seats)
 
+    # ── Nobody waiting: pause instead of abort ──────────────────────────────
+
+    def test_single_player_game_pauses_instead_of_aborting(self):
+        """One human against three AIs locks the phone: the seat drops, but
+        with nobody waiting there is no countdown, the room survives and the
+        player is back in the same game on return."""
+        c1 = self._client()
+        c1.emit("create_room", {"name": "Alice"})
+        created = _events(c1, "room_created")[0]
+        code = created["code"]
+        room = rooms[code]
+        game = _fake_started_game(room)
+        game.players[0]._pending_legal = []
+
+        c1.disconnect()
+        self.assertIn(code, rooms)
+        self.assertFalse(room.seats[0]["connected"])
+        self.assertIsNone(room.seats[0]["close_greenlet"])
+        self.assertIsNone(room.seconds_remaining(0))
+        self.assertEqual(room.host_seat, 0)
+
+        c2 = self._client()
+        c2.emit("rejoin_game", {"code": code, "token": created["token"]})
+        snap = _events(c2, "game_state_snapshot")[0]
+        self.assertEqual(snap["seat"], 0)
+        self.assertTrue(snap["is_host"])
+        self.assertEqual(snap["pending_request"]["type"], "move")
+        self.assertEqual(snap["disconnected_seats"], {})
+        self.assertTrue(game.players[0].connected)
+
+    def test_countdowns_pause_when_everyone_is_gone_and_resume_on_return(self):
+        c1, c2, code, created, _joined = self._two_player_room()
+        room = rooms[code]
+        _fake_started_game(room)
+
+        # Bob drops while Alice is waiting: his countdown runs.
+        c2.disconnect()
+        c1.get_received()
+        self.assertIsNotNone(room.seats[1]["close_greenlet"])
+        self.assertIsNotNone(room.seconds_remaining(1))
+
+        # Alice drops too: nobody is waiting, so everything pauses.
+        c1.disconnect()
+        self.assertIn(code, rooms)
+        self.assertIsNone(room.seats[1]["close_greenlet"])
+        self.assertIsNone(room.seconds_remaining(1))
+        self.assertIsNone(room.seats[0]["close_greenlet"])
+        self.assertIsNone(room.seconds_remaining(0))
+
+        # Alice returns: Bob's countdown starts now and shows in her snapshot.
+        c3 = self._client()
+        c3.emit("rejoin_game", {"code": code, "token": created["token"]})
+        snap = _events(c3, "game_state_snapshot")[0]
+        self.assertIsNotNone(room.seats[1]["close_greenlet"])
+        self.assertGreater(snap["disconnected_seats"]["1"]["seconds_remaining"], 0)
+        self.assertIsNone(room.seats[0]["close_greenlet"])
+
+    def test_lone_lobby_host_keeps_room_without_countdown(self):
+        c1 = self._client()
+        c1.emit("create_room", {"name": "Alice"})
+        created = _events(c1, "room_created")[0]
+        code = created["code"]
+        room = rooms[code]
+
+        c1.disconnect()
+        self.assertIn(code, rooms)
+        self.assertIn(0, room.seats)
+        self.assertIsNone(room.seats[0]["close_greenlet"])
+
+        c2 = self._client()
+        c2.emit("rejoin_game", {"code": code, "token": created["token"]})
+        joined = _events(c2, "room_joined")[0]
+        self.assertEqual(joined["seat"], 0)
+        self.assertTrue(joined["is_host"])
+
+    def test_guest_joining_starts_countdown_for_paused_host(self):
+        c1 = self._client()
+        c1.emit("create_room", {"name": "Alice"})
+        code = _events(c1, "room_created")[0]["code"]
+        room = rooms[code]
+        c1.disconnect()
+        self.assertIsNone(room.seats[0]["close_greenlet"])
+
+        c2 = self._client()
+        c2.emit("join_room", {"code": code, "name": "Bob", "seat": 1})
+        self.assertTrue(any(e["name"] == "room_joined" for e in c2.get_received()))
+        # Bob is waiting now, so the absent host's lobby grace period runs.
+        self.assertIsNotNone(room.seats[0]["close_greenlet"])
+        self.assertAlmostEqual(room.seconds_remaining(0), 30, delta=5)
+
     # ── Host can wait longer ────────────────────────────────────────────────
 
     def test_extend_wait_is_host_only_and_extends_deadline(self):

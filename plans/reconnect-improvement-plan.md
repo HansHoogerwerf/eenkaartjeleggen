@@ -146,6 +146,17 @@ reconnect, and a stranger who guesses a name can claim a dropped seat
   resyncing at once. The paused-for-everyone clock is ticking meanwhile.
 - `room_expired` is emitted by the server but has no client handler.
 
+### F10. Single-player games were closed after a locked phone
+
+The abort countdown ran even when nobody else was in the room. One human
+against three AIs who locked their phone lost the socket, the 60 s grace
+expired, the abort removed the only seat and deleted the empty room, and
+the rejoin on unlock got `room_not_found`. Fixed in the same PR: a
+countdown only runs while at least one other human is connected and
+waiting; otherwise the game pauses (the game thread blocks on the next
+human input) and the absent seats' countdowns start when somebody
+returns. A paused room only expires through `ROOM_STARTED_TTL_SECONDS`.
+
 ### F9. One dropped player ends the game for four (product)
 
 After 60 s the whole game aborts and disconnected seats are removed. This

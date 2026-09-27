@@ -137,6 +137,9 @@ def apply_reconnect(socketio, emit_fn, join_room_fn, room: Room, seat: int, new_
     room.attach_sid(seat, new_sid)
     room.mark_reconnected(seat)
     host_restored = room.restore_host(seat)
+    # Somebody is connected and waiting from now on: any other seat that
+    # was paused without a countdown gets one (reflected in the snapshot).
+    resume_countdowns(socketio, room, except_seat=seat)
 
     join_room_fn(room.code)
 
@@ -230,7 +233,7 @@ def schedule_seat_auto_close(socketio, room: Room, seat: int, timeout: float | N
                 remaining = room.seconds_remaining(seat)
                 if remaining is None or remaining <= 0:
                     break
-                gevent.sleep(remaining)
+                gevent.sleep(max(remaining, 0.001))
         except gevent.GreenletExit:
             return
         # Re-check state after the sleep — the player may have reconnected
@@ -243,6 +246,12 @@ def schedule_seat_auto_close(socketio, room: Room, seat: int, timeout: float | N
         # Clear our greenlet ref before triggering abort (we are this greenlet)
         if room.seats[seat].get("close_greenlet") is gevent.getcurrent():
             room.seats[seat]["close_greenlet"] = None
+        if room.connected_human_count() == 0:
+            # Nobody is waiting for this player: keep the seat and let the
+            # room pause (it idles out via the room TTL). The countdown is
+            # restarted by resume_countdowns when somebody returns.
+            room.reconnect_deadline.pop(seat, None)
+            return
 
         if room.started and room.game is not None:
             abort_game(socketio, room)
@@ -264,6 +273,20 @@ def schedule_seat_auto_close(socketio, room: Room, seat: int, timeout: float | N
 
     g = gevent.spawn(_worker)
     room.seats[seat]["close_greenlet"] = g
+
+
+def resume_countdowns(socketio, room: Room, except_seat: int | None = None) -> None:
+    """Start the reconnect countdown for every disconnected seat that has
+    none. Called when a player (re)connects: from then on somebody is
+    waiting, so the absent players' grace periods run. Seats that already
+    count down are left alone."""
+    timeout = grace_timeout_for(room)
+    for seat, info in room.seats.items():
+        if seat == except_seat or info.get("connected"):
+            continue
+        if seat in room.reconnect_deadline or info.get("close_greenlet") is not None:
+            continue
+        schedule_seat_auto_close(socketio, room, seat, timeout)
 
 
 def extend_seat_grace(room: Room, seat: int, seconds: float) -> float | None:

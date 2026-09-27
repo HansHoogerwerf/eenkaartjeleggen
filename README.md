@@ -78,7 +78,7 @@ All runtime configuration is in [config.py](config.py); secrets and per-environm
 | `SECRET_KEY` | Flask session secret — **set this in production** | `klaverjas-secret` (insecure fallback) |
 | `CORS_ORIGINS` | Socket.IO CORS allow-list | `*` |
 | `FLASK_DEBUG` | Enable Flask debug when `1` | `0` |
-| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Mid-game reconnect grace period before the game is aborted (the host can extend it) | `90` |
+| `SEAT_RECONNECT_TIMEOUT_SECONDS` | Mid-game reconnect grace period before the game is aborted (the host can extend it). Only counts while another player is connected and waiting; a single-player game just pauses until `ROOM_STARTED_TTL_SECONDS` | `90` |
 | `LOBBY_RECONNECT_TIMEOUT_SECONDS` | Waiting-room grace period before a dropped seat is freed | `30` |
 | `RECONNECT_EXTEND_SECONDS` | Seconds added per "Wait longer" click by the host | `60` |
 | `ROOM_LOBBY_TTL_SECONDS` | Inactive lobby expiry | `3600` |

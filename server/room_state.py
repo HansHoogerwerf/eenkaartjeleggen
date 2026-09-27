@@ -211,6 +211,21 @@ class Room:
             return None
         return max(0.0, deadline - (time.time() if now is None else now))
 
+    def connected_human_count(self) -> int:
+        """Number of human seats with a live socket (AI seats are not in
+        `seats` at all)."""
+        return sum(1 for info in self.seats.values() if info.get("connected"))
+
+    def pause_countdowns(self) -> None:
+        """Stop every reconnect countdown because nobody is connected to wait
+        for them (single-player room, or everyone dropped). The seats stay
+        reserved; `game_flow.resume_countdowns` restarts the countdowns when
+        somebody returns."""
+        for seat in list(self.seats.keys()):
+            self.cancel_close_greenlet(seat)
+        self.reconnect_deadline.clear()
+        self.touch()
+
     def cancel_close_greenlet(self, seat: int) -> None:
         info = self.seats.get(seat)
         if info is None:

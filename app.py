@@ -17,6 +17,7 @@ from server.game_flow import (
     abort_game,
     apply_reconnect,
     extend_seat_grace,
+    resume_countdowns,
     schedule_seat_auto_close,
     start_room_game,
 )
@@ -218,6 +219,7 @@ def handle_join_room(data):
         room.cancel_close_greenlet(existing_seat)
         room.attach_sid(existing_seat, sid)
         room.mark_reconnected(existing_seat)
+        resume_countdowns(socketio, room, except_seat=existing_seat)
         sid_to_seat[sid] = (code, existing_seat)
         join_room(code)
         emit("room_joined", _seat_payload(room, existing_seat))
@@ -250,6 +252,9 @@ def handle_join_room(data):
 
     room.add_seat(seat, sid, name, connected=True)
     sid_to_seat[sid] = (code, seat)
+    # Somebody is now here to wait: paused seats (e.g. a lone host who
+    # dropped) get their grace countdown.
+    resume_countdowns(socketio, room, except_seat=seat)
     join_room(code)
     emit("room_joined", _seat_payload(room, seat))
     socketio.emit("lobby_update", room.lobby_state(), room=code)
@@ -627,9 +632,8 @@ def handle_disconnect(_reason=None):
 
     if room.started:
         # Unintentional disconnect mid-game → start reconnect flow
-        timeout = CONFIG.room.seat_reconnect_timeout_seconds
         room.detach_sid(seat)
-        room.mark_disconnected(seat, timeout)
+        room.mark_disconnected(seat)
 
         player = room.game.players[seat] if room.game else None
         if isinstance(player, HumanPlayer):
@@ -640,6 +644,16 @@ def handle_disconnect(_reason=None):
         if room.migrate_host_away_from(seat):
             _emit_host_migrated(room)
 
+        if room.connected_human_count() == 0:
+            # Nobody is left to wait for this player (a single-player game,
+            # or everyone dropped, e.g. a locked phone): pause instead of
+            # counting down to an abort. The game thread simply blocks on
+            # the next human input; countdowns start when somebody returns
+            # and the room idles out via ROOM_STARTED_TTL_SECONDS.
+            room.pause_countdowns()
+            return
+
+        timeout = CONFIG.room.seat_reconnect_timeout_seconds
         schedule_seat_auto_close(socketio, room, seat, timeout)
 
         socketio.emit("seat_disconnected", {
@@ -654,10 +668,14 @@ def handle_disconnect(_reason=None):
     # lobby grace period so a reload or a short blip does not lose the seat.
     # The host role is not migrated during the grace period; if the host
     # never returns the auto-close greenlet frees the seat and migrates.
-    timeout = CONFIG.room.lobby_reconnect_timeout_seconds
+    # With nobody else connected there is no countdown either; the room
+    # idles out via ROOM_LOBBY_TTL_SECONDS.
     room.detach_sid(seat)
-    room.mark_disconnected(seat, timeout)
-    schedule_seat_auto_close(socketio, room, seat, timeout)
+    room.mark_disconnected(seat)
+    if room.connected_human_count() == 0:
+        room.pause_countdowns()
+    else:
+        schedule_seat_auto_close(socketio, room, seat, CONFIG.room.lobby_reconnect_timeout_seconds)
     socketio.emit("lobby_update", room.lobby_state(), room=code)
 
 
