@@ -75,9 +75,12 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
 
     def _strategy(self, legal, trick, trump):
         self.last_pimc_values = None
+        if len(legal) == 1:
+            # Forced card: no search, and it does not use up a paused decision.
+            return super()._strategy(legal, trick, trump)
         if self._search_paused_for > 0:
             self._search_paused_for -= 1
-        elif len(legal) > 1 and len(self.hand) >= self.pimc_min_cards:
+        elif len(self.hand) >= self.pimc_min_cards:
             card = self._pimc_choice(legal, trick, trump)
             if card is not None:
                 return card
@@ -90,9 +93,15 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
             ev = _evaluator(model_path, self.pimc_deals, self.pimc_max_candidates)
             ranked = neural_rank_cards(self, legal, trick, trump, model_path=model_path) or list(legal)
             self.current_trump = trump
+            # The first call of an evaluator pays its one-time setup (on CUDA
+            # the graph capture, about 5 s).  Timing it against the budget
+            # halved the deals, which built the next evaluator, slow once too:
+            # three long pauses at the start of a session.
+            was_warm = getattr(ev, "warm", True)
             t0 = time.perf_counter()
             values = ev.evaluate(self, ranked, trick, trump)
-            self._adapt_deals(time.perf_counter() - t0)
+            if was_warm:
+                self._adapt_deals(time.perf_counter() - t0)
         except Exception:
             return None
         if not values:

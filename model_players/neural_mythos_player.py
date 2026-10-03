@@ -71,6 +71,14 @@ class NeuralMythosBidPlayer(MythosPlayer):
         self.random_mistake_rate = 0.0
 
     def _strategy(self, legal, trick, trump):
+        if len(legal) == 1:
+            # A forced card needs no search.  Without this shortcut it skipped
+            # the Mythos search below (which needs more than one legal card)
+            # and fell through to the base engine, whose Python endgame solver
+            # then solved sampled deals to the end of the round just to score
+            # the only card it could play: 0.3-1.2 s at five cards in hand.
+            self.current_trump = trump
+            return legal[0]
         if (self.endgame_engine == "mythos" and self.use_endgame_solver
                 and len(self.hand) <= self.endgame_cards and len(legal) > 1):
             card = self._mythos_endgame(legal, trick, trump)

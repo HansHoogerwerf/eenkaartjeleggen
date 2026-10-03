@@ -79,6 +79,63 @@ class TestNetRolloutEvaluator(unittest.TestCase):
             self.assertEqual(str(p._strategy(legal, trick, "♠")), "K♣")
 
 
+@unittest.skipUnless(_TORCH_OK, "PyTorch not importable")
+class TestEvaluatorWarmFlag(unittest.TestCase):
+    def test_warm_only_after_the_first_evaluate(self):
+        from neural.player import DEFAULT_MODEL_PATH, _get_model
+        if _get_model(DEFAULT_MODEL_PATH) is None:
+            self.skipTest("no checkpoint")
+        from model_players.pimc_player import PIMCNetPlayer
+        from neural.pimc import NetRolloutEvaluator
+        ev = NetRolloutEvaluator(DEFAULT_MODEL_PATH, deals=2, max_candidates=8, device="cpu")
+        self.assertFalse(ev.warm)
+        p = PIMCNetPlayer("P", 0, 0, rng_seed=3)
+        p.start_round()
+        p.receive_hand([Card("♠", "J"), Card("♠", "9"), Card("♥", "A"), Card("♥", "7"),
+                        Card("♣", "K"), Card("♣", "8"), Card("♦", "10"), Card("♦", "7")])
+        p.declaring_team = 0
+        p.current_trump = "♠"
+        self.assertTrue(ev.evaluate(p, list(p.hand), [], "♠"))
+        self.assertTrue(ev.warm)
+
+
+class TestForcedCard(unittest.TestCase):
+    """One legal card is played at once: no search, no endgame solver."""
+
+    HAND = [("♠", "J"), ("♥", "A"), ("♥", "7"), ("♣", "K"), ("♦", "10")]
+
+    def _with_hand(self, cls):
+        p = cls("P", 0, 0, rng_seed=1)
+        p.start_round()
+        p.hand = [Card(s, r) for s, r in self.HAND]   # five cards: endgame territory
+        return p
+
+    def test_hybrid_returns_the_forced_card_without_any_solver(self):
+        from unittest import mock
+        import main
+        from model_players.neural_mythos_player import NeuralMythosBidPlayer
+        p = self._with_hand(NeuralMythosBidPlayer)
+        forced = p.hand[0]
+        with mock.patch.object(main.AIPlayer, "_strategy", side_effect=AssertionError("base engine")), \
+             mock.patch.object(main.AIPlayer, "_endgame_exact_choice", side_effect=AssertionError("solver")), \
+             mock.patch.object(p, "_mythos_endgame", side_effect=AssertionError("mythos search")):
+            self.assertIs(p._strategy([forced], [], "♠"), forced)
+        self.assertEqual(p.current_trump, "♠")
+
+    def test_search_player_forced_card_skips_search_and_pause_accounting(self):
+        from unittest import mock
+        import main
+        from model_players.pimc_player import PIMCNetPlayer
+        p = self._with_hand(PIMCNetPlayer)
+        p.hand = p.hand + [Card("♦", "7"), Card("♣", "8"), Card("♠", "9")]   # eight cards: search territory
+        p._search_paused_for = 2
+        forced = p.hand[0]
+        with mock.patch.object(p, "_pimc_choice", side_effect=AssertionError("search")), \
+             mock.patch.object(main.AIPlayer, "_strategy", side_effect=AssertionError("base engine")):
+            self.assertIs(p._strategy([forced], [], "♠"), forced)
+        self.assertEqual(p._search_paused_for, 2)
+
+
 class TestAdaptiveBudget(unittest.TestCase):
     def _player(self):
         from model_players.pimc_player import PIMCNetPlayer
@@ -103,6 +160,27 @@ class TestAdaptiveBudget(unittest.TestCase):
         p.pimc_deals = 32
         p._adapt_deals(0.1)
         self.assertEqual(p.pimc_deals, 64)
+
+    def test_first_call_of_an_evaluator_is_not_timed(self):
+        from unittest import mock
+        p = self._player()
+        legal = [Card("♠", "J"), Card("♥", "A")]
+
+        class FakeEvaluator:
+            warm = False
+
+            def evaluate(self, player, ranked, trick, trump):
+                self.warm = True
+                return {str(c): 1.0 for c in ranked}
+
+        ev = FakeEvaluator()
+        with mock.patch("model_players.pimc_player._evaluator", return_value=ev), \
+             mock.patch("neural.player.neural_rank_cards", return_value=list(legal)), \
+             mock.patch.object(p, "_adapt_deals") as adapt:
+            self.assertIsNotNone(p._pimc_choice(legal, [], "♠"))
+            adapt.assert_not_called()          # setup call: not counted against the budget
+            self.assertIsNotNone(p._pimc_choice(legal, [], "♠"))
+            adapt.assert_called_once()         # warm call: timed as before
 
     def test_paused_search_plays_the_net(self):
         from unittest import mock
