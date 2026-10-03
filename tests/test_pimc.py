@@ -99,41 +99,77 @@ class TestEvaluatorWarmFlag(unittest.TestCase):
         self.assertTrue(ev.warm)
 
 
-class TestForcedCard(unittest.TestCase):
-    """One legal card is played at once: no search, no endgame solver."""
+class TestEndgameRouting(unittest.TestCase):
+    """Under the Mythos endgame engine the base engine's Python solver never starts.
 
-    HAND = [("♠", "J"), ("♥", "A"), ("♥", "7"), ("♣", "K"), ("♦", "10")]
+    The hybrid's `endgame_cards` (5) is Mythos's depth; the base engine reads
+    the same setting for its own Python minimax, which is far too slow there.
+    """
 
-    def _with_hand(self, cls):
-        p = cls("P", 0, 0, rng_seed=1)
+    HAND5 = [("♠", "J"), ("♥", "A"), ("♥", "7"), ("♣", "K"), ("♦", "10")]
+    HAND8 = HAND5 + [("♦", "7"), ("♣", "8"), ("♠", "9")]
+
+    def _player(self, cls_name, hand, engine="mythos"):
+        import os
+        from unittest import mock
+        from model_players.neural_mythos_player import NeuralMythosBidPlayer
+        from model_players.pimc_player import PIMCNetPlayer
+        cls = {"hybrid": NeuralMythosBidPlayer, "search": PIMCNetPlayer}[cls_name]
+        with mock.patch.dict(os.environ, {"NEURAL_ENDGAME_ENGINE": engine, "NEURAL_ENDGAME_CARDS": ""}):
+            p = cls("P", 0, 0, rng_seed=1)
         p.start_round()
-        p.hand = [Card(s, r) for s, r in self.HAND]   # five cards: endgame territory
+        p.hand = [Card(s, r) for s, r in hand]
         return p
 
-    def test_hybrid_returns_the_forced_card_without_any_solver(self):
+    def _solver_setting_seen_by_base_engine(self, p, legal):
+        """Run one decision and return use_endgame_solver as the base engine saw it."""
         from unittest import mock
         import main
-        from model_players.neural_mythos_player import NeuralMythosBidPlayer
-        p = self._with_hand(NeuralMythosBidPlayer)
-        forced = p.hand[0]
-        with mock.patch.object(main.AIPlayer, "_strategy", side_effect=AssertionError("base engine")), \
-             mock.patch.object(main.AIPlayer, "_endgame_exact_choice", side_effect=AssertionError("solver")), \
-             mock.patch.object(p, "_mythos_endgame", side_effect=AssertionError("mythos search")):
-            self.assertIs(p._strategy([forced], [], "♠"), forced)
-        self.assertEqual(p.current_trump, "♠")
+        seen = []
 
-    def test_search_player_forced_card_skips_search_and_pause_accounting(self):
+        def base(self_, legal_, trick_, trump_):
+            seen.append(self_.use_endgame_solver)
+            return legal_[0]
+
+        with mock.patch.object(main.AIPlayer, "_strategy", autospec=True, side_effect=base), \
+             mock.patch.object(p, "_mythos_endgame", return_value=None), \
+             mock.patch.object(p, "_pimc_choice", return_value=None, create=True):
+            p._strategy(legal, [], "♠")
+        self.assertTrue(p.use_endgame_solver)     # restored after the call
+        return seen
+
+    def test_forced_card_in_the_endgame_does_not_start_the_python_solver(self):
         from unittest import mock
         import main
-        from model_players.pimc_player import PIMCNetPlayer
-        p = self._with_hand(PIMCNetPlayer)
-        p.hand = p.hand + [Card("♦", "7"), Card("♣", "8"), Card("♠", "9")]   # eight cards: search territory
-        p._search_paused_for = 2
+        p = self._player("hybrid", self.HAND5)
         forced = p.hand[0]
-        with mock.patch.object(p, "_pimc_choice", side_effect=AssertionError("search")), \
-             mock.patch.object(main.AIPlayer, "_strategy", side_effect=AssertionError("base engine")):
-            self.assertIs(p._strategy([forced], [], "♠"), forced)
-        self.assertEqual(p._search_paused_for, 2)
+        with mock.patch.object(main.AIPlayer, "_endgame_exact_choice", side_effect=AssertionError("python solver")), \
+             mock.patch.object(p, "_mythos_endgame", side_effect=AssertionError("mythos search")):
+            self.assertEqual(str(p._strategy([forced], [], "♠")), str(forced))
+        self.assertTrue(p.use_endgame_solver)
+
+    def test_base_engine_runs_with_its_solver_off_under_the_mythos_engine(self):
+        p = self._player("hybrid", self.HAND5)
+        self.assertEqual((p.endgame_engine, p.endgame_cards), ("mythos", 5))
+        self.assertEqual(self._solver_setting_seen_by_base_engine(p, p.hand[:1]), [False])   # forced card
+        self.assertEqual(self._solver_setting_seen_by_base_engine(p, p.hand[:3]), [False])   # search out of budget
+        q = self._player("hybrid", self.HAND8)
+        self.assertEqual(self._solver_setting_seen_by_base_engine(q, q.hand[:3]), [False])   # early trick
+
+    def test_solver_engine_keeps_the_python_solver(self):
+        p = self._player("hybrid", self.HAND5, engine="solver")
+        self.assertEqual(p.endgame_engine, "solver")
+        self.assertEqual(self._solver_setting_seen_by_base_engine(p, p.hand[:1]), [True])
+
+    def test_search_player_inherits_the_routing(self):
+        from unittest import mock
+        import main
+        p = self._player("search", self.HAND5)
+        forced = p.hand[0]
+        with mock.patch.object(main.AIPlayer, "_endgame_exact_choice", side_effect=AssertionError("python solver")), \
+             mock.patch.object(p, "_pimc_choice", side_effect=AssertionError("search")):
+            self.assertEqual(str(p._strategy([forced], [], "♠")), str(forced))
+        self.assertEqual(self._solver_setting_seen_by_base_engine(p, p.hand[:1]), [False])
 
 
 class TestAdaptiveBudget(unittest.TestCase):

@@ -71,34 +71,41 @@ class NeuralMythosBidPlayer(MythosPlayer):
         self.random_mistake_rate = 0.0
 
     def _strategy(self, legal, trick, trump):
-        if len(legal) == 1:
-            # A forced card needs no search.  Without this shortcut it skipped
-            # the Mythos search below (which needs more than one legal card)
-            # and fell through to the base engine, whose Python endgame solver
-            # then solved sampled deals to the end of the round just to score
-            # the only card it could play: 0.3-1.2 s at five cards in hand.
-            self.current_trump = trump
-            return legal[0]
         if (self.endgame_engine == "mythos" and self.use_endgame_solver
                 and len(self.hand) <= self.endgame_cards and len(legal) > 1):
             card = self._mythos_endgame(legal, trick, trump)
             if card is not None:
                 return card
-            # Search could not finish a single deal within budget: let the
-            # net play this card rather than start the slower Python solver.
-            saved = self.use_endgame_solver
-            self.use_endgame_solver = False
-            try:
-                return main.AIPlayer._strategy(self, legal, trick, trump)
-            finally:
-                self.use_endgame_solver = saved
-        if (self.midgame_engine == "search" and len(legal) > 1
+            # The search could not finish a single deal within budget: the
+            # net plays this card.
+        elif (self.midgame_engine == "search" and len(legal) > 1
                 and len(self.hand) > self.endgame_cards):
             card = self._guided_search(legal, trick, trump)
             if card is not None:
                 return card
-        # Use the base engine's card play (neural + its endgame solver), not Mythos's search.
-        return main.AIPlayer._strategy(self, legal, trick, trump)
+        return self._base_play(legal, trick, trump)
+
+    def _base_play(self, legal, trick, trump):
+        """The base engine's card play: the neural net plus its roem guard.
+
+        `endgame_cards` and `use_endgame_solver` describe the hybrid's endgame
+        engine.  With the Mythos engine that is Mythos's search from 5 cards,
+        but AIPlayer._strategy reads the same two settings to start its own
+        Python minimax, which is meant for 3-4 cards and takes up to a second
+        at 5.  Every endgame decision the Mythos search did not take used to
+        land there with the solver on: most visibly a forced card, which the
+        solver then "scored" by solving sampled deals to the end of the round.
+        So under the Mythos engine the base engine always runs with its solver
+        off; only the "solver" engine may use the Python minimax.
+        """
+        if self.endgame_engine != "mythos":
+            return main.AIPlayer._strategy(self, legal, trick, trump)
+        saved = self.use_endgame_solver
+        self.use_endgame_solver = False
+        try:
+            return main.AIPlayer._strategy(self, legal, trick, trump)
+        finally:
+            self.use_endgame_solver = saved
 
     def _mythos_endgame(self, legal, trick, trump):
         """Mythos search to the end of the round over `endgame_samples` deals.

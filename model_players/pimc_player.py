@@ -75,12 +75,9 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
 
     def _strategy(self, legal, trick, trump):
         self.last_pimc_values = None
-        if len(legal) == 1:
-            # Forced card: no search, and it does not use up a paused decision.
-            return super()._strategy(legal, trick, trump)
         if self._search_paused_for > 0:
             self._search_paused_for -= 1
-        elif len(self.hand) >= self.pimc_min_cards:
+        elif len(legal) > 1 and len(self.hand) >= self.pimc_min_cards:
             card = self._pimc_choice(legal, trick, trump)
             if card is not None:
                 return card
