@@ -572,7 +572,7 @@ class AIPlayer(Player):
                     hand = sim_hands[seat]
                     if not hand:
                         break
-                    legal = self._legal_moves_for_cards(hand, trick_cards, trump)
+                    legal = self._legal_moves_for_cards(hand, trick_cards, trump, seat, self.rules_variant)
                     if not legal:
                         break
                     # Simple greedy: play highest strength card.
@@ -736,17 +736,31 @@ class AIPlayer(Player):
         # Failed to follow suit: remove lead suit from that seat's possibilities.
         if card.suit != lead_suit:
             self._remove_suit_from_possible(player_idx, lead_suit)
+            prior_trumps = [c for _, c in prior_cards if c.suit == trump]
+            highest = max(prior_trumps, key=lambda c: c.strength(trump)) if prior_trumps else None
 
-            if card.suit != trump:
+            if self.rules_variant == "amsterdam":
+                # Amsterdam: a void player is free while the partner is winning,
+                # and when the trick's trump cannot be beaten.  So a discard or
+                # an undertrump only tells us something when the opponents were
+                # winning: no trump in the trick -> they held no trump at all;
+                # a trump in the trick -> they held nothing that beats it.
+                if not prior_cards:
+                    return
+                winner_seat = prior_cards[trick_winner_index(prior_cards, trump)][0]
+                if SEAT_TEAMS[winner_seat] == SEAT_TEAMS[player_idx]:
+                    return
+                if highest is None:
+                    if card.suit != trump:
+                        self._remove_suit_from_possible(player_idx, trump)
+                elif card.suit != trump or card.strength(trump) <= highest.strength(trump):
+                    self._remove_trump_stronger_than(player_idx, trump, highest.strength(trump))
+            elif card.suit != trump:
                 # Rotterdam: if they could not follow and did not trump, they had no trump.
                 self._remove_suit_from_possible(player_idx, trump)
-            else:
+            elif highest is not None and card.strength(trump) <= highest.strength(trump):
                 # They trumped. If they did not overtrump while required, stronger trumps are impossible.
-                prior_trumps = [c for _, c in prior_cards if c.suit == trump]
-                if prior_trumps:
-                    highest = max(prior_trumps, key=lambda c: c.strength(trump))
-                    if card.strength(trump) <= highest.strength(trump):
-                        self._remove_trump_stronger_than(player_idx, trump, highest.strength(trump))
+                self._remove_trump_stronger_than(player_idx, trump, highest.strength(trump))
 
         # Lead suit was trump and they followed trump but did not overtrump.
         if lead_suit == trump and card.suit == trump:
@@ -906,7 +920,20 @@ class AIPlayer(Player):
         return penalty
 
     @staticmethod
-    def _legal_moves_for_cards(hand_cards: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:
+    def _legal_moves_for_cards(
+        hand_cards: list[Card],
+        trick_cards: list[tuple[int, Card]],
+        trump: str,
+        seat: int | None = None,
+        rules_variant: str = "rotterdam",
+    ) -> list[Card]:
+        """Legal moves of a simulated hand; mirrors Player.legal_moves.
+
+        `seat` is the seat to move.  The Amsterdam variant needs it: a void
+        player need not trump while the partner is winning the trick, and need
+        not undertrump when the trick's trump cannot be beaten.  Without a
+        seat the Rotterdam rule applies.
+        """
         if not trick_cards:
             return list(hand_cards)
 
@@ -922,15 +949,23 @@ class AIPlayer(Player):
             return same_suit
 
         trumps = [c for c in hand_cards if c.suit == trump]
-        if trumps:
-            trick_trumps = [c for _, c in trick_cards if c.suit == trump]
-            if trick_trumps:
-                highest = max(trick_trumps, key=lambda c: c.strength(trump))
-                over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
-                return over if over else trumps
-            return trumps
+        if not trumps:
+            return list(hand_cards)
 
-        return list(hand_cards)
+        amsterdam = rules_variant == "amsterdam" and seat is not None
+        if amsterdam:
+            winner_seat = trick_cards[trick_winner_index(trick_cards, trump)][0]
+            if SEAT_TEAMS[winner_seat] == SEAT_TEAMS[seat]:
+                return list(hand_cards)
+
+        trick_trumps = [c for _, c in trick_cards if c.suit == trump]
+        if trick_trumps:
+            highest = max(trick_trumps, key=lambda c: c.strength(trump))
+            over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
+            if over:
+                return over
+            return list(hand_cards) if amsterdam else trumps
+        return trumps
 
     def _possible_cards_for_seat(self, seat: int, used_cards: set[str]) -> list[Card]:
         if seat == self.seat_idx:
@@ -974,7 +1009,7 @@ class AIPlayer(Player):
             valid = True
             for seat in remaining_order:
                 pool = self._possible_cards_for_seat(seat, used)
-                legal = self._legal_moves_for_cards(pool, sim_cards, trump)
+                legal = self._legal_moves_for_cards(pool, sim_cards, trump, seat, self.rules_variant)
                 if not legal:
                     valid = False
                     break
@@ -1586,7 +1621,7 @@ class AIPlayer(Player):
         if key in memo:
             return memo[key]
 
-        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump)
+        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump, next_seat, self.rules_variant)
         if not legal:
             memo[key] = 0.0
             return 0.0
@@ -1829,7 +1864,7 @@ class AIPlayer(Player):
         if key in memo:
             return memo[key]
 
-        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump)
+        legal = self._legal_moves_for_cards(hands[next_seat], trick_cards, trump, next_seat, self.rules_variant)
         if not legal:
             memo[key] = 0.0
             return 0.0

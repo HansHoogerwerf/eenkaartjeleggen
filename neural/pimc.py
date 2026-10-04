@@ -38,7 +38,7 @@ class NetRolloutEvaluator:
     """Owns one GPU engine + net and scores candidate cards by rollouts."""
 
     def __init__(self, model_path: str | Path, deals: int = 32, max_candidates: int = 8,
-                 device: str | None = None):
+                 device: str | None = None, rules_variant: str = "rotterdam"):
         device = device or os.environ.get("NEURAL_PIMC_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device)
         threads = int(os.environ.get("NEURAL_PIMC_THREADS") or 0)
@@ -51,14 +51,21 @@ class NetRolloutEvaluator:
         self.deals = deals
         self.max_candidates = max_candidates
         self.B = deals * max_candidates
+        # The rollouts must follow the rules of the game being played.
+        self.rules_variant = rules_variant
         self.engine = KlaverjasGPUEngine(batch_size=self.B, device=self.device,
-                                         feature_version=self.feature_version)
+                                         feature_version=self.feature_version,
+                                         rules_variant=rules_variant)
         self.engine.reset()
         # Static buffers for the CUDA-graph-captured rollout (see _capture).
         self._first = torch.zeros(self.B, dtype=torch.long, device=self.device)
         self._total = torch.zeros(self.B, device=self.device)
         self._graph = None
         self.use_graph = self.device.type == "cuda"
+        # False until the first evaluate() has finished: that call also pays
+        # the one-time setup (CUDA-graph capture, lazy initialisation), so
+        # callers that time decisions should not count it.
+        self.warm = False
 
     # ── rollout (eager, and CUDA-graph captured) ───────────────────────────
     def _rollout_body(self) -> None:
@@ -208,4 +215,6 @@ class NetRolloutEvaluator:
         total = self._rollout()
         sign = 1.0 if SEAT_TEAMS[player.seat_idx] == 0 else -1.0
         vals = (total[:n] * sign * 162.0).view(len(candidates), len(deals)).mean(dim=1)
-        return {str(c): float(v) for c, v in zip(candidates, vals.tolist())}
+        result = {str(c): float(v) for c, v in zip(candidates, vals.tolist())}
+        self.warm = True
+        return result
