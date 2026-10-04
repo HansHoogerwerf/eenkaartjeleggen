@@ -38,7 +38,7 @@ class NetRolloutEvaluator:
     """Owns one GPU engine + net and scores candidate cards by rollouts."""
 
     def __init__(self, model_path: str | Path, deals: int = 32, max_candidates: int = 8,
-                 device: str | None = None):
+                 device: str | None = None, rules_variant: str = "rotterdam"):
         device = device or os.environ.get("NEURAL_PIMC_DEVICE") or ("cuda" if torch.cuda.is_available() else "cpu")
         self.device = torch.device(device)
         threads = int(os.environ.get("NEURAL_PIMC_THREADS") or 0)
@@ -51,8 +51,11 @@ class NetRolloutEvaluator:
         self.deals = deals
         self.max_candidates = max_candidates
         self.B = deals * max_candidates
+        # The rollouts must follow the rules of the game being played.
+        self.rules_variant = rules_variant
         self.engine = KlaverjasGPUEngine(batch_size=self.B, device=self.device,
-                                         feature_version=self.feature_version)
+                                         feature_version=self.feature_version,
+                                         rules_variant=rules_variant)
         self.engine.reset()
         # Static buffers for the CUDA-graph-captured rollout (see _capture).
         self._first = torch.zeros(self.B, dtype=torch.long, device=self.device)

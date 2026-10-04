@@ -90,9 +90,15 @@ class KlaverjasGPUEngine:
         bid_threshold: float = 2.75,
         feature_version: int = 2,
         dense_rewards: bool = False,
+        rules_variant: str = "rotterdam",
     ):
         self.B = batch_size
         self.device = torch.device(device)
+        # Rules variant of the legal-move mask.  Fixed per engine (a Python
+        # flag, so the op graph stays static for CUDA-graph capture): the
+        # net-rollout search builds one engine per variant.
+        self.rules_variant = rules_variant if rules_variant in ("rotterdam", "amsterdam") else "rotterdam"
+        self.amsterdam = self.rules_variant == "amsterdam"
         self.score_limit = score_limit
         self.bid_threshold = bid_threshold
         # Dense rewards: every completed trick pays (points + roem won, team-0
@@ -315,14 +321,23 @@ class KlaverjasGPUEngine:
         case1 = torch.where(lead_is_trump.unsqueeze(1), case1a, case1b)
 
         # ── Case 2: no lead-suit cards → must trump (or discard) ────────────
+        # Rotterdam: overtrump if possible, else undertrump.  Amsterdam: when
+        # the trick's trump cannot be beaten any card may be played.
+        cannot_over = player_hand if self.amsterdam else trump_in_hand
         case2_trump_over = torch.where(has_over_trump.unsqueeze(1),
-                                       over_trump.float(), trump_in_hand)
+                                       over_trump.float(), cannot_over)
         case2_with_trick_trump = torch.where(has_trump.unsqueeze(1),
                                              case2_trump_over, player_hand)
         case2_no_trick_trump   = torch.where(has_trump.unsqueeze(1),
                                              trump_in_hand, player_hand)
         case2 = torch.where(any_trump_in_trick.unsqueeze(1),
                             case2_with_trick_trump, case2_no_trick_trump)
+        if self.amsterdam:
+            # Amsterdam: no duty to trump while the partner is winning the trick.
+            win_pos = self._current_trick_winner_pos()
+            win_seat = self.trick_seats[ar, win_pos.clamp(min=0)].clamp(min=0)
+            partner_winning = (win_pos >= 0) & (self.SEAT_TEAM[win_seat] == self.SEAT_TEAM[seat])
+            case2 = torch.where(partner_winning.unsqueeze(1), player_hand, case2)
 
         trick_legal = torch.where(has_lead.unsqueeze(1), case1, case2)
 

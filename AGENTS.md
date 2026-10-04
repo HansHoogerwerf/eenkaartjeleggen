@@ -60,6 +60,17 @@ Important distinctions:
   lookahead and the CUDA engine (`tools/gpu_engine.py`). The neural path also
   runs `AIPlayer._roem_guard` after the net picks a card. Keep it that way:
   `tests/test_ai_roem.py` and `tests/test_gpu_engine_roem.py` guard it.
+- The lobby offers two rules variants (Rotterdam, Amsterdam; they differ in
+  when a void player must trump). Everything that models play has to follow
+  the variant of the game: the shared move generation
+  (`AIPlayer._legal_moves_for_cards`, give it the seat to move and
+  `rules_variant`), Mythos's `_legal_int`, the batched engine
+  (`KlaverjasGPUEngine(rules_variant=...)`, so the net-rollout search keeps
+  one evaluator per variant) and the card inference
+  (`_apply_inference_from_play`). With Rotterdam inferences in an Amsterdam
+  game an opponent's true hand was ruled out in 1 of 6 decisions.
+  `tests/test_rules_variant_search.py` checks each of them against
+  `Player.legal_moves`.
 - The hybrid's endgame is a nat-aware search to the end of the round: from 5
   cards in hand Mythos's determinized alpha-beta finishes the round
   (`NEURAL_ENDGAME_ENGINE=mythos`, default; exact from 4 cards, 3-reply
