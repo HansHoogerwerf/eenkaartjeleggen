@@ -42,12 +42,13 @@ def _cuda_available() -> bool:
         return False
 
 
-def _evaluator(model_path, deals: int, max_cands: int):
-    key = (str(model_path), deals, max_cands)
+def _evaluator(model_path, deals: int, max_cands: int, rules_variant: str = "rotterdam"):
+    key = (str(model_path), deals, max_cands, rules_variant)
     ev = _EVALUATORS.get(key)
     if ev is None:
         from neural.pimc import NetRolloutEvaluator
-        ev = NetRolloutEvaluator(model_path, deals=deals, max_candidates=max_cands)
+        ev = NetRolloutEvaluator(model_path, deals=deals, max_candidates=max_cands,
+                                 rules_variant=rules_variant)
         _EVALUATORS[key] = ev
     return ev
 
@@ -87,12 +88,18 @@ class PIMCNetPlayer(NeuralMythosBidPlayer):
         from neural.player import neural_rank_cards
         model_path = self.neural_model_path or DEFAULT_MODEL_PATH
         try:
-            ev = _evaluator(model_path, self.pimc_deals, self.pimc_max_candidates)
+            ev = _evaluator(model_path, self.pimc_deals, self.pimc_max_candidates, self.rules_variant)
             ranked = neural_rank_cards(self, legal, trick, trump, model_path=model_path) or list(legal)
             self.current_trump = trump
+            # The first call of an evaluator pays its one-time setup (on CUDA
+            # the graph capture, about 5 s).  Timing it against the budget
+            # halved the deals, which built the next evaluator, slow once too:
+            # three long pauses at the start of a session.
+            was_warm = getattr(ev, "warm", True)
             t0 = time.perf_counter()
             values = ev.evaluate(self, ranked, trick, trump)
-            self._adapt_deals(time.perf_counter() - t0)
+            if was_warm:
+                self._adapt_deals(time.perf_counter() - t0)
         except Exception:
             return None
         if not values:

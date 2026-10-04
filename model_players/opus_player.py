@@ -220,43 +220,10 @@ class OpusPlayer(AIPlayer):
                             trump: str, seat: int) -> list[Card]:
         """Legal moves for `seat`, honouring the configured rules variant.
 
-        The inherited static _legal_moves_for_cards is Rotterdam-only (it always
-        forces an overtrump and ignores the Amsterdam partner-winning exemption),
-        so it mis-models Amsterdam inside the search.  This mirrors the engine's
-        Player.legal_moves, parameterised by the seat to move.
+        Mirrors the engine's Player.legal_moves through the shared helper,
+        which knows both variants once it is given the seat to move.
         """
-        if not trick_cards:
-            return list(hand_cards)
-        lead_suit = trick_cards[0][1].suit
-        same_suit = [c for c in hand_cards if c.suit == lead_suit]
-        if same_suit:
-            if lead_suit == trump:
-                trick_trumps = [c for _, c in trick_cards if c.suit == trump]
-                highest = max(trick_trumps, key=lambda c: c.strength(trump))
-                over = [c for c in same_suit if c.strength(trump) > highest.strength(trump)]
-                return over if over else same_suit
-            return same_suit
-        trumps = [c for c in hand_cards if c.suit == trump]
-        if not trumps:
-            return list(hand_cards)
-        sim_trick = [
-            (main.SimpleNamespace(seat_idx=s, team=SEAT_TEAMS[s]), c)
-            for s, c in trick_cards
-        ]
-        winner_seat = trick_cards[trick_winner_index(sim_trick, trump)][0]
-        partner_winning = SEAT_TEAMS[winner_seat] == SEAT_TEAMS[seat]
-        if self.rules_variant == "amsterdam" and partner_winning:
-            return list(hand_cards)
-        trick_trumps = [c for _, c in trick_cards if c.suit == trump]
-        if trick_trumps:
-            highest = max(trick_trumps, key=lambda c: c.strength(trump))
-            over = [c for c in trumps if c.strength(trump) > highest.strength(trump)]
-            if over:
-                return over
-            if self.rules_variant == "amsterdam":
-                return list(hand_cards)
-            return trumps
-        return trumps
+        return self._legal_moves_for_cards(hand_cards, trick_cards, trump, seat, self.rules_variant)
 
     def _order_moves(self, legal: list[Card], trick_cards: list[tuple[int, Card]], trump: str) -> list[Card]:
         """Heuristic move ordering to maximise alpha-beta cutoffs."""

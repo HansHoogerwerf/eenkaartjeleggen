@@ -227,13 +227,19 @@ Enabled at all public levels.
 
 After every card played, the AI records **suit voids** per seat:
 - If a player fails to follow the led suit → they are void in that suit.
-- If a player fails to follow led suit AND does not trump → they are void in both that suit AND trump.
+- If that player also does not trump, what follows depends on the rules variant:
+  - **Rotterdam:** a void player must trump, so they hold no trump at all.
+  - **Amsterdam:** nothing is learned while their partner was winning the trick (there is no duty to trump). With the opponents winning they hold no trump when the trick contained none, and no trump that beats the trick's highest trump otherwise (there is no duty to undertrump).
 
 ### Trump Strength Inference
 
-Under Rotterdam rules, players must overtrump when trumped into. If a player trumps but plays a weaker trump than the current highest:
-- The AI infers that player cannot hold any **stronger** trump cards.
+A player who must overtrump and plays a weaker trump than the current highest cannot hold any **stronger** trump:
 - All stronger trumps are removed from that seat's possibility set.
+- Under Rotterdam rules this applies to every undertrump; under Amsterdam rules only when the opponents were winning the trick, because with the partner winning any card may be played.
+
+### Rules Variants
+
+The inference above and every simulator must apply the variant of the game being played. With Rotterdam inferences in an Amsterdam game an opponent's true hand was ruled out in 83 of 512 decisions, so the deal sampler could never produce the real situation; the shared move generation was wrong in 5 % of random positions and the batched engine's legal mask in 2.5 % of states. `tests/test_rules_variant_search.py` checks the inference, the shared move generation (`_legal_moves_for_cards`, which takes the seat to move and the variant), Opus's search and the batched engine's legal mask against `Player.legal_moves` for both variants.
 
 ### Possible-Cards Tracking
 
